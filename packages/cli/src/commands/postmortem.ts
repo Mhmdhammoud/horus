@@ -1,7 +1,7 @@
 import pc from 'picocolors';
 import { loadConfig } from '@horus/core';
 import { createDb, getInvestigation } from '@horus/db';
-import { generatePostmortem } from '@horus/engine';
+import { generatePostmortem, migrateReport } from '@horus/engine';
 import type { InvestigationReport } from '@horus/engine';
 
 /**
@@ -27,7 +27,7 @@ export async function runPostmortem(
       console.error(pc.red('Investigation ' + id + ' has no stored report.'));
       return 1;
     }
-    const report = row.report as InvestigationReport;
+    const report = migrateReport(row.report) as InvestigationReport;
     console.log(generatePostmortem(report));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

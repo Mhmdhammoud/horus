@@ -5,6 +5,7 @@ import {
   refineInvestigation,
   renderRefined,
   refinedToJSON,
+  migrateReport,
 } from '@horus/engine';
 import type { InvestigationReport } from '@horus/engine';
 
@@ -31,7 +32,7 @@ export async function runAsk(
       console.error(pc.red('Investigation ' + id + ' has no stored report.'));
       return 1;
     }
-    const report = row.report as InvestigationReport;
+    const report = migrateReport(row.report) as InvestigationReport;
     const v = refineInvestigation(report, directive);
     console.log(opts.json ? refinedToJSON(report, v) : renderRefined(report, v));
   } catch (err) {

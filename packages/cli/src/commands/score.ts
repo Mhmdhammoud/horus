@@ -5,6 +5,7 @@ import {
   scoreInvestigation,
   renderScore,
   scoreToJSON,
+  migrateReport,
 } from '@horus/engine';
 import type { InvestigationReport } from '@horus/engine';
 
@@ -24,7 +25,7 @@ export async function runScore(
       console.error(pc.red('Investigation ' + id + ' has no stored report.'));
       return 1;
     }
-    const s = scoreInvestigation(row.report as InvestigationReport);
+    const s = scoreInvestigation(migrateReport(row.report) as InvestigationReport);
     console.log(opts.json ? scoreToJSON(s) : renderScore(s));
   } finally {
     await sql.end();
@@ -46,7 +47,7 @@ export async function runScores(opts: {
         id: r.id,
         title: r.title,
         createdAt: r.createdAt,
-        score: scoreInvestigation(r.report as InvestigationReport).score,
+        score: scoreInvestigation(migrateReport(r.report) as InvestigationReport).score,
       }));
     if (scored.length === 0) {
       console.log('No scored investigations yet.');

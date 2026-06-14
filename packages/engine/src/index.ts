@@ -36,3 +36,4 @@ export * from './render-simulate.js';
 export * from './normalize.js';
 export * from './graph.js';
 export * from './score-cause.js';
+export * from './migrate-report.js';

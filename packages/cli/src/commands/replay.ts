@@ -1,7 +1,7 @@
 import pc from 'picocolors';
 import { loadConfig } from '@horus/core';
 import { createDb, getInvestigation } from '@horus/db';
-import { renderReport, reportToMarkdown, reportToJSON } from '@horus/engine';
+import { renderReport, reportToMarkdown, reportToJSON, migrateReport } from '@horus/engine';
 import type { InvestigationReport } from '@horus/engine';
 
 export async function runReplay(
@@ -26,7 +26,7 @@ export async function runReplay(
       );
       return 1;
     }
-    const report = row.report as InvestigationReport;
+    const report = migrateReport(row.report) as InvestigationReport;
     const fmt = opts.format ?? 'text';
     const out =
       fmt === 'json'
