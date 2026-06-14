@@ -20,7 +20,7 @@ queue-boundary stitcher. pgvector dropped (Axon hybrid search covers semantic).
 ## Build order
 
 ```
-HOR-1 ─▶ HOR-2 ─▶ HOR-3 ─▶ HOR-4 ─▶ STITCH ─▶ HOR-5
+HOR-1 ─▶ HOR-2 ─▶ HOR-3 ─▶ HOR-4 ─▶ HOR-6 ─▶ HOR-5
 ```
 
 ### HOR-1 — Monorepo foundation
@@ -66,7 +66,7 @@ abstraction, sourced over HTTP/MCP.
 4. Resilience: host restart/reconnect, timeouts, bounded retries.
 **Exit:** contract + smoke tests green; provider survives a host bounce.
 
-### STITCH — Queue-boundary stitcher (new ticket) ⭐ the one supplemental layer
+### HOR-6 — Queue-boundary stitcher (new ticket) ⭐ the one supplemental layer
 **Goal:** synthesize the producer→queue→worker edges Axon can't.
 1. Pull `Method/Function/Class` (+`content`) via `POST /api/cypher`.
 2. Extract queue-name literals (regex + ts-morph): `queue.add('x')`,
@@ -103,7 +103,7 @@ on `leadcall-api`.
 
 ## Sequencing & dependencies
 ```
-HOR-1 ─▶ HOR-2 ─▶ HOR-3 ─▶ HOR-4 ─▶ STITCH ─▶ HOR-5
+HOR-1 ─▶ HOR-2 ─▶ HOR-3 ─▶ HOR-4 ─▶ HOR-6 ─▶ HOR-5
 ```
 Strictly linear in v0 (each builds on the prior). Runtime connectors inside HOR-5 are
 internally parallelizable once the engine skeleton exists.

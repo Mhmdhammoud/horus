@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { HORUS_VERSION } from '@horus/core';
 import { runStatus } from './commands/status.js';
+import { runExplain } from './commands/explain.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -22,6 +23,22 @@ export function buildProgram(): Command {
     .action(async (opts: { config?: string }) => {
       const code = await runStatus(opts.config);
       process.exitCode = code;
+    });
+
+  program
+    .command('explain <query>')
+    .description(
+      'Explain a symbol: location, community, callers/callees, impact, related flows',
+    )
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('-d, --depth <n>', 'impact depth', (v) => parseInt(v, 10))
+    .option('--json', 'output JSON')
+    .action(async (query: string, opts: { config?: string; depth?: number; json?: boolean }) => {
+      process.exitCode = await runExplain(query, {
+        config: opts.config,
+        depth: opts.depth,
+        json: opts.json,
+      });
     });
 
   return program;

@@ -65,11 +65,50 @@ export interface Symbol {
   className?: string;
 }
 
-/** Callers + callees of a symbol (Axon `context`). */
+/** A reference to an Axon community node. */
+export interface CommunityRef {
+  id: string;
+  name: string;
+}
+
+/** A file that co-changes frequently with another (git coupling). */
+export interface CoupledFile {
+  file: string;
+  coChanges: number;
+}
+
+/** Raw result from a Cypher query. */
+export interface CypherResult {
+  columns: string[];
+  rows: unknown[][];
+  rowCount: number;
+}
+
+/** Result of an impact analysis rooted at a symbol. */
+export interface ImpactResult {
+  target: Symbol;
+  affected: number;
+  byDepth: { depth: number; symbols: Symbol[] }[];
+}
+
+/** Added/removed/modified symbols between two refs. */
+export interface ChangeSet {
+  added: Symbol[];
+  removed: Symbol[];
+  modified: { before: Symbol; after: Symbol }[];
+}
+
+/** Callers + callees of a symbol (Axon `context`), enriched with graph neighbours. */
 export interface SymbolContext {
   symbol: Symbol;
+  snippet?: string; // short excerpt of the symbol's source
   callers: Symbol[];
   callees: Symbol[];
+  imports: string[]; // file paths the symbol's defining file imports
+  usesType: Symbol[]; // TypeAlias/Interface the symbol uses
+  community: CommunityRef | null;
+  coupledWith: CoupledFile[]; // git-coupled files
+  isDead?: boolean;
 }
 
 /** A pre-computed multi-hop execution flow (Axon `Process` node). */
