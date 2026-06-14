@@ -157,7 +157,7 @@ export function analyzeQueueSignals(q: QueueCounts): QueueSignal[] {
       signals.push({
         queueName: q.queueName,
         kind: 'failed-breakdown',
-        title: `${q.queueName}: ${pct}% of failed jobs are "${top.reason}"`,
+        title: `${q.queueName}: ${pct}% of recently sampled failures (${top.count}/${sampleTotal} sampled) are "${top.reason}"`,
         relevance: 0.82,
         payload: {
           queueName: q.queueName,
