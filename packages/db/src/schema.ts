@@ -159,6 +159,7 @@ export const findings = pgTable(
 /**
  * Memory of past incidents for pattern recognition (HOR-18). No pgvector — similarity
  * is matched on a normalized `signature` + `tags` + text rather than embeddings.
+ * HOR-46: project column scopes recall to the originating repository.
  */
 export const incidentMemory = pgTable(
   'incident_memory',
@@ -167,6 +168,7 @@ export const incidentMemory = pgTable(
     investigationId: uuid('investigation_id').references(() => investigations.id, {
       onDelete: 'set null',
     }),
+    project: text('project'), // repository/project scope for isolation (HOR-46)
     title: text('title').notNull(),
     summary: text('summary'),
     signature: text('signature'), // normalized incident signature, for recall
@@ -174,7 +176,10 @@ export const incidentMemory = pgTable(
     payload: jsonb('payload'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('incident_memory_signature_idx').on(t.signature)],
+  (t) => [
+    index('incident_memory_signature_idx').on(t.signature),
+    index('incident_memory_project_idx').on(t.project),
+  ],
 );
 
 export type Project = typeof projects.$inferSelect;

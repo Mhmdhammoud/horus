@@ -970,7 +970,7 @@ export async function investigate(
   //    Past incidents are CONTEXT ONLY; they must never override report.confidence.
   if (persistedId !== null) {
     const tags = deriveTags(report);
-    report.similarIncidents = await recallSimilar(db, tags, persistedId);
+    report.similarIncidents = await recallSimilar(db, tags, persistedId, input.repo ?? null);
     await storeIncidentMemory(db, persistedId, report);
   }
   // If persist failed (db down / no id), similarIncidents stays [] and we skip store.

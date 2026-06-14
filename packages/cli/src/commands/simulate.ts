@@ -55,7 +55,7 @@ export async function runSimulate(
     const { db, sql } = createDb(config.database.url);
     try {
       const report = await investigate(
-        { hint: scenario.hint, since: scenario.since },
+        { hint: scenario.hint, repo: renv.project, since: scenario.since },
         { code, db },
       );
       const evaluation = evaluateScenario(scenario, report);

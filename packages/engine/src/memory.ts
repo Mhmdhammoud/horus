@@ -8,7 +8,7 @@
 
 import type { InvestigationReport } from './types.js';
 import type { HorusDb } from '@horus/db';
-import { incidentMemory } from '@horus/db';
+import { incidentMemory, eq } from '@horus/db';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -158,8 +158,12 @@ export function tagOverlap(a: string[], b: string[]): number {
 // ---------------------------------------------------------------------------
 
 /**
- * Read up to ~200 incident_memory rows and return the top-3 most similar
- * (by Jaccard overlap) that are NOT the current investigation.
+ * Read up to ~200 incident_memory rows scoped to the given project and return
+ * the top-3 most similar (by Jaccard overlap) that are NOT the current investigation.
+ *
+ * Fails closed: returns [] when project is null so investigations without a
+ * repo identity never receive another project's memories (HOR-46).
+ * A second in-memory project check guards against DB-layer misses.
  *
  * Past incidents are CONTEXT ONLY — callers must not modify report.confidence.
  */
@@ -167,9 +171,18 @@ export async function recallSimilar(
   db: HorusDb,
   tags: string[],
   excludeInvestigationId: string | null,
+  project: string | null,
 ): Promise<SimilarIncident[]> {
+  // Normalize: treat blank/whitespace as missing, then fail closed.
+  const p = project?.trim() || null;
+  if (p === null) return [];
+
   try {
-    const rows = await db.select().from(incidentMemory).limit(200);
+    const rows = await db
+      .select()
+      .from(incidentMemory)
+      .where(eq(incidentMemory.project, p))
+      .limit(200);
 
     const candidates: SimilarIncident[] = [];
     const tagSet = new Set(tags);
@@ -181,6 +194,9 @@ export async function recallSimilar(
       ) {
         continue;
       }
+
+      // Defense in depth: skip rows from other projects even if the DB query leaked them.
+      if (row.project !== p) continue;
 
       const rowTags = row.tags ?? [];
       const overlap = tagOverlap(tags, rowTags);
@@ -222,16 +238,22 @@ export async function recallSimilar(
 /**
  * Persist a memory row for the current investigation. Non-fatal — a DB failure
  * here never throws and never prevents the report from being returned.
+ * Skips storage when no project identity is available (HOR-46).
  */
 export async function storeIncidentMemory(
   db: HorusDb,
   investigationId: string | null,
   r: InvestigationReport,
 ): Promise<void> {
+  // Normalize then fail closed: blank/whitespace repo is treated as missing.
+  const project = r.input.repo?.trim() || null;
+  if (project === null) return;
+
   try {
     const topHyp = r.hypotheses[0];
     await db.insert(incidentMemory).values({
       investigationId,
+      project,
       title: r.input.hint,
       summary: r.summary,
       signature: deriveSignature(r),

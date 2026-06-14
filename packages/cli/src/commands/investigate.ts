@@ -66,7 +66,7 @@ export async function runInvestigate(
     const { db, sql } = createDb(config.database.url);
     try {
       const report = await investigate(
-        { hint, repo: projectName, since: opts.since, service },
+        { hint, repo: renv.project, since: opts.since, service },
         {
           code,
           db,
