@@ -43,7 +43,15 @@ const modelsSchema = z.object({
 
 const providerCredsSchema = z
   .object({
-    elasticsearch: z.object({ url: z.string().url() }).partial().optional(),
+    elasticsearch: z
+      .object({
+        url: z.string().url(),
+        username: z.string(),
+        password: z.string(),
+        indexPattern: z.string(),
+      })
+      .partial()
+      .optional(),
     prometheus: z.object({ url: z.string().url() }).partial().optional(),
     redis: z.object({ url: z.string() }).partial().optional(),
   })

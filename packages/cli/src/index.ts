@@ -20,6 +20,7 @@ import { runScore, runScores } from './commands/score.js';
 import { runAsk } from './commands/ask.js';
 import { runOnboard } from './commands/onboard.js';
 import { runSimulate } from './commands/simulate.js';
+import { runLogs } from './commands/logs.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -345,6 +346,31 @@ export function buildProgram(): Command {
         repo: opts.repo,
       });
     });
+
+  program
+    .command('logs [service]')
+    .description('Query structured logs as evidence (Elasticsearch)')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--since <when>', 'time window, e.g. 24h, 7d, or an ISO date')
+    .option('--level <level>', 'minimum level: trace|debug|info|warn|error|fatal')
+    .option('--grep <text>', 'match text in the message')
+    .option('--errors', 'aggregate error-level logs by event_code')
+    .option('--limit <n>', 'max records')
+    .action(
+      async (
+        service: string | undefined,
+        opts: {
+          config?: string;
+          since?: string;
+          level?: string;
+          grep?: string;
+          errors?: boolean;
+          limit?: string;
+        },
+      ) => {
+        process.exitCode = await runLogs(service, opts);
+      },
+    );
 
   return program;
 }

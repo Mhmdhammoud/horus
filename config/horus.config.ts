@@ -37,8 +37,12 @@ export default defineConfig({
   },
 
   providers: {
-    // Read-only runtime sources are wired in HOR-5.
-    // elasticsearch: { url: process.env.ES_URL },
+    elasticsearch: {
+      url: process.env['ES_URL'],
+      username: process.env['ES_USERNAME'],
+      password: process.env['ES_PASSWORD'],
+      indexPattern: process.env['ES_INDEX_PATTERN'] ?? 'leadcall-api-prod-*',
+    },
     // prometheus: { url: process.env.PROM_URL },
   },
 });

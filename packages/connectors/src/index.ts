@@ -13,3 +13,4 @@ export * from './factory.js';
 export * from './axon/provider.js';
 export * from './compat.js';
 export * from './git/index.js';
+export * from './elasticsearch/index.js';

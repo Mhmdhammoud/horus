@@ -12,6 +12,9 @@ import type { HorusConfig } from '@horus/core';
 import { AxonHttpClient } from './axon/client.js';
 import { AxonCodeProvider } from './axon/provider.js';
 import type { CodeProvider } from './contract.js';
+import { ElasticsearchClient } from './elasticsearch/client.js';
+import { ElasticsearchLogsProvider } from './elasticsearch/provider.js';
+import type { LogsProvider } from './elasticsearch/provider.js';
 
 export interface Connectors {
   code: CodeProvider;
@@ -53,6 +56,25 @@ export interface RepoProvider {
   path: string;
   hostUrl: string;
   code: CodeProvider;
+}
+
+/**
+ * Build a `LogsProvider` wired to Elasticsearch, resolving credentials from config
+ * then env vars. Returns null when no ES URL is available.
+ */
+export function logsProviderFromConfig(config: HorusConfig): LogsProvider | null {
+  const esCfg = config.providers.elasticsearch;
+  const url = esCfg?.url ?? process.env['ES_URL'];
+  if (!url) return null;
+
+  const username = esCfg?.username ?? process.env['ES_USERNAME'];
+  const password = esCfg?.password ?? process.env['ES_PASSWORD'];
+  const indexPattern = esCfg?.indexPattern ?? process.env['ES_INDEX_PATTERN'] ?? '*';
+
+  return new ElasticsearchLogsProvider(
+    new ElasticsearchClient({ baseUrl: url, username, password }),
+    { indexPattern },
+  );
 }
 
 /**
