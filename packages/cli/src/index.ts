@@ -8,6 +8,7 @@ import { runInvestigate } from './commands/investigate.js';
 import { runChanges } from './commands/changes.js';
 import { runTimeline } from './commands/timeline.js';
 import { runWhatChanged } from './commands/what-changed.js';
+import { runArchitecture } from './commands/architecture.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -164,6 +165,17 @@ export function buildProgram(): Command {
         });
       },
     );
+
+  program
+    .command('architecture')
+    .description(
+      'Discover the living architecture (subsystems, async boundaries, external systems, fragility)',
+    )
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--json', 'output JSON')
+    .action(async (opts: { config?: string; json?: boolean }) => {
+      process.exitCode = await runArchitecture({ config: opts.config, json: opts.json });
+    });
 
   return program;
 }
