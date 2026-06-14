@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import type { Evidence } from '@horus/core';
 import type { CorrelationResult } from './correlate.js';
 import { generateHypotheses } from './hypotheses.js';
+import { validateHypotheses } from './validate.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -153,5 +154,77 @@ describe('generateHypotheses', () => {
 
     // deployment-regression, external-api-latency, retry-storm, infrastructure
     expect(hyps.length).toBeGreaterThanOrEqual(4);
+  });
+
+  // ── Verdict correctness (HOR-45) ───────────────────────────────────────────
+
+  it('queue-backlog has empty supportingEvidenceIds — structural queue-edge evidence is not runtime confirmation', () => {
+    const queueEv = makeEvidence('queue-edge');
+    const hyps = generateHypotheses([queueEv], emptyCorrelation, {
+      seedLabel: 'X',
+      queues: ['orders'],
+    });
+    const qb = hyps.find((h) => h.category === 'queue-backlog');
+    expect(qb).toBeDefined();
+    expect(qb!.supportingEvidenceIds).toHaveLength(0);
+  });
+
+  it('queue-backlog verdict is unconfirmed when only structural evidence is present', () => {
+    const queueEv = makeEvidence('queue-edge');
+    const hyps = generateHypotheses([queueEv], emptyCorrelation, {
+      seedLabel: 'X',
+      queues: ['orders'],
+    });
+    const validated = validateHypotheses(hyps, [queueEv]);
+    const qb = validated.find((h) => h.category === 'queue-backlog');
+    expect(qb?.verdict).toBe('unconfirmed');
+  });
+
+  it('worker-slowdown supportingEvidenceIds contains only metric IDs, not queue-edge IDs', () => {
+    const queueEv = makeEvidence('queue-edge');
+    const metricId = globalThis.crypto.randomUUID();
+    const hyps = generateHypotheses([queueEv], emptyCorrelation, {
+      seedLabel: 'X',
+      queues: ['orders'],
+      queueMetricEvIds: [metricId],
+    });
+    const ws = hyps.find((h) => h.category === 'worker-slowdown');
+    expect(ws).toBeDefined();
+    expect(ws!.supportingEvidenceIds).toContain(metricId);
+    expect(ws!.supportingEvidenceIds).not.toContain(queueEv.id);
+  });
+
+  it('worker-slowdown verdict is unconfirmed without metric evidence, supported with it', () => {
+    const queueEv = makeEvidence('queue-edge');
+
+    // Without metric evidence → unconfirmed
+    const hypsNoMetrics = generateHypotheses([queueEv], emptyCorrelation, {
+      seedLabel: 'X',
+      queues: ['orders'],
+    });
+    const validatedNoMetrics = validateHypotheses(hypsNoMetrics, [queueEv]);
+    const wsNoMetrics = validatedNoMetrics.find((h) => h.category === 'worker-slowdown');
+    expect(wsNoMetrics?.verdict).toBe('unconfirmed');
+
+    // With metric evidence → supported
+    const metricId = globalThis.crypto.randomUUID();
+    const metricEv: Evidence = {
+      id: metricId,
+      source: 'metrics',
+      kind: 'metric',
+      title: 'Queue growth spike',
+      relevance: 0.8,
+      payload: {},
+      links: {},
+      provenance: { query: 'test', collectedAt: new Date().toISOString() },
+    };
+    const hypsWithMetrics = generateHypotheses([queueEv, metricEv], emptyCorrelation, {
+      seedLabel: 'X',
+      queues: ['orders'],
+      queueMetricEvIds: [metricId],
+    });
+    const validatedWithMetrics = validateHypotheses(hypsWithMetrics, [queueEv, metricEv]);
+    const wsWithMetrics = validatedWithMetrics.find((h) => h.category === 'worker-slowdown');
+    expect(wsWithMetrics?.verdict).toBe('supported');
   });
 });

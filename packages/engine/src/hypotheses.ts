@@ -83,7 +83,10 @@ export function generateHypotheses(
         ],
   });
 
-  // b. queue-backlog — only when queue evidence exists
+  // b. queue-backlog — only when queue evidence exists.
+  // supportingEvidenceIds is intentionally empty: queue-edge evidence is
+  // structural (the code has a queue call) and does not confirm a live backlog.
+  // Runtime queue-state evidence would confirm it but isn't always available.
   if (queueEvs.length > 0) {
     hyps.push({
       id: globalThis.crypto.randomUUID(),
@@ -93,7 +96,7 @@ export function generateHypotheses(
         queues.join(', ') +
         ' — producers enqueue faster than the worker drains.',
       confidence: 0.35,
-      supportingEvidenceIds: queueEvs.map((e) => e.id),
+      supportingEvidenceIds: [],
       contradictingEvidenceIds: [],
       missingEvidence: [
         'Live queue depth + failed/delayed counts (Redis/BullMQ — `horus queues`)',
@@ -101,7 +104,9 @@ export function generateHypotheses(
     });
   }
 
-  // c. worker-slowdown — only when queue evidence exists
+  // c. worker-slowdown — only when queue evidence exists.
+  // Only metric evidence (queue-growth anomaly) confirms slowdown; structural
+  // queue-edge evidence only shows the queue exists, not that workers are slow.
   if (queueEvs.length > 0) {
     const queueMetricEvIds = ctx.queueMetricEvIds ?? [];
     hyps.push({
@@ -112,7 +117,7 @@ export function generateHypotheses(
         queues.join(', ') +
         ' are processing slowly or stalling.',
       confidence: queueMetricEvIds.length > 0 ? 0.55 : 0.3,
-      supportingEvidenceIds: [...queueEvs.map((e) => e.id), ...queueMetricEvIds],
+      supportingEvidenceIds: [...queueMetricEvIds],
       contradictingEvidenceIds: [],
       missingEvidence: queueMetricEvIds.length > 0
         ? []
