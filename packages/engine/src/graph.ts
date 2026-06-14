@@ -68,3 +68,237 @@ export interface InvestigationGraph {
   nodes: GraphNode[];
   edges: GraphEdge[];
 }
+
+// ── Builder internals ──────────────────────────────────────────────────────────
+
+type NodeMap = Map<string, GraphNode>;
+type EdgeMap = Map<string, GraphEdge>;
+
+function upsertNode(
+  nodes: NodeMap,
+  id: string,
+  type: GraphNodeType,
+  label: string,
+  evidenceId?: string,
+): GraphNode {
+  let node = nodes.get(id);
+  if (!node) {
+    node = { id, type, label, evidenceIds: [], implicated: false, implicationScore: 0 };
+    nodes.set(id, node);
+  }
+  if (evidenceId !== undefined && !node.evidenceIds.includes(evidenceId)) {
+    node.evidenceIds.push(evidenceId);
+  }
+  return node;
+}
+
+function addEdge(
+  edges: EdgeMap,
+  type: GraphEdgeType,
+  from: string,
+  to: string,
+  evidenceId?: string,
+): void {
+  const id = `${from}--${type}-->${to}`;
+  let edge = edges.get(id);
+  if (!edge) {
+    edge = { id, type, from, to, evidenceIds: [] };
+    edges.set(id, edge);
+  }
+  if (evidenceId !== undefined && !edge.evidenceIds.includes(evidenceId)) {
+    edge.evidenceIds.push(evidenceId);
+  }
+}
+
+// Minimal typed views of evidence payloads — cast from opaque `unknown`.
+interface QueueEdgePayload { queueName?: string; producerSymbol?: string; workerSymbol?: string }
+interface QueueStatePayload { queueName?: string }
+interface LogPayload { services?: string[] }
+interface StatePayload { collection?: string }
+
+function processEvidence(ev: Evidence, nodes: NodeMap, edges: EdgeMap): void {
+  const evId = `ev:${ev.id}`;
+  upsertNode(nodes, evId, 'evidence', ev.title, ev.id);
+
+  switch (ev.kind) {
+    case 'queue-edge': {
+      const p = ev.payload as QueueEdgePayload;
+      const qName = p.queueName ?? ev.links.queueName;
+      if (!qName) return;
+      const queueId = `queue:${qName}`;
+      upsertNode(nodes, queueId, 'queue', qName, ev.id);
+      addEdge(edges, 'observed_in', evId, queueId, ev.id);
+      if (p.producerSymbol) {
+        const producerId = `service:${p.producerSymbol}`;
+        upsertNode(nodes, producerId, 'service', p.producerSymbol, ev.id);
+        addEdge(edges, 'emits', producerId, queueId, ev.id);
+      }
+      if (p.workerSymbol) {
+        const workerId = `worker:${p.workerSymbol}`;
+        upsertNode(nodes, workerId, 'worker', p.workerSymbol, ev.id);
+        addEdge(edges, 'consumes', queueId, workerId, ev.id);
+      }
+      return;
+    }
+
+    case 'queue-state': {
+      const p = ev.payload as QueueStatePayload;
+      const qName = p.queueName ?? ev.links.queueName;
+      if (!qName) return;
+      const queueId = `queue:${qName}`;
+      upsertNode(nodes, queueId, 'queue', qName, ev.id);
+      addEdge(edges, 'observed_in', evId, queueId, ev.id);
+      return;
+    }
+
+    case 'log': {
+      const p = ev.payload as LogPayload;
+      for (const svc of p.services ?? []) {
+        const serviceId = `service:${svc}`;
+        upsertNode(nodes, serviceId, 'service', svc, ev.id);
+        addEdge(edges, 'observed_in', evId, serviceId, ev.id);
+      }
+      return;
+    }
+
+    case 'state': {
+      const p = ev.payload as StatePayload;
+      if (!p.collection) return;
+      const collectionId = `collection:${p.collection}`;
+      upsertNode(nodes, collectionId, 'collection', p.collection, ev.id);
+      addEdge(edges, 'observed_in', evId, collectionId, ev.id);
+      return;
+    }
+
+    case 'commit': {
+      const deployId = `deployment:${ev.id}`;
+      upsertNode(nodes, deployId, 'deployment', ev.title, ev.id);
+      addEdge(edges, 'observed_in', evId, deployId, ev.id);
+      return;
+    }
+
+    // symbol, flow, impact, redis-key, metric: evidence node only, no infra derived
+    default:
+      return;
+  }
+}
+
+// ── Implication scoring ────────────────────────────────────────────────────────
+
+/**
+ * Fraction of a node's implication score to propagate to direct neighbours.
+ * 0.7 means a node adjacent to a fully-implicated node receives score ≥ 0.7,
+ * which clears the 0.6 threshold and marks it as implicated too.
+ */
+const PROPAGATION_FACTOR = 0.7;
+
+/** Minimum implication score for a node to be marked `implicated: true`. */
+const IMPLICATION_THRESHOLD = 0.6;
+
+function scoreImplication(nodes: NodeMap, edges: EdgeMap, evidence: Evidence[]): void {
+  const evById = new Map(evidence.map((e) => [e.id, e]));
+
+  // Pass 1: base score = max relevance of directly-attached evidence.
+  for (const node of nodes.values()) {
+    if (node.type === 'evidence') continue;
+    node.implicationScore = node.evidenceIds.reduce((max, eid) => {
+      const ev = evById.get(eid);
+      return ev !== undefined ? Math.max(max, ev.relevance) : max;
+    }, 0);
+  }
+
+  // Pass 2: propagate one hop to infrastructure neighbours (bidirectional).
+  // Build adjacency ignoring observed_in edges — those connect evidence to
+  // infrastructure; we only propagate between infrastructure nodes.
+  const adj = new Map<string, Set<string>>();
+  for (const edge of edges.values()) {
+    if (edge.type === 'observed_in') continue;
+    const f = nodes.get(edge.from);
+    const t = nodes.get(edge.to);
+    if (!f || !t || f.type === 'evidence' || t.type === 'evidence') continue;
+    const fs = adj.get(edge.from) ?? new Set<string>();
+    const ts = adj.get(edge.to) ?? new Set<string>();
+    fs.add(edge.to);
+    ts.add(edge.from); // propagate in both directions
+    adj.set(edge.from, fs);
+    adj.set(edge.to, ts);
+  }
+
+  for (const [nodeId, neighbours] of adj) {
+    const node = nodes.get(nodeId);
+    if (!node) continue;
+    const propagated = node.implicationScore * PROPAGATION_FACTOR;
+    for (const nid of neighbours) {
+      const n = nodes.get(nid);
+      if (n && propagated > n.implicationScore) {
+        n.implicationScore = propagated;
+      }
+    }
+  }
+
+  // Pass 3: set implicated flag based on final score.
+  for (const node of nodes.values()) {
+    if (node.type === 'evidence') continue;
+    node.implicated = node.implicationScore >= IMPLICATION_THRESHOLD;
+  }
+}
+
+// ── Serialization ──────────────────────────────────────────────────────────────
+
+/** Sort nodes and edges by id and sort evidenceIds within each, for determinism. */
+function finalize(nodes: NodeMap, edges: EdgeMap): InvestigationGraph {
+  const sortedNodes = [...nodes.values()]
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((n) => ({ ...n, evidenceIds: [...n.evidenceIds].sort() }));
+  const sortedEdges = [...edges.values()]
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((e) => ({ ...e, evidenceIds: [...e.evidenceIds].sort() }));
+  return { nodes: sortedNodes, edges: sortedEdges };
+}
+
+// ── Public API ─────────────────────────────────────────────────────────────────
+
+/**
+ * Build a deterministic investigation graph from normalized evidence.
+ *
+ * Evidence items are processed in id order to guarantee stable output.
+ * Infrastructure nodes (queue, service, worker, collection, deployment) are
+ * derived from evidence content; each evidence item also becomes an `evidence`
+ * node connected to its infrastructure counterparts via `observed_in` edges.
+ *
+ * After construction, implication scores are propagated one hop so that a
+ * blocked queue or failing service marks its producer/consumer as implicated.
+ */
+export function buildGraph(evidence: Evidence[]): InvestigationGraph {
+  const nodes: NodeMap = new Map();
+  const edges: EdgeMap = new Map();
+
+  const sorted = [...evidence].sort((a, b) => a.id.localeCompare(b.id));
+  for (const ev of sorted) {
+    processEvidence(ev, nodes, edges);
+  }
+
+  scoreImplication(nodes, edges, evidence);
+  return finalize(nodes, edges);
+}
+
+/**
+ * Return the maximum implication score among all infrastructure nodes that
+ * have any of `evidenceIds` in their `.evidenceIds` list.
+ *
+ * Used by the engine to compute a score boost for a suspected cause: a cause
+ * whose evidence directly created an implicated infrastructure node (queue,
+ * service, collection) warrants a higher base score.
+ */
+export function maxImplicationScore(
+  graph: InvestigationGraph,
+  evidenceIds: string[],
+): number {
+  const idSet = new Set(evidenceIds);
+  return graph.nodes.reduce((max, node) => {
+    if (node.type === 'evidence') return max;
+    return node.evidenceIds.some((eid) => idSet.has(eid))
+      ? Math.max(max, node.implicationScore)
+      : max;
+  }, 0);
+}
