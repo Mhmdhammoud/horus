@@ -224,16 +224,23 @@ function scoreImplication(nodes: NodeMap, edges: EdgeMap, evidence: Evidence[]):
     adj.set(edge.to, ts);
   }
 
+  // Collect all propagated scores before applying any, so a score updated by
+  // propagation cannot cascade to further neighbours in the same pass.
+  // This guarantees exactly one hop — not multi-hop chains.
+  const toPropagate = new Map<string, number>();
   for (const [nodeId, neighbours] of adj) {
     const node = nodes.get(nodeId);
     if (!node) continue;
     const propagated = node.implicationScore * PROPAGATION_FACTOR;
+    if (propagated <= 0) continue;
     for (const nid of neighbours) {
-      const n = nodes.get(nid);
-      if (n && propagated > n.implicationScore) {
-        n.implicationScore = propagated;
-      }
+      const current = toPropagate.get(nid) ?? 0;
+      if (propagated > current) toPropagate.set(nid, propagated);
     }
+  }
+  for (const [nid, score] of toPropagate) {
+    const node = nodes.get(nid);
+    if (node && score > node.implicationScore) node.implicationScore = score;
   }
 
   // Pass 3: set implicated flag based on final score.
