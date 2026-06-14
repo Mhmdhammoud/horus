@@ -1,9 +1,9 @@
 /**
- * Horus database schema — Postgres + Drizzle, NO pgvector.
+ * Horus database schema — Postgres + Drizzle, NO pgvector (HOR-2).
  *
- * Deliberately small first cut (HOR-2): six tables only. No incidents/users/projects/
- * sessions/findings/timelines yet — those emerge later. Semantic search is delegated
- * to Axon's hybrid search, so there are no embedding columns. See architecture.md §2.6.
+ * Tables: projects, repositories, investigations, evidence, findings, hypotheses,
+ * incident_memory, queue_edges, provider_cache. Semantic search is delegated to Axon's
+ * hybrid search, so there are no embedding columns. See architecture.md §2.6.
  */
 import {
   pgTable,
@@ -18,11 +18,21 @@ import {
   index,
 } from 'drizzle-orm/pg-core';
 
+/** A project groups one or more repositories under investigation. */
+export const projects = pgTable('projects', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  name: text('name').notNull().unique(),
+  description: text('description'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 /** Repositories Horus knows about. Horus owns this registry — `axon list` is unreliable. */
 export const repositories = pgTable('repositories', {
   id: uuid('id').defaultRandom().primaryKey(),
   name: text('name').notNull().unique(),
   path: text('path').notNull(),
+  projectId: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }),
   lastIndexedAt: timestamp('last_indexed_at', { withTimezone: true }),
   axonStatus: jsonb('axon_status'),
   stale: boolean('stale').notNull().default(true),
@@ -118,6 +128,51 @@ export const providerCache = pgTable(
   (t) => [primaryKey({ columns: [t.provider, t.cacheKey] })],
 );
 
+/**
+ * A discrete finding within an investigation — an observation or sub-conclusion.
+ * Distinct from a `hypothesis` (a ranked candidate root cause): a finding is a fact
+ * the engine asserts; a hypothesis is an explanation it is still weighing.
+ */
+export const findings = pgTable(
+  'findings',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    investigationId: uuid('investigation_id')
+      .notNull()
+      .references(() => investigations.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(), // 'observation' | 'anomaly' | 'correlation' | ...
+    title: text('title').notNull(),
+    detail: text('detail'),
+    confidence: real('confidence').notNull().default(0),
+    evidenceIds: uuid('evidence_ids').array(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('findings_investigation_idx').on(t.investigationId)],
+);
+
+/**
+ * Memory of past incidents for pattern recognition (HOR-18). No pgvector — similarity
+ * is matched on a normalized `signature` + `tags` + text rather than embeddings.
+ */
+export const incidentMemory = pgTable(
+  'incident_memory',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    investigationId: uuid('investigation_id').references(() => investigations.id, {
+      onDelete: 'set null',
+    }),
+    title: text('title').notNull(),
+    summary: text('summary'),
+    signature: text('signature'), // normalized incident signature, for recall
+    tags: text('tags').array(),
+    payload: jsonb('payload'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('incident_memory_signature_idx').on(t.signature)],
+);
+
+export type Project = typeof projects.$inferSelect;
+export type NewProject = typeof projects.$inferInsert;
 export type Repository = typeof repositories.$inferSelect;
 export type NewRepository = typeof repositories.$inferInsert;
 export type Investigation = typeof investigations.$inferSelect;
@@ -126,3 +181,7 @@ export type Hypothesis = typeof hypotheses.$inferSelect;
 export type QueueEdge = typeof queueEdges.$inferSelect;
 export type NewQueueEdge = typeof queueEdges.$inferInsert;
 export type ProviderCacheRow = typeof providerCache.$inferSelect;
+export type Finding = typeof findings.$inferSelect;
+export type NewFinding = typeof findings.$inferInsert;
+export type IncidentMemory = typeof incidentMemory.$inferSelect;
+export type NewIncidentMemory = typeof incidentMemory.$inferInsert;

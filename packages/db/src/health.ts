@@ -2,10 +2,13 @@ import postgres from 'postgres';
 
 /** The tables the first migration must have created. */
 export const EXPECTED_TABLES = [
+  'projects',
   'repositories',
   'investigations',
   'evidence',
+  'findings',
   'hypotheses',
+  'incident_memory',
   'queue_edges',
   'provider_cache',
 ] as const;
