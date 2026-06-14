@@ -186,7 +186,7 @@ describe('generateHypotheses', () => {
     const hyps = generateHypotheses([queueEv], emptyCorrelation, {
       seedLabel: 'X',
       queues: ['orders'],
-      queueMetricEvIds: [metricId],
+      queueMetricEvIdsByQueue: new Map([['orders', [metricId]]]),
     });
     const ws = hyps.find((h) => h.category === 'worker-slowdown');
     expect(ws).toBeDefined();
@@ -221,7 +221,7 @@ describe('generateHypotheses', () => {
     const hypsWithMetrics = generateHypotheses([queueEv, metricEv], emptyCorrelation, {
       seedLabel: 'X',
       queues: ['orders'],
-      queueMetricEvIds: [metricId],
+      queueMetricEvIdsByQueue: new Map([['orders', [metricId]]]),
     });
     const validatedWithMetrics = validateHypotheses(hypsWithMetrics, [queueEv, metricEv]);
     const wsWithMetrics = validatedWithMetrics.find((h) => h.category === 'worker-slowdown');

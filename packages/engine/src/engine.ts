@@ -427,11 +427,11 @@ export async function investigate(
   // relevant to this investigation. Optional; never breaks on failure.
   let queueRuntimeState: QueueRuntimeState | null = null;
   const queueRuntimeEvIds: string[] = [];
-  // Per-queue evidence IDs so each suspected cause cites only its own queue's data.
+  // Per-queue evidence IDs — three views: all, backlog-only, starvation-only.
+  // Keeping them separate prevents cross-queue evidence contamination in hypotheses.
   const queueRuntimeEvIdsByQueue = new Map<string, string[]>();
-  // Typed by signal kind so hypotheses can cite only the relevant runtime signals.
-  const queueBacklogEvIds: string[] = [];
-  const queueStarvationEvIds: string[] = [];
+  const queueBacklogEvIdsByQueue = new Map<string, string[]>();
+  const queueStarvationEvIdsByQueue = new Map<string, string[]>();
 
   if (deps.queue && queueHits.length > 0) {
     try {
@@ -440,11 +440,18 @@ export async function investigate(
       for (const s of analyzeQueueRuntime(queueRuntimeState)) {
         const ev = mkEv('queue-state', s.title, s.payload, { queueName: s.queueName }, s.timestamp, s.relevance);
         queueRuntimeEvIds.push(ev.id);
-        if (s.kind === 'backlog') queueBacklogEvIds.push(ev.id);
-        else if (s.kind === 'worker-starvation') queueStarvationEvIds.push(ev.id);
         const perQueue = queueRuntimeEvIdsByQueue.get(s.queueName) ?? [];
         perQueue.push(ev.id);
         queueRuntimeEvIdsByQueue.set(s.queueName, perQueue);
+        if (s.kind === 'backlog') {
+          const bl = queueBacklogEvIdsByQueue.get(s.queueName) ?? [];
+          bl.push(ev.id);
+          queueBacklogEvIdsByQueue.set(s.queueName, bl);
+        } else if (s.kind === 'worker-starvation') {
+          const st = queueStarvationEvIdsByQueue.get(s.queueName) ?? [];
+          st.push(ev.id);
+          queueStarvationEvIdsByQueue.set(s.queueName, st);
+        }
       }
     } catch {
       queueRuntimeState = null;
@@ -458,6 +465,8 @@ export async function investigate(
   const metricEvIds: string[] = [];
   const latencyMetricEvIds: string[] = [];
   const queueMetricEvIds: string[] = [];
+  // Per-queue metric IDs — queue-growth anomalies attributed to the matching queue name.
+  const queueMetricEvIdsByQueue = new Map<string, string[]>();
   let metricsCollected = false;
 
   if (deps.metrics) {
@@ -510,14 +519,18 @@ export async function investigate(
             (panelLower.includes(serviceFilter) || labelVals.some((v) => v.includes(serviceFilter)));
           if (relevant) latencyMetricEvIds.push(ev.id);
         } else if (f.anomaly === 'queue-growth') {
-          // Only boost worker-slowdown when a queue name from the implicated edges
-          // appears in the panel title or labels.
-          const relevant =
-            queueNamesSet.size > 0 &&
-            [...queueNamesSet].some(
-              (q) => panelLower.includes(q) || labelVals.some((v) => v.includes(q)),
-            );
-          if (relevant) queueMetricEvIds.push(ev.id);
+          // Attribute each queue-growth anomaly to the specific queue(s) it matches.
+          // This prevents an anomaly on 'orders' from boosting 'email' hypotheses.
+          for (const queueName of queueNamesSet) {
+            const matchesQueue =
+              panelLower.includes(queueName) || labelVals.some((v) => v.includes(queueName));
+            if (matchesQueue) {
+              queueMetricEvIds.push(ev.id);
+              const list = queueMetricEvIdsByQueue.get(queueName) ?? [];
+              list.push(ev.id);
+              queueMetricEvIdsByQueue.set(queueName, list);
+            }
+          }
         }
       }
       // Set only after the full collection + conversion loop completes without error.
@@ -569,9 +582,9 @@ export async function investigate(
     seedLabel: label,
     queues: queueNames,
     latencyMetricEvIds,
-    queueMetricEvIds,
-    queueBacklogEvIds,
-    queueStarvationEvIds,
+    queueBacklogEvIdsByQueue,
+    queueStarvationEvIdsByQueue,
+    queueMetricEvIdsByQueue,
   });
 
   // e4. HYPOTHESIS VALIDATION (HOR-25) — adjust confidence + assign verdicts
@@ -873,13 +886,20 @@ export async function investigate(
     request: { hint: input.hint, service: input.service },
   });
 
-  // g. confidence — runtime evidence (observational) weighted 3× vs structural
-  // (code graph) so that 8 symbol/flow items can't produce the same confidence
-  // as 8 log/metric/queue-state anomalies.
-  const weightedEvidenceSum = evidence.reduce((sum, e) => {
-    // Observational (runtime) evidence is weighted higher than structural
-    // (code-graph) evidence. 'redis-key' and 'state' are also runtime
-    // observations captured from live system state.
+  // g. confidence — relevance-weighted, capped per source dimension.
+  //
+  // Two goals:
+  //   1. Runtime evidence (observational: logs, metrics, queue-state, etc.) counts
+  //      more than structural evidence (code graph: symbols, flows, edges).
+  //   2. One verbose provider cannot saturate confidence: a single BullMQ snapshot
+  //      can emit 5+ derived records; without a per-source cap, those records would
+  //      inflate evidence quality beyond what any single observation warrants.
+  //
+  // Strategy: each evidence item contributes (relevance × runtime_weight). Weights
+  // are 1.5 for runtime, 0.5 for structural. We cap the total contribution per
+  // Evidence.source at 2.0, then normalize by 6 (3 independent sources at max → 1.0).
+  const sourceContributions = new Map<string, number>();
+  for (const e of evidence) {
     const isRuntime =
       e.kind === 'log' ||
       e.kind === 'metric' ||
@@ -887,9 +907,15 @@ export async function investigate(
       e.kind === 'queue-state' ||
       e.kind === 'redis-key' ||
       e.kind === 'state';
-    return sum + (isRuntime ? 1.5 : 0.5);
-  }, 0);
-  const evidenceConfidence = clamp01(weightedEvidenceSum / 8);
+    const w = (isRuntime ? 1.5 : 0.5) * clamp01(e.relevance);
+    sourceContributions.set(e.source, (sourceContributions.get(e.source) ?? 0) + w);
+  }
+  const MAX_CONTRIBUTION_PER_SOURCE = 2.0;
+  const cappedSum = [...sourceContributions.values()].reduce(
+    (acc, w) => acc + Math.min(w, MAX_CONTRIBUTION_PER_SOURCE),
+    0,
+  );
+  const evidenceConfidence = clamp01(cappedSum / 6);
   const seedResolved = seeds.length > 0 ? 1 : 0;
   const confidence = clamp01(0.5 * evidenceConfidence + 0.5 * seedResolved);
 

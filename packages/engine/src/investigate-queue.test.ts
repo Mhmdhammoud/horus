@@ -292,3 +292,101 @@ describe('investigate() — Grafana queue-growth metric matched to queue', () =>
     expect(ws?.verdict).toBe('supported');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 6. Multi-queue: backlog on 'orders' must not contaminate 'email' hypothesis
+// ---------------------------------------------------------------------------
+
+describe('investigate() — multi-queue attribution', () => {
+  it('backlog on orders does not produce a supported queue-backlog hypothesis for email', async () => {
+    const ordersEdge: QueueEdge = {
+      id: globalThis.crypto.randomUUID(),
+      queueName: 'orders',
+      producerSymbol: 'ZohoSyncWorker',
+      producerFile: 'src/workers/zoho-sync.worker.ts',
+      workerSymbol: 'OrderWorker',
+      workerFile: 'src/workers/order.worker.ts',
+      source: 'stitcher',
+      project: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const emailEdge: QueueEdge = {
+      id: globalThis.crypto.randomUUID(),
+      queueName: 'email',
+      producerSymbol: 'ZohoSyncWorker',
+      producerFile: 'src/workers/zoho-sync.worker.ts',
+      workerSymbol: 'EmailWorker',
+      workerFile: 'src/workers/email.worker.ts',
+      source: 'stitcher',
+      project: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const dbWithTwoQueues = makeDb([ordersEdge, emailEdge]);
+
+    // BullMQ: 'orders' has severe backlog, 'email' is healthy
+    const twoQueueState: QueueRuntimeState = {
+      prefix: 'bull',
+      collectedAt: new Date().toISOString(),
+      queues: [
+        { queueName: 'orders', waiting: 5000, active: 10, failed: 0, delayed: 0, completed: 100, paused: 0, isPaused: false },
+        { queueName: 'email', waiting: 2, active: 5, failed: 0, delayed: 0, completed: 500, paused: 0, isPaused: false },
+      ],
+    };
+
+    const report = await investigate(
+      { hint: 'zoho' },
+      { code: fakeCode, db: dbWithTwoQueues, queue: makeQueueProvider(twoQueueState) },
+    );
+
+    const qbOrders = report.hypotheses.find(
+      (h) => h.category === 'queue-backlog' && h.statement.includes('orders'),
+    );
+    const qbEmail = report.hypotheses.find(
+      (h) => h.category === 'queue-backlog' && h.statement.includes('email'),
+    );
+
+    // orders: backlog signal present → supported
+    expect(qbOrders?.verdict).toBe('supported');
+    // email: no backlog signal → unconfirmed (evidence from orders must not spill over)
+    expect(qbEmail?.verdict).toBe('unconfirmed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. Confidence: single provider with many derived records cannot saturate
+// ---------------------------------------------------------------------------
+
+describe('investigate() — confidence source cap', () => {
+  it('a verbose BullMQ snapshot does not produce confidence > 0.9 from evidence alone', async () => {
+    // Snapshot designed to emit as many signals as possible:
+    // starvation + oldest-job + failed-spike + failed-breakdown + summary
+    const verboseState: QueueRuntimeState = {
+      prefix: 'bull',
+      collectedAt: new Date().toISOString(),
+      queues: [{
+        queueName: 'orders',
+        waiting: 50,
+        active: 0,           // starvation
+        failed: 150,         // severe failed-spike
+        delayed: 0,
+        completed: 100,
+        paused: 0,
+        isPaused: false,
+        oldestWaitingMs: 90 * 60_000,  // oldest-job > 1h (severe)
+        failedBreakdown: [{ reason: 'TimeoutError', count: 15 }, { reason: 'NetworkError', count: 5 }],
+      }],
+    };
+
+    const report = await investigate(
+      { hint: 'zoho' },
+      { code: fakeCode, db: fakeDbWithQueues, queue: makeQueueProvider(verboseState) },
+    );
+
+    // report.confidence is the final value after gap ceiling — must be < 0.9
+    // so one provider snapshot cannot push confidence near 1.0 on its own.
+    expect(report.confidence).toBeLessThan(0.9);
+  });
+});

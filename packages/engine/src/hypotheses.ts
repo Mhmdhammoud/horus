@@ -38,12 +38,14 @@ export interface HypothesisContext {
   queues: string[];
   /** Metric evidence IDs with latency-spike or error-rate-change anomalies (HOR-40). */
   latencyMetricEvIds?: string[];
-  /** Metric evidence IDs with queue-growth anomalies (HOR-40). */
-  queueMetricEvIds?: string[];
-  /** queue-state evidence IDs with 'backlog' signal — high waiting-job counts (HOR-45). */
-  queueBacklogEvIds?: string[];
-  /** queue-state evidence IDs with 'worker-starvation' signal — 0 active workers (HOR-45). */
-  queueStarvationEvIds?: string[];
+  /**
+   * Per-queue runtime signal evidence IDs (HOR-45).
+   * Using maps rather than flat arrays ensures evidence from one queue cannot
+   * appear in a hypothesis that names a different queue.
+   */
+  queueBacklogEvIdsByQueue?: Map<string, string[]>;
+  queueStarvationEvIdsByQueue?: Map<string, string[]>;
+  queueMetricEvIdsByQueue?: Map<string, string[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -87,43 +89,31 @@ export function generateHypotheses(
         ],
   });
 
-  // b. queue-backlog — only when queue evidence exists.
-  // supportingEvidenceIds uses BullMQ queue-state 'backlog' signals only.
-  // queue-edge evidence is structural (the code has a queue call) and does not
-  // confirm a live backlog; runtime depth counts do.
-  if (queueEvs.length > 0) {
-    const queueBacklogEvIds = ctx.queueBacklogEvIds ?? [];
+  // b+c. Per-queue hypotheses — one pair (queue-backlog + worker-slowdown) per queue.
+  // Evidence is scoped to each queue's own signals so an anomaly on 'orders'
+  // cannot produce a supported hypothesis that also claims 'email' is backlogged.
+  // Structural queue-edge evidence is intentionally excluded from supporting IDs.
+  for (const queueName of queues) {
+    const backlogEvIds = ctx.queueBacklogEvIdsByQueue?.get(queueName) ?? [];
     hyps.push({
       id: globalThis.crypto.randomUUID(),
       category: 'queue-backlog',
-      statement:
-        'A backlog on ' +
-        queues.join(', ') +
-        ' — producers enqueue faster than the worker drains.',
-      confidence: queueBacklogEvIds.length > 0 ? 0.7 : 0.35,
-      supportingEvidenceIds: [...queueBacklogEvIds],
+      statement: `A backlog on ${queueName} — producers enqueue faster than the worker drains.`,
+      confidence: backlogEvIds.length > 0 ? 0.7 : 0.35,
+      supportingEvidenceIds: [...backlogEvIds],
       contradictingEvidenceIds: [],
-      missingEvidence: queueBacklogEvIds.length > 0
+      missingEvidence: backlogEvIds.length > 0
         ? []
         : ['Live queue depth + failed/delayed counts (Redis/BullMQ — `horus queues`)'],
     });
-  }
 
-  // c. worker-slowdown — only when queue evidence exists.
-  // Confirmed by: Grafana queue-growth metric anomalies OR BullMQ starvation
-  // (waiting jobs, zero active workers). Structural queue-edge evidence only
-  // shows the queue exists and cannot confirm worker slowness.
-  if (queueEvs.length > 0) {
-    const queueMetricEvIds = ctx.queueMetricEvIds ?? [];
-    const queueStarvationEvIds = ctx.queueStarvationEvIds ?? [];
-    const slowdownEvIds = [...queueMetricEvIds, ...queueStarvationEvIds];
+    const metricEvIds = ctx.queueMetricEvIdsByQueue?.get(queueName) ?? [];
+    const starvationEvIds = ctx.queueStarvationEvIdsByQueue?.get(queueName) ?? [];
+    const slowdownEvIds = [...metricEvIds, ...starvationEvIds];
     hyps.push({
       id: globalThis.crypto.randomUUID(),
       category: 'worker-slowdown',
-      statement:
-        'The worker(s) consuming ' +
-        queues.join(', ') +
-        ' are processing slowly or stalling.',
+      statement: `The worker(s) consuming ${queueName} are processing slowly or stalling.`,
       confidence: slowdownEvIds.length > 0 ? 0.55 : 0.3,
       supportingEvidenceIds: slowdownEvIds,
       contradictingEvidenceIds: [],
