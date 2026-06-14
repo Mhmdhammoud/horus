@@ -26,8 +26,10 @@ import type {
   LogAnalysis,
   StateProvider,
   StateAnalysis,
+  QueueRuntimeProvider,
+  QueueRuntimeState,
 } from '@horus/connectors';
-import { shortTs, selectStateSignals, tokenize } from '@horus/connectors';
+import { shortTs, selectStateSignals, tokenize, analyzeQueueRuntime } from '@horus/connectors';
 import type { HorusDb, QueueEdge } from '@horus/db';
 import {
   evidence as evidenceTable,
@@ -59,6 +61,8 @@ export interface EngineDeps {
   logs?: LogsProvider | null;
   /** Optional MongoDB state provider — folds application-state anomalies as evidence. */
   mongo?: StateProvider | null;
+  /** Optional BullMQ queue runtime provider — folds queue depth/failure evidence. */
+  queue?: QueueRuntimeProvider | null;
   /** Which connectors are configured for the env — drives honest gap text. */
   connectors?: ConnectorFlags;
 }
@@ -388,6 +392,25 @@ export async function investigate(
     }
   }
 
+  // e0c. QUEUE RUNTIME STATE (HOR-12) — backlog, failures, starvation as evidence.
+  // Scoped to the queues that appear in the stitcher edges so we only query what's
+  // relevant to this investigation. Optional; never breaks on failure.
+  let queueRuntimeState: QueueRuntimeState | null = null;
+  const queueRuntimeEvIds: string[] = [];
+
+  if (deps.queue && queueHits.length > 0) {
+    try {
+      const queueNames = [...new Set(queueHits.map((e) => e.queueName))];
+      queueRuntimeState = await deps.queue.analyzeQueues({ queueNames });
+      for (const s of analyzeQueueRuntime(queueRuntimeState)) {
+        const ev = mkEv('queue-state', s.title, s.payload, { queueName: s.queueName }, s.timestamp, s.relevance);
+        queueRuntimeEvIds.push(ev.id);
+      }
+    } catch {
+      queueRuntimeState = null;
+    }
+  }
+
   // e. TIMELINE (deterministic; built after all evidence is accumulated)
   const timeline = buildTimeline(evidence);
 
@@ -513,9 +536,65 @@ export async function investigate(
     });
   }
 
+  // Queue runtime findings (HOR-12)
+  if (queueRuntimeState !== null && queueRuntimeEvIds.length > 0) {
+    const backlogged = queueRuntimeState.queues.filter((q) => q.waiting > 100);
+    const starved = queueRuntimeState.queues.filter((q) => q.waiting >= 10 && q.active === 0);
+    const failing = queueRuntimeState.queues.filter((q) => q.failed > 20);
+
+    if (backlogged.length > 0 || starved.length > 0 || failing.length > 0) {
+      const parts: string[] = [];
+      if (starved.length > 0)
+        parts.push(`starvation: ${starved.map((q) => q.queueName).join(', ')}`);
+      if (backlogged.length > 0)
+        parts.push(
+          `backlog: ${backlogged.map((q) => `${q.queueName} (${q.waiting})`).join(', ')}`,
+        );
+      if (failing.length > 0)
+        parts.push(`failures: ${failing.map((q) => `${q.queueName} (${q.failed})`).join(', ')}`);
+      findings.push({
+        kind: 'anomaly',
+        title: `Queue runtime anomalies — ${parts.join('; ')}`,
+        confidence: 0.85,
+        evidenceIds: queueRuntimeEvIds,
+      });
+    } else {
+      const summary = queueRuntimeState.queues
+        .map((q) => `${q.queueName}: ${q.waiting} waiting`)
+        .join(', ');
+      findings.push({
+        kind: 'observation',
+        title: `Queue runtime healthy — ${summary}`,
+        confidence: 0.5,
+        evidenceIds: queueRuntimeEvIds,
+      });
+    }
+  }
+
   // f. SUSPECTED CAUSES
   const suspectedCauses: SuspectedCause[] = [];
   const impactNorm = clamp01(impact.affected / 20);
+
+  // Queue runtime causes: backlog and starvation elevate the queue-path hypothesis.
+  if (queueRuntimeState !== null) {
+    for (const q of queueRuntimeState.queues) {
+      const isStarved = q.waiting >= 10 && q.active === 0;
+      const isBacklogged = q.waiting > 100;
+      if (isStarved || isBacklogged) {
+        const edge = queueHits.find((e) => e.queueName === q.queueName);
+        const producer = edge?.producerSymbol ?? 'producer';
+        const worker = edge?.workerSymbol ?? 'worker';
+        const detail = isStarved
+          ? `${q.waiting} waiting, no active workers`
+          : `${q.waiting} waiting jobs`;
+        suspectedCauses.push({
+          statement: `Queue "${q.queueName}" is backed up (${detail}) — ${producer} → ${worker} path implicated`,
+          score: clamp01(isStarved ? 0.7 : 0.5 + Math.min(q.waiting / 5_000, 0.2)),
+          evidenceIds: queueRuntimeEvIds,
+        });
+      }
+    }
+  }
 
   // Queue-path cause(s) — most specific first.
   for (const [queueName, evIds] of queueEvByName) {
