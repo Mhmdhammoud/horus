@@ -153,6 +153,27 @@ export function renderReport(r: InvestigationReport): string {
   }
   lines.push('');
 
+  lines.push('## Evidence gaps (what we don\'t know)');
+  if (r.gapAnalysis.gaps.length === 0) {
+    lines.push('(no major evidence gaps)');
+  } else {
+    for (const gap of r.gapAnalysis.gaps) {
+      lines.push(
+        `  - ${gap.dimension}: ${gap.why}  → next: ${gap.nextSource}  (−${gap.confidenceImpact.toFixed(2)} conf)`,
+      );
+    }
+    lines.push('');
+    lines.push('Blind spots:');
+    for (const bs of r.gapAnalysis.blindSpots) {
+      lines.push(`  - ${bs}`);
+    }
+    lines.push('');
+    lines.push(
+      `Confidence ceiling: ${r.gapAnalysis.confidenceCeiling} (current confidence is capped at this until the gaps are filled).`,
+    );
+  }
+  lines.push('');
+
   lines.push('## Evidence');
   if (r.evidence.length === 0) {
     lines.push('(none)');
@@ -238,6 +259,27 @@ export function reportToMarkdown(r: InvestigationReport): string {
         `- \`${h.verdict}\` **${h.confidence.toFixed(2)}** (was ${h.priorConfidence.toFixed(2)}) — ${h.category}: ${h.statement}`,
       );
     }
+  }
+  out.push('');
+
+  out.push('## Evidence gaps (what we don\'t know)');
+  if (r.gapAnalysis.gaps.length === 0) {
+    out.push('_(no major evidence gaps)_');
+  } else {
+    for (const gap of r.gapAnalysis.gaps) {
+      out.push(
+        `- **${gap.dimension}**: ${gap.why}  → _next: ${gap.nextSource}_ (−${gap.confidenceImpact.toFixed(2)} conf)`,
+      );
+    }
+    out.push('');
+    out.push('**Blind spots:**');
+    for (const bs of r.gapAnalysis.blindSpots) {
+      out.push(`- ${bs}`);
+    }
+    out.push('');
+    out.push(
+      `_Confidence ceiling: **${r.gapAnalysis.confidenceCeiling}** — current confidence is capped at this until the gaps are filled._`,
+    );
   }
   out.push('');
 

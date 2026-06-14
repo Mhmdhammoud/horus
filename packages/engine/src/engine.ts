@@ -32,6 +32,7 @@ import {
 import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
 import { recallSimilar, storeIncidentMemory, deriveTags } from './memory.js';
+import { detectMissingEvidence } from './gaps.js';
 import type {
   InvestigationInput,
   InvestigationReport,
@@ -153,6 +154,7 @@ export async function investigate(
       suspectedCauses: [],
       hypotheses: [],
       similarIncidents: [],
+      gapAnalysis: { gaps: [], blindSpots: [], confidenceCeiling: 0 },
       confidence: 0,
       nextActions: [
         `No symbols matched "${hint}". Try a more specific hint — an exact function, class, or file name.`,
@@ -397,9 +399,16 @@ export async function investigate(
     suspectedCauses: rankedCauses,
     hypotheses: validated,
     similarIncidents: [],
+    gapAnalysis: { gaps: [], blindSpots: [], confidenceCeiling: 1 },
     confidence,
     nextActions,
   };
+
+  // HOR-19 — compute gap analysis and cap confidence BEFORE persisting so the
+  // persisted record reflects the capped value.
+  const gapAnalysis = detectMissingEvidence(report);
+  report.gapAnalysis = gapAnalysis;
+  report.confidence = Math.min(report.confidence, gapAnalysis.confidenceCeiling);
 
   // j. PERSIST — may overwrite report.id with the DB-assigned id.
   const persistedId = await persist(db, input, report);

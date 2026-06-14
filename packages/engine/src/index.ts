@@ -20,3 +20,4 @@ export * from './render-architecture.js';
 export * from './blast-radius.js';
 export * from './render-blast-radius.js';
 export * from './memory.js';
+export * from './gaps.js';

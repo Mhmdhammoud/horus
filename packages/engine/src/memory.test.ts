@@ -24,6 +24,7 @@ function makeReport(overrides?: Partial<InvestigationReport>): InvestigationRepo
     suspectedCauses: [],
     hypotheses: [],
     similarIncidents: [],
+    gapAnalysis: { gaps: [], blindSpots: [], confidenceCeiling: 1 },
     confidence: 0.5,
     nextActions: [],
   };

@@ -8,6 +8,7 @@ import type { Timeline } from './timeline.js';
 import type { CorrelationResult } from './correlate.js';
 import type { ValidatedHypothesis } from './validate.js';
 import type { SimilarIncident } from './memory.js';
+import type { GapAnalysis } from './gaps.js';
 
 /** The user-supplied incident hint plus optional scoping. */
 export interface InvestigationInput {
@@ -56,6 +57,8 @@ export interface InvestigationReport {
   hypotheses: ValidatedHypothesis[];
   /** Similar past incidents recalled from institutional memory (context only). */
   similarIncidents: SimilarIncident[];
+  /** Structured analysis of what evidence is absent and its confidence impact (HOR-19). */
+  gapAnalysis: GapAnalysis;
   /** 0–1 overall confidence in the investigation. */
   confidence: number;
   nextActions: string[];
