@@ -30,6 +30,7 @@ import {
   listQueueEdges,
 } from '@horus/db';
 import { generateHypotheses } from './hypotheses.js';
+import { validateHypotheses } from './validate.js';
 import type {
   InvestigationInput,
   InvestigationReport,
@@ -274,6 +275,9 @@ export async function investigate(
     queues: queueNames,
   });
 
+  // e4. HYPOTHESIS VALIDATION (HOR-25) — adjust confidence + assign verdicts
+  const validated = validateHypotheses(hyps, evidence);
+
   // f. FINDINGS (label kept as 'e' externally but shifted to 'f' internally)
   const findings: ReportFinding[] = [];
 
@@ -389,7 +393,7 @@ export async function investigate(
     correlation,
     findings,
     suspectedCauses: rankedCauses,
-    hypotheses: hyps,
+    hypotheses: validated,
     confidence,
     nextActions,
   };
@@ -496,6 +500,7 @@ async function persist(
           statement: hyp.statement,
           score: hyp.confidence,
           supportingEvidence: hyp.supportingEvidenceIds,
+          verdict: hyp.verdict,
         })),
       );
     }

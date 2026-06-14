@@ -10,3 +10,4 @@ export * from './render-changes.js';
 export * from './timeline.js';
 export * from './correlate.js';
 export * from './hypotheses.js';
+export * from './validate.js';

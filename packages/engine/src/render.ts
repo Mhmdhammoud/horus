@@ -122,12 +122,13 @@ export function renderReport(r: InvestigationReport): string {
     lines.push('(none)');
   } else {
     for (const h of r.hypotheses) {
-      lines.push(`  [${h.confidence.toFixed(2)}] ${h.category}: ${h.statement}`);
-      const missingStr =
-        h.missingEvidence.length > 0 ? h.missingEvidence.join('; ') : '(none)';
       lines.push(
-        `      supporting: ${h.supportingEvidenceIds.length} · missing: ${missingStr}`,
+        `  [${h.verdict}] [${h.confidence.toFixed(2)} (was ${h.priorConfidence.toFixed(2)})] ${h.category}: ${h.statement}`,
       );
+      lines.push(`      ${h.rationale}`);
+      if (h.missingEvidence.length > 0) {
+        lines.push(`      · missing: ${h.missingEvidence.join('; ')}`);
+      }
     }
   }
   lines.push('');

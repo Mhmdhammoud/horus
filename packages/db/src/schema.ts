@@ -85,6 +85,7 @@ export const hypotheses = pgTable(
     statement: text('statement').notNull(),
     score: real('score').notNull().default(0),
     supportingEvidence: uuid('supporting_evidence').array(),
+    verdict: text('verdict'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('hypotheses_investigation_idx').on(t.investigationId)],
