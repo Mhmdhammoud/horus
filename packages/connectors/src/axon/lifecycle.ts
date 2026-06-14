@@ -8,7 +8,7 @@
 
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, openSync, mkdirSync } from 'node:fs';
+import { existsSync, openSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 
@@ -36,6 +36,23 @@ export async function analyzeRepo(root: string): Promise<void> {
     timeout: 900_000,
     maxBuffer: 64 * 1024 * 1024,
   });
+}
+
+/**
+ * Read the host URL Axon itself records for a repo (`<root>/.axon/host.json`),
+ * if any. Axon runs at most ONE host per repo (single-writer Kùzu lock), so this
+ * is the source of truth for "is this repo already being hosted, and where".
+ * Different repos get different hosts/ports and run concurrently.
+ */
+export function readAxonHostUrl(root: string): string | null {
+  const p = join(root, '.axon', 'host.json');
+  if (!existsSync(p)) return null;
+  try {
+    const j = JSON.parse(readFileSync(p, 'utf8')) as { host_url?: unknown };
+    return typeof j.host_url === 'string' ? j.host_url : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Is an Axon host reachable + healthy at this base URL? */

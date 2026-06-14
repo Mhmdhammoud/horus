@@ -1,25 +1,23 @@
 /**
  * `horus index` — build the queue map for a project (HOR-6), and (HOR-37) make it
- * the one-command setup: auto-detect the repo, ensure Axon has analyzed + is
- * hosting it, stitch the queue boundaries, and write/register a `.horus/config.json`.
+ * the one-command setup: auto-detect the repo, ensure Axon is hosting it, stitch the
+ * queue boundaries, and (for new repos) write/register a `.horus/config.json`.
  *
- * Two modes:
- *   1. An already-configured project (central config or --name/--project) whose Axon
- *      host is healthy → just (re)build the queue map.
- *   2. Otherwise auto-detect the repo in cwd → ensure `axon analyze` + `axon host`
- *      → stitch → write `.horus/config.json` + register the project.
+ * Host model: Axon runs at most ONE host per repo (single-writer Kùzu lock), but
+ * different repos run their own hosts on their own ports concurrently. So `horus
+ * index` NEVER starts a second host for a repo that already has one — it reuses it
+ * (from the resolved config, or from Axon's own `.axon/host.json`).
  */
 
-import { basename } from 'node:path';
+import { basename, resolve } from 'node:path';
 import pc from 'picocolors';
 import {
   loadConfig,
   resolveEnvironment,
   findRepoRoot,
-  discoverLocalConfig,
-  readLocalConfig,
   writeLocalConfig,
   registerProject,
+  type HorusConfig,
   type LocalConfigFile,
 } from '@horus/core';
 import {
@@ -28,6 +26,7 @@ import {
   isAnalyzed,
   analyzeRepo,
   isHostHealthy,
+  readAxonHostUrl,
   findFreePort,
   startHost,
   waitForHost,
@@ -50,6 +49,22 @@ async function stitchQueueMap(hostUrl: string, dbUrl: string, label: string): Pr
   }
 }
 
+/** Find a project in the config whose repository path matches `root`. */
+function findConfiguredRepo(
+  config: HorusConfig,
+  root: string,
+): { project: string; hostUrl?: string } | null {
+  const target = resolve(root);
+  for (const p of config.projects) {
+    for (const r of p.repositories) {
+      if (resolve(r.path) === target) {
+        return { project: p.name, ...(r.axon ? { hostUrl: r.axon.hostUrl } : {}) };
+      }
+    }
+  }
+  return null;
+}
+
 export async function runIndex(opts: {
   config?: string;
   name?: string;
@@ -58,70 +73,79 @@ export async function runIndex(opts: {
 }): Promise<number> {
   try {
     const cwd = process.cwd();
+    const root = findRepoRoot(cwd) ?? cwd;
     const dbUrlDefault =
       process.env['DATABASE_URL'] ?? 'postgresql://horus:horus@localhost:5433/horus';
 
-    // --- Mode 1: an existing, resolvable project with a healthy host ---
-    let resolvedDbUrl = dbUrlDefault;
+    // Try to resolve a config (central, .horus, or --name). Non-fatal if absent.
+    let config: HorusConfig | null = null;
     try {
-      const config = await loadConfig(opts.config, { name: opts.name });
-      resolvedDbUrl = config.database.url;
-      const renv = resolveEnvironment(config, { project: opts.project, env: opts.env });
-      const existingHost = renv.repositories[0]?.axonHostUrl;
-      if (existingHost && (await isHostHealthy(existingHost))) {
-        await stitchQueueMap(existingHost, config.database.url, `${renv.project}/${renv.env}`);
-        return 0;
-      }
+      config = await loadConfig(opts.config, { name: opts.name });
     } catch {
-      // No resolvable config (or host down) — fall through to auto-detect setup.
+      config = null;
     }
+    const dbUrl = config?.database.url ?? dbUrlDefault;
 
-    // --- Mode 2: auto-detect + Axon lifecycle ---
-    const root = findRepoRoot(cwd) ?? cwd;
-
-    // Reuse an existing local name if this repo was indexed before.
-    const localPath = discoverLocalConfig(root);
-    let existingName: string | undefined;
-    let existingHostUrl: string | undefined;
-    if (localPath !== null) {
-      try {
-        const file = readLocalConfig(localPath);
-        const proj = file.project as { name?: string; repositories?: Array<{ axon?: { hostUrl?: string } }> };
-        existingName = proj.name;
-        existingHostUrl = proj.repositories?.[0]?.axon?.hostUrl;
-      } catch {
-        // ignore a malformed local config
+    // Is this repo already a configured project? Either explicitly (--project/--name)
+    // or by matching its path in the config. If so, we reuse its host and do NOT write
+    // a local .horus (that would shadow the project's runtime connectors).
+    let configuredProject: string | null = null;
+    let configuredHost: string | undefined;
+    if (config) {
+      if (opts.project !== undefined || opts.name !== undefined) {
+        try {
+          const renv = resolveEnvironment(config, { project: opts.project, env: opts.env });
+          configuredProject = renv.project;
+          configuredHost = renv.repositories[0]?.axonHostUrl;
+        } catch {
+          /* fall through to path match */
+        }
+      }
+      if (configuredProject === null) {
+        const match = findConfiguredRepo(config, root);
+        if (match) {
+          configuredProject = match.project;
+          configuredHost = match.hostUrl;
+        }
       }
     }
-    const name = opts.name ?? existingName ?? basename(root);
 
-    console.log(pc.bold(`Indexing ${name}`) + pc.dim(`  (${root})`));
+    const isConfigured = configuredProject !== null;
+    const name = opts.name ?? configuredProject ?? basename(root);
+    const label = configuredProject ?? name;
 
-    if (!(await axonAvailable())) {
-      console.error(
-        pc.red('`axon` not found on PATH. Install it (see `horus setup`) and retry.'),
-      );
-      return 1;
+    // Resolve a healthy host WITHOUT ever double-starting one for this repo.
+    // Candidates in priority: the configured host, then Axon's own host.json.
+    let hostUrl: string | undefined;
+    let spawned = false;
+    for (const candidate of [configuredHost, readAxonHostUrl(root) ?? undefined]) {
+      if (candidate && (await isHostHealthy(candidate))) {
+        hostUrl = candidate;
+        break;
+      }
     }
 
-    // 1. Ensure the repo is analyzed.
-    if (!isAnalyzed(root)) {
-      console.log(pc.dim('  analyzing with Axon (first time — this can take a while)…'));
-      try {
-        await analyzeRepo(root);
-      } catch (err) {
-        console.error(pc.red(`  axon analyze failed: ${(err as Error).message}`));
+    if (hostUrl) {
+      console.log(pc.dim(`Reusing Axon host for ${label} at ${hostUrl}`));
+    } else {
+      spawned = true;
+      // No host running for this repo — set one up.
+      console.log(pc.bold(`Indexing ${label}`) + pc.dim(`  (${root})`));
+      if (!(await axonAvailable())) {
+        console.error(pc.red('`axon` not found on PATH. Install it (see `horus setup`) and retry.'));
         return 1;
       }
-    } else {
-      console.log(pc.dim('  already analyzed (.axon present)'));
-    }
-
-    // 2. Ensure a host is running.
-    let hostUrl = existingHostUrl;
-    if (hostUrl && (await isHostHealthy(hostUrl))) {
-      console.log(pc.dim(`  reusing Axon host at ${hostUrl}`));
-    } else {
+      if (!isAnalyzed(root)) {
+        console.log(pc.dim('  analyzing with Axon (first time — this can take a while)…'));
+        try {
+          await analyzeRepo(root);
+        } catch (err) {
+          console.error(pc.red(`  axon analyze failed: ${(err as Error).message}`));
+          return 1;
+        }
+      } else {
+        console.log(pc.dim('  already analyzed (.axon present)'));
+      }
       const port = await findFreePort();
       hostUrl = `http://127.0.0.1:${port}`;
       console.log(pc.dim(`  starting Axon host on port ${port}…`));
@@ -134,24 +158,35 @@ export async function runIndex(opts: {
       }
     }
 
-    // 3. Build the queue map.
-    await stitchQueueMap(hostUrl, resolvedDbUrl, name);
+    // Build the queue map.
+    await stitchQueueMap(hostUrl, dbUrl, label);
 
-    // 4. Write/register the local project config.
-    const file: LocalConfigFile = {
-      version: 1,
-      project: {
-        name,
-        repositories: [{ name, path: root, axon: { hostUrl } }],
-        environments: [{ name: opts.env ?? 'production', readOnly: true, connectors: {} }],
-      },
-    };
-    const configPath = writeLocalConfig(root, file);
-    registerProject(name, root, configPath);
-
-    console.log(`${pc.green('✓')} Indexed ${pc.bold(name)} — host ${hostUrl}`);
-    console.log(pc.dim(`  ${configPath}`));
-    console.log(pc.dim(`  investigate: horus investigate --name ${name} "<hint>"  (or from this repo, just \`horus investigate "<hint>"\`)`));
+    // Write/register a local .horus only when we set up a NEW host (a genuinely new
+    // repo). Reusing an existing host means the repo is already configured (centrally
+    // or via a prior `horus index`), so we must not shadow it with a connector-less file.
+    if (spawned && !isConfigured) {
+      const file: LocalConfigFile = {
+        version: 1,
+        project: {
+          name,
+          repositories: [{ name, path: root, axon: { hostUrl } }],
+          environments: [{ name: opts.env ?? 'production', readOnly: true, connectors: {} }],
+        },
+      };
+      const configPath = writeLocalConfig(root, file);
+      registerProject(name, root, configPath);
+      console.log(`${pc.green('✓')} Indexed ${pc.bold(name)} — host ${hostUrl}`);
+      console.log(pc.dim(`  ${configPath}`));
+      console.log(
+        pc.dim(
+          `  investigate: horus investigate --name ${name} "<hint>"  (or from this repo: horus investigate "<hint>")`,
+        ),
+      );
+    } else {
+      console.log(
+        `${pc.green('✓')} Indexed ${pc.bold(label)} ${pc.dim('(queue map refreshed)')}`,
+      );
+    }
     return 0;
   } catch (err) {
     console.error(pc.red((err as Error).message));
