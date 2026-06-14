@@ -1,6 +1,5 @@
-<p align="left">
-  <img src="https://meritt-dev-assets.s3.eu-central-1.amazonaws.com/public/horus-logo-dark-20260614171147.svg#gh-dark-mode-only" width="72" alt="Horus" />
-  <img src="https://meritt-dev-assets.s3.eu-central-1.amazonaws.com/public/horus-logo-light-20260614171147.svg#gh-light-mode-only" width="72" alt="Horus" />
+<p align="center">
+  <img src="https://meritt-dev-assets.s3.eu-central-1.amazonaws.com/public/horus-logo-dark-20260614171147.svg" width="72" alt="Horus" />
 </p>
 
 # Horus
