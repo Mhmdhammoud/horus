@@ -110,3 +110,76 @@ export async function gitRepoHasCommits(repoPath: string): Promise<boolean> {
     return false;
   }
 }
+
+/** A single contributor's summary for a file, derived from git log. */
+export interface FileContributor {
+  author: string;
+  commits: number;
+  firstDate: string;
+  lastDate: string;
+}
+
+/**
+ * Pure parser for `git log --format=%an%x1f%aI` stdout.
+ * Each line is 'authorISODATE'. Returns contributors sorted by commits
+ * descending, then by lastDate descending.
+ */
+export function parseFileContributors(stdout: string): FileContributor[] {
+  if (!stdout.trim()) return [];
+
+  const tally = new Map<string, { commits: number; firstDate: string; lastDate: string }>();
+
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    const sepIdx = trimmed.indexOf('');
+    if (sepIdx === -1) continue;
+
+    const author = trimmed.slice(0, sepIdx).trim();
+    const date = trimmed.slice(sepIdx + 1).trim();
+
+    if (!author || !date) continue;
+
+    const existing = tally.get(author);
+    if (existing === undefined) {
+      tally.set(author, { commits: 1, firstDate: date, lastDate: date });
+    } else {
+      existing.commits += 1;
+      if (date < existing.firstDate) existing.firstDate = date;
+      if (date > existing.lastDate) existing.lastDate = date;
+    }
+  }
+
+  const result: FileContributor[] = [];
+  for (const [author, stats] of tally.entries()) {
+    result.push({ author, ...stats });
+  }
+
+  result.sort((a, b) => {
+    if (b.commits !== a.commits) return b.commits - a.commits;
+    return b.lastDate < a.lastDate ? -1 : b.lastDate > a.lastDate ? 1 : 0;
+  });
+
+  return result;
+}
+
+/**
+ * Fetch per-author contribution stats for a single file in a git repo.
+ * Uses `--follow` to track renames. Returns an empty array on any error.
+ */
+export async function gitFileContributors(
+  repoPath: string,
+  file: string,
+): Promise<FileContributor[]> {
+  try {
+    const { stdout } = await exec(
+      'git',
+      ['-C', repoPath, 'log', '--follow', '--format=%an%x1f%aI', '--', file],
+      { maxBuffer: 10 * 1024 * 1024 },
+    );
+    return parseFileContributors(stdout);
+  } catch {
+    return [];
+  }
+}

@@ -22,3 +22,5 @@ export * from './render-blast-radius.js';
 export * from './memory.js';
 export * from './gaps.js';
 export * from './multi-repo.js';
+export * from './ownership.js';
+export * from './render-ownership.js';

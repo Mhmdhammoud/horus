@@ -14,6 +14,7 @@ import { runRepos } from './commands/repos.js';
 import { runSearch } from './commands/search.js';
 import { runInvestigations } from './commands/investigations.js';
 import { runReplay } from './commands/replay.js';
+import { runOwner } from './commands/owner.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -250,6 +251,24 @@ export function buildProgram(): Command {
     .action(async (id: string, opts: { config?: string; format?: string }) => {
       process.exitCode = await runReplay(id, { config: opts.config, format: opts.format });
     });
+
+  program
+    .command('owner <query>')
+    .description(
+      'Estimate who likely owns a component (git history, with confidence + evidence)',
+    )
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'repository name from config')
+    .option('--json', 'output JSON')
+    .action(
+      async (query: string, opts: { config?: string; repo?: string; json?: boolean }) => {
+        process.exitCode = await runOwner(query, {
+          config: opts.config,
+          repo: opts.repo,
+          json: opts.json,
+        });
+      },
+    );
 
   return program;
 }
