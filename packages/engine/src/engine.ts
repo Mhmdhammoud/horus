@@ -543,8 +543,13 @@ export async function investigate(
 
   // Queue runtime findings (HOR-12)
   if (queueRuntimeState !== null && queueRuntimeEvIds.length > 0) {
-    const backlogged = queueRuntimeState.queues.filter((q) => q.waiting > 100);
     const starved = queueRuntimeState.queues.filter((q) => q.waiting >= 10 && q.active === 0);
+    // Exclude starved queues: the analyzer emits worker-starvation instead of backlog for
+    // them, so treating them as backlogged here would inflate finding confidence to 0.85.
+    const starvedNames = new Set(starved.map((q) => q.queueName));
+    const backlogged = queueRuntimeState.queues.filter(
+      (q) => q.waiting > 100 && !starvedNames.has(q.queueName),
+    );
     const failing = queueRuntimeState.queues.filter((q) => q.failed > 20);
 
     if (backlogged.length > 0 || starved.length > 0 || failing.length > 0) {
