@@ -38,10 +38,12 @@ export function buildProgram(): Command {
 
   program
     .command('status')
-    .description('Show config, provider health, and repo freshness')
+    .description('Show config, provider health, and project/environment matrix')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .action(async (opts: { config?: string }) => {
-      const code = await runStatus(opts.config);
+    .option('--project <name>', 'project name (show only this project)')
+    .option('--env <name>', 'environment name (e.g. production)')
+    .action(async (opts: { config?: string; project?: string; env?: string }) => {
+      const code = await runStatus(opts.config, { project: opts.project, env: opts.env });
       process.exitCode = code;
     });
 
@@ -88,7 +90,9 @@ export function buildProgram(): Command {
     .command('investigate <hint>')
     .description('Run a deterministic investigation for an incident hint')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--repo <name>', 'repository to scope to')
+    .option('--project <name>', 'project name to scope to')
+    .option('--env <name>', 'environment name (e.g. production)')
+    .option('--repo <name>', 'repository/project to scope to (alias for --project)')
     .option('--since <ref>', 'git ref/range for change-impact (e.g. HEAD~5)')
     .option(
       '--service <name>',
@@ -101,6 +105,8 @@ export function buildProgram(): Command {
         hint: string,
         opts: {
           config?: string;
+          project?: string;
+          env?: string;
           repo?: string;
           since?: string;
           service?: string;
@@ -110,6 +116,8 @@ export function buildProgram(): Command {
       ) => {
         process.exitCode = await runInvestigate(hint, {
           config: opts.config,
+          project: opts.project,
+          env: opts.env,
           repo: opts.repo,
           since: opts.since,
           service: opts.service,

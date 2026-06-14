@@ -1,5 +1,5 @@
 import pc from 'picocolors';
-import { loadConfig } from '@horus/core';
+import { loadConfig, resolveEnvironment } from '@horus/core';
 import { createConnectors } from '@horus/connectors';
 import {
   reconstructChangeTimeline,
@@ -20,21 +20,18 @@ export async function runTimeline(
   try {
     const config = await loadConfig(opts.config);
 
-    const repo = opts.repo
-      ? config.repos.find((r) => r.name === opts.repo)
-      : config.repos[0];
-
-    if (repo === undefined) {
-      console.error(
-        pc.red('No repo configured (set repos in horus.config.ts or pass --repo)'),
-      );
+    let renv;
+    try {
+      renv = resolveEnvironment(config, { project: opts.repo });
+    } catch (err) {
+      console.error(pc.red((err as Error).message));
       return 1;
     }
 
     const { code } = createConnectors(config);
 
     const t = await reconstructChangeTimeline(
-      { repoPath: repo.path, since: opts.since, until: opts.until, service },
+      { repoPath: renv.path, since: opts.since, until: opts.until, service },
       { code },
     );
 

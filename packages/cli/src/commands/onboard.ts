@@ -1,5 +1,5 @@
 import pc from 'picocolors';
-import { loadConfig } from '@horus/core';
+import { loadConfig, resolveEnvironment } from '@horus/core';
 import { codeForRepo } from '@horus/connectors';
 import { createDb } from '@horus/db';
 import { buildOnboarding, renderOnboarding, onboardingToJSON } from '@horus/engine';
@@ -11,14 +11,16 @@ export async function runOnboard(
   try {
     const config = await loadConfig(opts.config);
 
-    const repo = opts.repo
-      ? config.repos.find((r) => r.name === opts.repo)
-      : config.repos[0];
-
-    if (repo === undefined) {
-      console.error(pc.red('No repo configured (set repos in horus.config.ts or pass --repo)'));
+    // --repo maps 1:1 to a project name (HOR-34 compat). Resolve the default/single
+    // project/env when --repo is omitted.
+    let renv;
+    try {
+      renv = resolveEnvironment(config, { project: opts.repo });
+    } catch (err) {
+      console.error(pc.red((err as Error).message));
       return 1;
     }
+    const repo = { name: renv.project, path: renv.path };
 
     const code = codeForRepo(config, repo.name);
 

@@ -1,13 +1,20 @@
 import pc from 'picocolors';
 import { loadConfig } from '@horus/core';
-import { AxonHttpClient } from '@horus/connectors';
+import { AxonHttpClient, axonHostUrlForRepo } from '@horus/connectors';
 import { createDb } from '@horus/db';
 import { stitch } from '@horus/stitcher';
 
 export async function runIndex(opts: { config?: string }): Promise<number> {
   try {
     const config = await loadConfig(opts.config);
-    const axon = new AxonHttpClient({ baseUrl: config.axon.hostUrl });
+    // HOR-34: the Axon host is now per project/environment. Resolve the default
+    // (single) project/env's Axon host.
+    const hostUrl = axonHostUrlForRepo(config);
+    if (!hostUrl) {
+      console.error(pc.red('No Axon connector configured for the default project/env.'));
+      return 1;
+    }
+    const axon = new AxonHttpClient({ baseUrl: hostUrl });
 
     const health = await axon.health();
     if (!health.ok) {

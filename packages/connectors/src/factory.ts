@@ -1,14 +1,16 @@
 /**
- * ConnectorFactory — wires a validated `HorusConfig` into live provider instances.
+ * ConnectorFactory — wires a `HorusConfig` or a `ResolvedEnvironment` into live
+ * provider instances.
  *
- * v0 ships only the Axon-backed code provider; runtime providers (ES, Prometheus,
- * Redis, BullMQ, Git) join the `Connectors` bundle in HOR-5.
- *
- * HOR-28 adds per-repo helpers so investigations can traverse repo boundaries
- * without the caller needing to know which host holds the answer.
+ * HOR-34: The primary API is now environment-scoped (`codeForEnv`, `logsForEnv`,
+ * `metricsForEnv`). The old global helpers (`codeForRepo`, `logsProviderFromConfig`,
+ * `metricsProviderFromConfig`, `repoProviders`, `createConnectors`,
+ * `axonHostUrlForRepo`) are kept as thin compat wrappers so existing commands compile
+ * unchanged.
  */
 
-import type { HorusConfig } from '@horus/core';
+import type { HorusConfig, ResolvedEnvironment } from '@horus/core';
+import { resolveEnvironment } from '@horus/core';
 import { AxonHttpClient } from './axon/client.js';
 import { AxonCodeProvider } from './axon/provider.js';
 import type { CodeProvider } from './contract.js';
@@ -19,41 +21,94 @@ import { GrafanaClient } from './grafana/client.js';
 import { GrafanaMetricsProvider } from './grafana/provider.js';
 import type { MetricsProvider } from './grafana/provider.js';
 
+// ---------------------------------------------------------------------------
+// Environment-scoped builders (primary API, HOR-34)
+// ---------------------------------------------------------------------------
+
+/**
+ * Return an Axon `CodeProvider` for the given resolved environment, or `null` when
+ * no Axon connector is configured.
+ */
+export function codeForEnv(renv: ResolvedEnvironment): CodeProvider | null {
+  const hostUrl = renv.connectors.axon?.hostUrl;
+  if (!hostUrl) return null;
+  return new AxonCodeProvider(new AxonHttpClient({ baseUrl: hostUrl }));
+}
+
+/**
+ * Return an Elasticsearch `LogsProvider` for the given resolved environment, or
+ * `null` when no (or incomplete) ES connector is configured.
+ */
+export function logsForEnv(renv: ResolvedEnvironment): LogsProvider | null {
+  const es = renv.connectors.elasticsearch;
+  if (!es || !es.url) return null;
+  return new ElasticsearchLogsProvider(
+    new ElasticsearchClient({ baseUrl: es.url, username: es.username, password: es.password }),
+    { indexPattern: es.indexPattern },
+  );
+}
+
+/**
+ * Return a Grafana `MetricsProvider` for the given resolved environment, or `null`
+ * when no (or incomplete) Grafana connector is configured.
+ */
+export function metricsForEnv(renv: ResolvedEnvironment): MetricsProvider | null {
+  const g = renv.connectors.grafana;
+  if (!g || !g.url) return null;
+  return new GrafanaMetricsProvider(
+    new GrafanaClient({ baseUrl: g.url, username: g.username, password: g.password }),
+    { defaultStep: 60 },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Legacy Connectors bundle type
+// ---------------------------------------------------------------------------
+
 export interface Connectors {
   code: CodeProvider;
 }
 
-export function createConnectors(config: HorusConfig): Connectors {
-  return {
-    code: new AxonCodeProvider(new AxonHttpClient({ baseUrl: config.axon.hostUrl })),
-  };
-}
+// ---------------------------------------------------------------------------
+// Compat wrappers — keep existing CLI commands compiling unchanged (HOR-34)
+// ---------------------------------------------------------------------------
 
 /**
- * Resolve the Axon host URL for a named repo. Falls back to the global default
- * when the repo has no per-repo `axonHostUrl`, or when no `repoName` is given.
- */
-export function axonHostUrlForRepo(config: HorusConfig, repoName?: string): string {
-  if (repoName !== undefined) {
-    const repo = config.repos.find((r) => r.name === repoName);
-    if (repo !== undefined) {
-      return repo.axonHostUrl ?? config.axon.hostUrl;
-    }
-  }
-  return config.axon.hostUrl;
-}
-
-/**
- * Return a `CodeProvider` wired to the Axon host for a specific repo (or the
- * global default when `repoName` is omitted / not found).
+ * Return a `CodeProvider` wired to the Axon host for a specific project (or the
+ * default/single project when `repoName` is omitted). `repoName` maps 1:1 to a
+ * project name via `resolveEnvironment`.
+ *
+ * Throws when no Axon connector is configured for the resolved environment.
  */
 export function codeForRepo(config: HorusConfig, repoName?: string): CodeProvider {
-  return new AxonCodeProvider(
-    new AxonHttpClient({ baseUrl: axonHostUrlForRepo(config, repoName) }),
-  );
+  const renv = resolveEnvironment(config, { project: repoName });
+  const c = codeForEnv(renv);
+  if (!c) {
+    throw new Error(
+      `No Axon connector configured for project "${renv.project}" / env "${renv.env}".`,
+    );
+  }
+  return c;
 }
 
-/** A fully-resolved, live-wired descriptor for a single configured repository. */
+/**
+ * Resolve the Axon host URL for a named project (compat: was axonHostUrlForRepo).
+ * Falls back to empty string when no Axon connector is configured.
+ */
+export function axonHostUrlForRepo(config: HorusConfig, repoName?: string): string {
+  const renv = resolveEnvironment(config, { project: repoName });
+  return renv.connectors.axon?.hostUrl ?? '';
+}
+
+/**
+ * Build and return a Connectors bundle for the default (or single) project/env.
+ * Throws when no Axon connector is present.
+ */
+export function createConnectors(config: HorusConfig): Connectors {
+  return { code: codeForRepo(config) };
+}
+
+/** A fully-resolved, live-wired descriptor for a single configured project. */
 export interface RepoProvider {
   name: string;
   path: string;
@@ -62,55 +117,40 @@ export interface RepoProvider {
 }
 
 /**
- * Build a `LogsProvider` wired to Elasticsearch, resolving credentials from config
- * then env vars. Returns null when no ES URL is available.
- */
-export function logsProviderFromConfig(config: HorusConfig): LogsProvider | null {
-  const esCfg = config.providers.elasticsearch;
-  const url = esCfg?.url ?? process.env['ES_URL'];
-  if (!url) return null;
-
-  const username = esCfg?.username ?? process.env['ES_USERNAME'];
-  const password = esCfg?.password ?? process.env['ES_PASSWORD'];
-  const indexPattern = esCfg?.indexPattern ?? process.env['ES_INDEX_PATTERN'] ?? '*';
-
-  return new ElasticsearchLogsProvider(
-    new ElasticsearchClient({ baseUrl: url, username, password }),
-    { indexPattern },
-  );
-}
-
-/**
- * Build a `MetricsProvider` backed by Grafana (datasource proxy for Prometheus).
- * Resolves credentials from config then env vars.
- * Returns null when GRAFANA_URL is not available.
- */
-export function metricsProviderFromConfig(config: HorusConfig): MetricsProvider | null {
-  const grafanaCfg = config.providers.grafana;
-  const url = grafanaCfg?.url ?? process.env['GRAFANA_URL'];
-  if (!url) return null;
-
-  const username = grafanaCfg?.username ?? process.env['GRAFANA_USER'];
-  const password = grafanaCfg?.password ?? process.env['GRAFANA_PASSWORD'];
-
-  return new GrafanaMetricsProvider(
-    new GrafanaClient({ baseUrl: url, username, password }),
-    { defaultStep: 60 },
-  );
-}
-
-/**
- * Build a `RepoProvider` for every repository in the config. Each provider is
- * pointed at the correct per-repo (or global-fallback) Axon host.
+ * Build a `RepoProvider` for every project in the config. Each provider is pointed
+ * at the project's resolved Axon host.
  */
 export function repoProviders(config: HorusConfig): RepoProvider[] {
-  return config.repos.map((r) => {
-    const hostUrl = r.axonHostUrl ?? config.axon.hostUrl;
+  return config.projects.map((p) => {
+    const renv = resolveEnvironment(config, { project: p.name });
+    const hostUrl = renv.connectors.axon?.hostUrl ?? '';
+    const code = codeForEnv(renv);
     return {
-      name: r.name,
-      path: r.path,
+      name: p.name,
+      path: p.path,
       hostUrl,
-      code: new AxonCodeProvider(new AxonHttpClient({ baseUrl: hostUrl })),
+      // repoProviders callers (repos.ts / reposHealth) always have Axon configured;
+      // supply a no-op stub when missing so compilation is safe — health check will
+      // return unreachable.
+      code: code ?? new AxonCodeProvider(new AxonHttpClient({ baseUrl: '' })),
     };
   });
+}
+
+/**
+ * Build a `LogsProvider` wired to Elasticsearch for the default project/env.
+ * No longer reads global env vars directly — secrets come from resolveEnvironment.
+ * Returns `null` when Elasticsearch is not configured or the URL is missing.
+ */
+export function logsProviderFromConfig(config: HorusConfig): LogsProvider | null {
+  return logsForEnv(resolveEnvironment(config));
+}
+
+/**
+ * Build a `MetricsProvider` backed by Grafana for the default project/env.
+ * No longer reads global env vars directly — secrets come from resolveEnvironment.
+ * Returns `null` when Grafana is not configured or the URL is missing.
+ */
+export function metricsProviderFromConfig(config: HorusConfig): MetricsProvider | null {
+  return metricsForEnv(resolveEnvironment(config));
 }

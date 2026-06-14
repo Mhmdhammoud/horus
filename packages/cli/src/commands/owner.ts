@@ -4,7 +4,7 @@
  */
 
 import pc from 'picocolors';
-import { loadConfig } from '@horus/core';
+import { loadConfig, resolveEnvironment } from '@horus/core';
 import { codeForRepo } from '@horus/connectors';
 import { estimateOwnership, renderOwnership, ownershipToJSON } from '@horus/engine';
 
@@ -15,20 +15,17 @@ export async function runOwner(
   try {
     const config = await loadConfig(opts.config);
 
-    const repo = opts.repo
-      ? config.repos.find((r) => r.name === opts.repo)
-      : config.repos[0];
-
-    if (repo === undefined) {
-      console.error(
-        pc.red('No repo configured (set repos in horus.config.ts or pass --repo)'),
-      );
+    let renv;
+    try {
+      renv = resolveEnvironment(config, { project: opts.repo });
+    } catch (err) {
+      console.error(pc.red((err as Error).message));
       return 1;
     }
 
-    const code = codeForRepo(config, repo.name);
+    const code = codeForRepo(config, renv.project);
 
-    const o = await estimateOwnership(query, { code, repoPath: repo.path });
+    const o = await estimateOwnership(query, { code, repoPath: renv.path });
 
     console.log(opts.json ? ownershipToJSON(o) : renderOwnership(o));
 
