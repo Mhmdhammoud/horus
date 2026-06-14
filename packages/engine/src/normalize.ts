@@ -6,14 +6,14 @@
  * renderers use for grouping and prioritization:
  *
  *   • category — broad functional bucket (queue, database, logs, code, …)
- *   • severity — actionability tier (critical → info)
+ *   • priority — investigation-priority tier (critical → info); NOT operational severity
  *
  * Both fields are optional on the Evidence type so that provider code
  * compiles unchanged. Call normalizeEvidence() once after all providers
  * have returned, before findings derivation.
  */
 
-import type { Evidence, EvidenceCategory, EvidenceSeverity } from '@horus/core';
+import type { Evidence, EvidenceCategory, EvidencePriority } from '@horus/core';
 
 // ── Category mapping ──────────────────────────────────────────────────────────
 
@@ -39,7 +39,7 @@ function categoryFor(e: Evidence): EvidenceCategory {
   }
 }
 
-// ── Severity mapping ──────────────────────────────────────────────────────────
+// ── Priority mapping ──────────────────────────────────────────────────────────
 
 /**
  * Structural kinds are never anomalous by themselves — they provide context
@@ -47,16 +47,15 @@ function categoryFor(e: Evidence): EvidenceCategory {
  */
 const STRUCTURAL_KINDS = new Set(['symbol', 'flow', 'impact', 'queue-edge']);
 
-function severityFor(e: Evidence): EvidenceSeverity {
+function priorityFor(e: Evidence): EvidencePriority {
   if (STRUCTURAL_KINDS.has(e.kind)) return 'info';
 
   // Commits are structural unless a particularly relevant change is flagged.
   if (e.kind === 'commit') return e.relevance >= 0.8 ? 'medium' : 'info';
 
   // State snapshots (queue, DB, cache): low-relevance items represent healthy
-  // or legacy state that provides context, not evidence of a broken system.
-  // Skipping 'low' keeps the severity scale meaningful — 'low' should mean
-  // "something is wrong but minor", not "background snapshot".
+  // or legacy state — context that enriches the picture, not evidence of a
+  // broken system. Skip 'low' so the tier stays meaningful.
   if (e.kind === 'queue-state' || e.kind === 'state' || e.kind === 'redis-key') {
     if (e.relevance >= 0.9) return 'critical';
     if (e.relevance >= 0.8) return 'high';
@@ -75,7 +74,7 @@ function severityFor(e: Evidence): EvidenceSeverity {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
- * Fill in `severity` and `category` for every evidence item in-place.
+ * Fill in `priority` and `category` for every evidence item in-place.
  *
  * Idempotent: values already set by a previous call (or by a test/fixture)
  * are left unchanged. Returns the same array so callers can chain.
@@ -83,7 +82,7 @@ function severityFor(e: Evidence): EvidenceSeverity {
 export function normalizeEvidence(evidence: Evidence[]): Evidence[] {
   for (const e of evidence) {
     if (e.category === undefined) e.category = categoryFor(e);
-    if (e.severity === undefined) e.severity = severityFor(e);
+    if (e.priority === undefined) e.priority = priorityFor(e);
   }
   return evidence;
 }

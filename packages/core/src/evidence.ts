@@ -14,11 +14,13 @@ export type ProviderKind =
   | 'history'; // Git
 
 /**
- * Cross-provider severity scale, assigned by the normalization layer (never by
- * providers). `critical` and `high` are actionable anomalies; `info` is
- * structural context that enriches the picture without signalling a problem.
+ * Investigation-priority tier, assigned by the normalization layer (never by
+ * providers). Reflects how much attention the investigator should give this
+ * evidence item, derived from relevance and kind — NOT operational impact.
+ * `critical` and `high` warrant immediate attention; `info` is structural
+ * context that enriches the picture without signalling a broken system.
  */
-export type EvidenceSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
+export type EvidencePriority = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
 /**
  * Broad functional category for grouping and filtering across providers.
@@ -73,8 +75,8 @@ export interface Evidence {
   links: EvidenceLinks;
   /** Reproducibility: the query that produced this and when. */
   provenance: { query: string; collectedAt: string };
-  /** Assigned by the normalization layer; absent until normalizeEvidence() runs. */
-  severity?: EvidenceSeverity;
+  /** Investigation-priority tier; assigned by the normalization layer. Not operational severity. */
+  priority?: EvidencePriority;
   /** Broad functional grouping; assigned by the normalization layer. */
   category?: EvidenceCategory;
 }

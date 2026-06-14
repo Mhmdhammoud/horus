@@ -28,30 +28,30 @@ function makeEv(overrides: Partial<Evidence> & Pick<Evidence, 'id' | 'source' | 
 // ---------------------------------------------------------------------------
 
 describe('normalizeEvidence — logs provider', () => {
-  it('fatal log (relevance 1.0) → category logs, severity critical', () => {
+  it('fatal log (relevance 1.0) → category logs, priority critical', () => {
     const ev = makeEv({ id: 'ev1', source: 'logs', kind: 'log', relevance: 1.0,
       title: '[fatal] auth: unhandled exception' });
     normalizeEvidence([ev]);
     expect(ev.category).toBe('logs');
-    expect(ev.severity).toBe('critical');
+    expect(ev.priority).toBe('critical');
   });
 
-  it('error log (relevance 0.9) → severity critical', () => {
+  it('error log (relevance 0.9) → priority critical', () => {
     const ev = makeEv({ id: 'ev2', source: 'logs', kind: 'log', relevance: 0.9 });
     normalizeEvidence([ev]);
-    expect(ev.severity).toBe('critical');
+    expect(ev.priority).toBe('critical');
   });
 
-  it('warn log (relevance 0.6) → severity medium', () => {
+  it('warn log (relevance 0.6) → priority medium', () => {
     const ev = makeEv({ id: 'ev3', source: 'logs', kind: 'log', relevance: 0.6 });
     normalizeEvidence([ev]);
-    expect(ev.severity).toBe('medium');
+    expect(ev.priority).toBe('medium');
   });
 
-  it('info log (relevance 0.3) → severity info', () => {
+  it('info log (relevance 0.3) → priority info', () => {
     const ev = makeEv({ id: 'ev4', source: 'logs', kind: 'log', relevance: 0.3 });
     normalizeEvidence([ev]);
-    expect(ev.severity).toBe('info');
+    expect(ev.priority).toBe('info');
   });
 });
 
@@ -60,30 +60,30 @@ describe('normalizeEvidence — logs provider', () => {
 // ---------------------------------------------------------------------------
 
 describe('normalizeEvidence — queue provider', () => {
-  it('severe backlog (relevance 0.88) → category queue, severity high', () => {
+  it('severe backlog (relevance 0.88) → category queue, priority high', () => {
     const ev = makeEv({ id: 'ev5', source: 'queue', kind: 'queue-state', relevance: 0.88 });
     normalizeEvidence([ev]);
     expect(ev.category).toBe('queue');
-    expect(ev.severity).toBe('high');
+    expect(ev.priority).toBe('high');
   });
 
-  it('starvation signal (relevance 0.7) → severity medium', () => {
+  it('starvation signal (relevance 0.7) → priority medium', () => {
     const ev = makeEv({ id: 'ev6', source: 'queue', kind: 'queue-state', relevance: 0.7 });
     normalizeEvidence([ev]);
-    expect(ev.severity).toBe('medium');
+    expect(ev.priority).toBe('medium');
   });
 
-  it('summary signal (relevance 0.4) → severity info (healthy snapshot, not an anomaly)', () => {
+  it('summary signal (relevance 0.4) → priority info (healthy snapshot, not an anomaly)', () => {
     const ev = makeEv({ id: 'ev7', source: 'queue', kind: 'queue-state', relevance: 0.4 });
     normalizeEvidence([ev]);
-    expect(ev.severity).toBe('info');
+    expect(ev.priority).toBe('info');
   });
 
-  it('queue-edge (structural) → category queue, severity info', () => {
+  it('queue-edge (structural) → category queue, priority info', () => {
     const ev = makeEv({ id: 'ev8', source: 'queue', kind: 'queue-edge', relevance: 0.75 });
     normalizeEvidence([ev]);
     expect(ev.category).toBe('queue');
-    expect(ev.severity).toBe('info');
+    expect(ev.priority).toBe('info');
   });
 });
 
@@ -92,23 +92,23 @@ describe('normalizeEvidence — queue provider', () => {
 // ---------------------------------------------------------------------------
 
 describe('normalizeEvidence — database (MongoDB) provider', () => {
-  it('anomalous status (relevance 0.85) → category database, severity high', () => {
+  it('anomalous status (relevance 0.85) → category database, priority high', () => {
     const ev = makeEv({ id: 'ev9', source: 'state', kind: 'state', relevance: 0.85 });
     normalizeEvidence([ev]);
     expect(ev.category).toBe('database');
-    expect(ev.severity).toBe('high');
+    expect(ev.priority).toBe('high');
   });
 
-  it('stale collection (relevance 0.5) → severity info (context, not a broken system)', () => {
+  it('stale collection (relevance 0.5) → priority info (context, not a broken system)', () => {
     const ev = makeEv({ id: 'ev10', source: 'state', kind: 'state', relevance: 0.5 });
     normalizeEvidence([ev]);
-    expect(ev.severity).toBe('info');
+    expect(ev.priority).toBe('info');
   });
 
-  it('legacy/irrelevant collection (relevance 0.25) → severity info', () => {
+  it('legacy/irrelevant collection (relevance 0.25) → priority info', () => {
     const ev = makeEv({ id: 'ev11', source: 'state', kind: 'state', relevance: 0.25 });
     normalizeEvidence([ev]);
-    expect(ev.severity).toBe('info');
+    expect(ev.priority).toBe('info');
   });
 });
 
@@ -117,23 +117,23 @@ describe('normalizeEvidence — database (MongoDB) provider', () => {
 // ---------------------------------------------------------------------------
 
 describe('normalizeEvidence — code provider', () => {
-  it('symbol (high relevance) → category code, severity info (structural)', () => {
+  it('symbol (high relevance) → category code, priority info (structural)', () => {
     const ev = makeEv({ id: 'ev12', source: 'code', kind: 'symbol', relevance: 0.9 });
     normalizeEvidence([ev]);
     expect(ev.category).toBe('code');
-    expect(ev.severity).toBe('info');
+    expect(ev.priority).toBe('info');
   });
 
   it('flow → always info regardless of relevance', () => {
     const ev = makeEv({ id: 'ev13', source: 'code', kind: 'flow', relevance: 1.0 });
     normalizeEvidence([ev]);
-    expect(ev.severity).toBe('info');
+    expect(ev.priority).toBe('info');
   });
 
   it('impact → always info regardless of relevance', () => {
     const ev = makeEv({ id: 'ev14', source: 'code', kind: 'impact', relevance: 0.8 });
     normalizeEvidence([ev]);
-    expect(ev.severity).toBe('info');
+    expect(ev.priority).toBe('info');
   });
 });
 
@@ -142,17 +142,17 @@ describe('normalizeEvidence — code provider', () => {
 // ---------------------------------------------------------------------------
 
 describe('normalizeEvidence — deployment (git) provider', () => {
-  it('ordinary commit (relevance 0.65) → category deployment, severity info', () => {
+  it('ordinary commit (relevance 0.65) → category deployment, priority info', () => {
     const ev = makeEv({ id: 'ev15', source: 'history', kind: 'commit', relevance: 0.65 });
     normalizeEvidence([ev]);
     expect(ev.category).toBe('deployment');
-    expect(ev.severity).toBe('info');
+    expect(ev.priority).toBe('info');
   });
 
-  it('high-signal commit (relevance 0.85) → severity medium', () => {
+  it('high-signal commit (relevance 0.85) → priority medium', () => {
     const ev = makeEv({ id: 'ev16', source: 'history', kind: 'commit', relevance: 0.85 });
     normalizeEvidence([ev]);
-    expect(ev.severity).toBe('medium');
+    expect(ev.priority).toBe('medium');
   });
 });
 
@@ -167,11 +167,11 @@ describe('normalizeEvidence — cache (Redis) provider', () => {
     expect(ev.category).toBe('cache');
   });
 
-  it('redis-key (high relevance) → severity still derived from relevance', () => {
+  it('redis-key (high relevance) → priority still derived from relevance', () => {
     const ev = makeEv({ id: 'ev-redis-2', source: 'state', kind: 'redis-key', relevance: 0.85 });
     normalizeEvidence([ev]);
     expect(ev.category).toBe('cache');
-    expect(ev.severity).toBe('high');
+    expect(ev.priority).toBe('high');
   });
 });
 
@@ -190,17 +190,17 @@ describe('normalizeEvidence — contract', () => {
     const ev = makeEv({ id: 'ev18', source: 'queue', kind: 'queue-state', relevance: 0.88 });
     normalizeEvidence([ev]);
     const cat = ev.category;
-    const sev = ev.severity;
+    const sev = ev.priority;
     normalizeEvidence([ev]);
     expect(ev.category).toBe(cat);
-    expect(ev.severity).toBe(sev);
+    expect(ev.priority).toBe(sev);
   });
 
-  it('preserves explicitly set severity and category', () => {
+  it('preserves explicitly set priority and category', () => {
     const ev = makeEv({ id: 'ev19', source: 'queue', kind: 'queue-state', relevance: 0.88,
-      severity: 'low', category: 'other' });
+      priority: 'low', category: 'other' });
     normalizeEvidence([ev]);
-    expect(ev.severity).toBe('low');
+    expect(ev.priority).toBe('low');
     expect(ev.category).toBe('other');
   });
 
@@ -221,9 +221,9 @@ describe('normalizeEvidence — contract', () => {
     expect(queue!.category).toBe('queue');
     expect(db!.category).toBe('database');
     expect(code!.category).toBe('code');
-    expect(log!.severity).toBe('critical');
-    expect(queue!.severity).toBe('medium');
-    expect(db!.severity).toBe('high');
-    expect(code!.severity).toBe('info');
+    expect(log!.priority).toBe('critical');
+    expect(queue!.priority).toBe('medium');
+    expect(db!.priority).toBe('high');
+    expect(code!.priority).toBe('info');
   });
 });

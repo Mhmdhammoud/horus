@@ -21,8 +21,8 @@ Runtime Providers
     ↓  (provider-specific raw types)
 Provider adapters (analyze.ts / normalize.ts per connector)
     ↓  Evidence[]
-normalizeEvidence()                    ← cross-provider severity + category
-    ↓  Evidence[]  (with .severity and .category filled in)
+normalizeEvidence()                    ← cross-provider priority + category
+    ↓  Evidence[]  (with .priority and .category filled in)
 Findings + correlation + hypotheses
     ↓
 InvestigationReport
@@ -41,13 +41,19 @@ InvestigationReport
 | `links` | provider | Back-references to the source (file, line, queue name, trace ID, …) |
 | `provenance` | engine | The query that produced this item + collection timestamp for reproducibility |
 | `timestamp` | provider | ISO-8601 event time for timeline alignment (optional) |
-| `severity` | normalization layer | Cross-provider actionability tier (`critical` → `info`) |
-| `category` | normalization layer | Broad functional bucket (`queue`, `database`, `logs`, `code`, `deployment`, `metrics`) |
+| `priority` | normalization layer | Investigation-priority tier (`critical` → `info`). Reflects how much attention the item deserves in the investigation — **not** operational severity or production impact. |
+| `category` | normalization layer | Broad functional bucket (`queue`, `database`, `cache`, `logs`, `code`, `deployment`, `metrics`) |
 
-`severity` and `category` are intentionally absent from provider code.
-They require comparing across sources — assigning them inside a single
-provider would create an implicit coupling to the scale used by other
-providers. The normalization layer owns the cross-provider view.
+`priority` and `category` are intentionally absent from provider code.
+They require a cross-provider view — assigning them inside a single
+provider would create an implicit coupling to the relevance scale used by
+other providers. The normalization layer owns this view.
+
+`priority` derives from evidence `kind` and `relevance`. It is an
+investigation-triage signal, not a claim about production impact. A highly
+relevant Elasticsearch signature may be `priority: critical` even if it
+represents a single occurrence. Downstream consumers that need operational
+severity must derive it from the typed `payload`.
 
 ## Provider-specific metadata
 
@@ -106,7 +112,7 @@ treats `payload` as opaque; renderers and the LLM consume it directly.
    optional dep field to `EngineDeps` and collect evidence in a guarded
    `try/catch` block (provider failures must never abort the investigation).
 
-6. **Let the normalization layer handle severity + category** — you do not
+6. **Let the normalization layer handle priority + category** — you do not
    need to add anything to `normalizeEvidence()` if your provider uses a
    standard `source` value. Check that `categoryFor()` maps your `source`
    correctly; if you need a new `EvidenceCategory` value add it to
@@ -114,9 +120,13 @@ treats `payload` as opaque; renderers and the LLM consume it directly.
 
 7. **Write tests** — at minimum: an `analyze.test.ts` that covers the pure
    helpers, and entries in `packages/engine/src/normalize.test.ts` for the
-   severity/category shape that your evidence produces.
+   priority/category shape that your evidence produces.
 
-## Severity assignment rules
+## Priority assignment rules
+
+`priority` measures investigation triage, not production impact. A `critical` item
+demands immediate attention during the investigation; it does not claim the system is
+down or that an SLA has been breached.
 
 | Kind | Rule |
 |------|------|
@@ -126,9 +136,9 @@ treats `payload` as opaque; renderers and the LLM consume it directly.
 | all other operational signals (`log`, `metric`, …) | relevance ≥ 0.9 → `critical`; ≥ 0.8 → `high`; ≥ 0.6 → `medium`; ≥ 0.4 → `low`; else `info` |
 
 State snapshot kinds (`queue-state`, `state`, `redis-key`) skip the `low` tier. A snapshot
-that isn't anomalous enough to clear `medium` is context — it provides background for the
-investigation rather than signalling a broken component. `low` is reserved for operational
-signals (logs, metrics) where something is definitively wrong, just minor.
+below `medium` is context — it provides background for the investigation rather than
+signalling a broken component. `low` is reserved for operational signals where something is
+definitively wrong, just minor.
 
 ## Category mapping
 

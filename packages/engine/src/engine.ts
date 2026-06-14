@@ -433,7 +433,7 @@ export async function investigate(
     }
   }
 
-  // e0d. NORMALIZE — fill in cross-provider severity + category before any
+  // e0d. NORMALIZE — fill in cross-provider priority + category before any
   // downstream step reads them. Idempotent; safe to call even if a provider
   // failed and contributed zero items.
   normalizeEvidence(evidence);
