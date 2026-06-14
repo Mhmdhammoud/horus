@@ -21,10 +21,17 @@ export interface StitchSummary {
 export async function stitch(
   client: AxonHttpClient,
   db: HorusDb,
+  opts: { project?: string } = {},
 ): Promise<StitchSummary> {
+  // Producers: NestJS @InjectQueue (Class), raw `new Queue(...)`, and modules that
+  // declare a queue-name constant (the queue's definition site). `MATCH (n)` (any
+  // label) because raw bullmq lives in Files/Functions, not just Classes.
   const producerRows = (
     await client.cypher(
-      'MATCH (n:Class) WHERE n.content CONTAINS "@InjectQueue(" RETURN n.name, n.file_path, n.content',
+      // "new Queue" (no paren) so generic-typed `new Queue<T>(...)` also matches.
+      'MATCH (n) WHERE n.content CONTAINS "@InjectQueue(" OR n.content CONTAINS "new Queue" ' +
+        'OR n.content CONTAINS "QUEUE_NAME" OR n.content CONTAINS "QueueName" ' +
+        'RETURN n.name, n.file_path, n.content',
     )
   ).rows;
   const producerClasses: ProducerClassInput[] = producerRows.map((r) => ({
@@ -33,9 +40,12 @@ export async function stitch(
     content: String(r[2] ?? ''),
   }));
 
+  // Workers: NestJS class-level @Processor, and raw `new Worker(...)`.
   const workerRows = (
     await client.cypher(
-      'MATCH (n:File) WHERE n.content CONTAINS "@Processor(" RETURN n.name, n.file_path, n.content',
+      // "new Worker" (no paren) so generic-typed `new Worker<T>(...)` also matches.
+      'MATCH (n) WHERE n.content CONTAINS "@Processor(" OR n.content CONTAINS "new Worker" ' +
+        'RETURN n.name, n.file_path, n.content',
     )
   ).rows;
   const workerFiles: WorkerFileInput[] = workerRows.map((r) => ({
@@ -52,9 +62,10 @@ export async function stitch(
     workerSymbol: e.workerSymbol,
     workerFile: e.workerFile,
     source: 'stitcher',
+    project: opts.project ?? null,
   }));
 
-  await replaceQueueEdges(db, edges);
+  await replaceQueueEdges(db, edges, { project: opts.project });
 
   return {
     queues: graph.queues.length,

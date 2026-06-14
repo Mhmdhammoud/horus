@@ -6,14 +6,14 @@ import type { QueueEdge } from '@horus/db';
 
 export async function runQueues(
   name: string | undefined,
-  opts: { config?: string },
+  opts: { config?: string; project?: string },
 ): Promise<number> {
   try {
     const config = await loadConfig(opts.config);
     const { db, sql } = createDb(config.database.url);
 
     try {
-      const rows = await listQueueEdges(db, name);
+      const rows = await listQueueEdges(db, { project: opts.project, queueName: name });
 
       if (rows.length === 0) {
         console.log('No queue edges. Run: horus index');

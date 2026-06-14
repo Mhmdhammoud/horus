@@ -38,7 +38,7 @@ async function stitchQueueMap(hostUrl: string, dbUrl: string, label: string): Pr
   const axon = new AxonHttpClient({ baseUrl: hostUrl });
   const { db, sql } = createDb(dbUrl);
   try {
-    const summary = await stitch(axon, db);
+    const summary = await stitch(axon, db, { project: label });
     console.log(
       pc.dim(`[${label}]  `) +
         `Stitched ${summary.edges} queue edge(s) across ${summary.queues} queue(s) — ` +

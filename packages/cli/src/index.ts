@@ -126,8 +126,9 @@ export function buildProgram(): Command {
     .command('queues [name]')
     .description('Show producer -> queue -> worker edges')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .action(async (name: string | undefined, opts: { config?: string }) => {
-      process.exitCode = await runQueues(name, { config: opts.config });
+    .option('--project <name>', 'filter edges by project')
+    .action(async (name: string | undefined, opts: { config?: string; project?: string }) => {
+      process.exitCode = await runQueues(name, { config: opts.config, project: opts.project });
     });
 
   program

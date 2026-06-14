@@ -219,7 +219,7 @@ export async function investigate(
     code.impact(top.id, 2),
     code.flowsFor(top.id),
   ]);
-  const edges = await listQueueEdges(db);
+  const edges = await listQueueEdges(db, { project: input.repo });
 
   const symbolNames = new Set<string>([
     top.name,

@@ -108,10 +108,14 @@ export const queueEdges = pgTable(
     workerSymbol: text('worker_symbol'),
     workerFile: text('worker_file'),
     source: text('source').notNull().default('stitcher'), // who synthesized this edge
+    project: text('project'), // nullable for back-compat; set to the project label by the stitcher
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('queue_edges_queue_name_idx').on(t.queueName)],
+  (t) => [
+    index('queue_edges_queue_name_idx').on(t.queueName),
+    index('queue_edges_source_project_idx').on(t.source, t.project),
+  ],
 );
 
 /**
