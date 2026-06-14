@@ -8,7 +8,7 @@
 
 import type { Evidence } from '@horus/core';
 import type { InvestigationGraph } from './graph.js';
-import { maxImplicationScore } from './graph.js';
+import { maxImplicationScore, implicatedNodeIds } from './graph.js';
 
 // ── Bands ──────────────────────────────────────────────────────────────────
 
@@ -75,12 +75,29 @@ export interface CauseInput {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * Minimal finding shape accepted by the scorer. Structurally compatible with
+ * `ReportFinding` from types.ts (not imported to avoid a circular dependency
+ * — score-cause.ts is imported by types.ts via CauseCandidate).
+ */
+export interface ScoringFinding {
+  kind: string;
+  confidence: number;
+  evidenceIds: string[];
+}
+
 /** Contextual data the scorer uses to compute factor adjustments. */
 export interface ScoringContext {
   /** Normalized evidence from the current investigation. */
   evidence: Evidence[];
   /** Infrastructure topology derived from evidence (HOR-14). */
   graph: InvestigationGraph;
+  /**
+   * Findings produced by the investigation engine. Used by the
+   * finding-corroboration factor: causes backed by high-confidence anomaly
+   * findings score higher. Omit when calling the scorer outside the engine.
+   */
+  findings?: ScoringFinding[];
   /**
    * Reference timestamp for recency calculations. Defaults to now if omitted.
    * Inject a fixed value in tests to ensure determinism.
@@ -289,6 +306,36 @@ function factorSignalStrength(items: Evidence[]): ScoreExplanation | null {
   return null;
 }
 
+/**
+ * Factor 7 — Finding corroboration.
+ *
+ * An investigation finding that shares evidence with this cause lends
+ * additional credibility. Only `anomaly` and `correlation` findings at
+ * confidence ≥ 0.6 are counted; structural `observation` findings are ignored.
+ *
+ * - 1 corroborating finding → +0.05
+ * - 2+ corroborating findings → +0.10
+ */
+function factorFindingCorroboration(
+  sourceEvidenceIds: string[],
+  findings: ScoringFinding[],
+): ScoreExplanation | null {
+  const idSet = new Set(sourceEvidenceIds);
+  const matching = findings.filter(
+    (f) =>
+      f.kind !== 'observation' &&
+      f.confidence >= 0.6 &&
+      f.evidenceIds.some((eid) => idSet.has(eid)),
+  );
+  if (matching.length === 0) return null;
+  const delta = matching.length >= 2 ? 0.10 : 0.05;
+  return {
+    factor: 'finding-corroboration',
+    delta,
+    reason: `${matching.length} corroborating finding(s) at confidence ≥ 0.6 share evidence with this cause`,
+  };
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /**
@@ -309,6 +356,7 @@ export function scoreCause(input: CauseInput, ctx: ScoringContext): CauseCandida
     factorRuntimeSignals(attached, now),
     factorBlastRadius(input.metadata),
     factorSignalStrength(attached),
+    factorFindingCorroboration(input.sourceEvidenceIds, ctx.findings ?? []),
   ];
 
   const explanations = rawFactors.filter((f): f is ScoreExplanation => f !== null);
@@ -316,12 +364,18 @@ export function scoreCause(input: CauseInput, ctx: ScoringContext): CauseCandida
   const finalScore = clamp01(input.baseScore + totalDelta);
   const band = getBand(finalScore);
 
+  // Derive affectedNodeIds from the graph rather than relying on callers to
+  // supply them: any implicated infrastructure node whose evidence overlaps
+  // with this cause's sourceEvidenceIds is considered affected.
+  const derivedNodeIds =
+    input.affectedNodeIds ?? implicatedNodeIds(ctx.graph, input.sourceEvidenceIds);
+
   return {
     id: input.id,
     title: input.title,
     category: input.category,
     sourceEvidenceIds: input.sourceEvidenceIds,
-    affectedNodeIds: input.affectedNodeIds ?? [],
+    affectedNodeIds: derivedNodeIds,
     baseScore: input.baseScore,
     finalScore,
     confidence: finalScore,

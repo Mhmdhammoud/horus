@@ -339,3 +339,19 @@ export function maxImplicationScore(
       : max;
   }, 0);
 }
+
+/**
+ * Return the IDs of all **implicated** infrastructure nodes whose `.evidenceIds`
+ * overlap with the supplied set. Used to populate `CauseCandidate.affectedNodeIds`.
+ */
+export function implicatedNodeIds(
+  graph: InvestigationGraph,
+  evidenceIds: string[],
+): string[] {
+  const idSet = new Set(evidenceIds);
+  return graph.nodes
+    .filter(
+      (n) => n.type !== 'evidence' && n.implicated && n.evidenceIds.some((eid) => idSet.has(eid)),
+    )
+    .map((n) => n.id);
+}

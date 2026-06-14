@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Evidence } from '@horus/core';
 import type { InvestigationGraph } from './graph.js';
-import type { CauseInput, ScoringContext } from './score-cause.js';
+import type { CauseInput, ScoringContext, ScoringFinding } from './score-cause.js';
 import { scoreCause, rankCauses } from './score-cause.js';
 
 // ---------------------------------------------------------------------------
@@ -430,7 +430,7 @@ describe('scoreCause — scenario 8: all factors combined', () => {
     });
     const logEv = makeEvidence('ev-log', 'log', 'logs', 0.95, 'critical', {
       timestamp: recentTs,
-      payload: { isNew: true },
+      isNew: true,
     });
     const graph: InvestigationGraph = {
       nodes: [
@@ -489,6 +489,139 @@ describe('scoreCause — scenario 8: all factors combined', () => {
     expect(['highly-likely', 'likely', 'possible', 'observation']).toContain(result.band);
     expect(Array.isArray(result.explanations)).toBe(true);
     expect(result.metadata).toEqual({ blastRadius: 5 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 9: Finding corroboration
+// ---------------------------------------------------------------------------
+
+describe('scoreCause — scenario 9: finding corroboration', () => {
+  it('finding-corroboration fires when a high-confidence anomaly finding shares evidence', () => {
+    const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.85, 'high');
+    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: ['ev-q'] });
+    const findings: ScoringFinding[] = [
+      { kind: 'anomaly', confidence: 0.85, evidenceIds: ['ev-q'] },
+    ];
+    const result = scoreCause(input, { ...makeCtx([ev]), findings });
+    const factor = result.explanations.find((e) => e.factor === 'finding-corroboration');
+    expect(factor).toBeDefined();
+    expect(factor!.delta).toBe(0.05);
+  });
+
+  it('two corroborating findings produce a +0.10 delta', () => {
+    const ev1 = makeEvidence('ev-q1', 'queue-state', 'queue', 0.85, 'high');
+    const ev2 = makeEvidence('ev-log', 'log', 'logs', 0.9, 'critical');
+    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: ['ev-q1', 'ev-log'] });
+    const findings: ScoringFinding[] = [
+      { kind: 'anomaly', confidence: 0.8, evidenceIds: ['ev-q1'] },
+      { kind: 'correlation', confidence: 0.7, evidenceIds: ['ev-log'] },
+    ];
+    const result = scoreCause(input, { ...makeCtx([ev1, ev2]), findings });
+    const factor = result.explanations.find((e) => e.factor === 'finding-corroboration');
+    expect(factor).toBeDefined();
+    expect(factor!.delta).toBe(0.10);
+  });
+
+  it('observation findings are not counted even when they share evidence', () => {
+    const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.85, 'high');
+    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: ['ev-q'] });
+    const findings: ScoringFinding[] = [
+      { kind: 'observation', confidence: 0.9, evidenceIds: ['ev-q'] },
+    ];
+    const result = scoreCause(input, { ...makeCtx([ev]), findings });
+    const factor = result.explanations.find((e) => e.factor === 'finding-corroboration');
+    expect(factor).toBeUndefined();
+  });
+
+  it('findings with confidence < 0.6 are not counted', () => {
+    const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.85, 'high');
+    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: ['ev-q'] });
+    const findings: ScoringFinding[] = [
+      { kind: 'anomaly', confidence: 0.55, evidenceIds: ['ev-q'] },
+    ];
+    const result = scoreCause(input, { ...makeCtx([ev]), findings });
+    const factor = result.explanations.find((e) => e.factor === 'finding-corroboration');
+    expect(factor).toBeUndefined();
+  });
+
+  it('finding-corroboration does not fire when no evidence IDs overlap', () => {
+    const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.85, 'high');
+    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: ['ev-q'] });
+    const findings: ScoringFinding[] = [
+      { kind: 'anomaly', confidence: 0.85, evidenceIds: ['ev-other'] },
+    ];
+    const result = scoreCause(input, { ...makeCtx([ev]), findings });
+    const factor = result.explanations.find((e) => e.factor === 'finding-corroboration');
+    expect(factor).toBeUndefined();
+  });
+
+  it('finding-corroboration does not fire when ctx.findings is omitted', () => {
+    const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.85, 'high');
+    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: ['ev-q'] });
+    const result = scoreCause(input, makeCtx([ev]));
+    const factor = result.explanations.find((e) => e.factor === 'finding-corroboration');
+    expect(factor).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// affectedNodeIds — derived from graph when not supplied
+// ---------------------------------------------------------------------------
+
+describe('scoreCause — affectedNodeIds derivation', () => {
+  it('affectedNodeIds is derived from implicated graph nodes when not supplied', () => {
+    const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.85, 'high');
+    const graph: InvestigationGraph = {
+      nodes: [
+        {
+          id: 'queue:payments',
+          type: 'queue',
+          label: 'payments',
+          evidenceIds: ['ev-q'],
+          implicated: true,
+          implicationScore: 0.85,
+        },
+      ],
+      edges: [],
+    };
+    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: ['ev-q'] });
+    const result = scoreCause(input, { evidence: [ev], graph, now: FIXED_NOW });
+    expect(result.affectedNodeIds).toContain('queue:payments');
+  });
+
+  it('affectedNodeIds uses the caller-supplied list when provided', () => {
+    const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.85, 'high');
+    const input: CauseInput = {
+      id: 'cause:test',
+      title: 'Test',
+      category: 'other',
+      sourceEvidenceIds: ['ev-q'],
+      affectedNodeIds: ['custom:node:1'],
+      baseScore: 0.45,
+    };
+    const result = scoreCause(input, makeCtx([ev]));
+    expect(result.affectedNodeIds).toEqual(['custom:node:1']);
+  });
+
+  it('non-implicated nodes are not included in affectedNodeIds', () => {
+    const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.85, 'high');
+    const graph: InvestigationGraph = {
+      nodes: [
+        {
+          id: 'queue:healthy',
+          type: 'queue',
+          label: 'healthy',
+          evidenceIds: ['ev-q'],
+          implicated: false,
+          implicationScore: 0.3,
+        },
+      ],
+      edges: [],
+    };
+    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: ['ev-q'] });
+    const result = scoreCause(input, { evidence: [ev], graph, now: FIXED_NOW });
+    expect(result.affectedNodeIds).toHaveLength(0);
   });
 });
 
