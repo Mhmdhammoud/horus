@@ -356,37 +356,143 @@ describe('investigate() — multi-queue attribution', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 7. Confidence: single provider with many derived records cannot saturate
+// 7. Grafana queue-growth: delimiter-aware matching and canonical key lookup
 // ---------------------------------------------------------------------------
 
-describe('investigate() — confidence source cap', () => {
-  it('a verbose BullMQ snapshot does not produce confidence > 0.9 from evidence alone', async () => {
-    // Snapshot designed to emit as many signals as possible:
-    // starvation + oldest-job + failed-spike + failed-breakdown + summary
-    const verboseState: QueueRuntimeState = {
-      prefix: 'bull',
-      collectedAt: new Date().toISOString(),
-      queues: [{
-        queueName: 'orders',
-        waiting: 50,
-        active: 0,           // starvation
-        failed: 150,         // severe failed-spike
-        delayed: 0,
-        completed: 100,
-        paused: 0,
-        isPaused: false,
-        oldestWaitingMs: 90 * 60_000,  // oldest-job > 1h (severe)
-        failedBreakdown: [{ reason: 'TimeoutError', count: 15 }, { reason: 'NetworkError', count: 5 }],
-      }],
+describe('investigate() — Grafana queue metric canonical key attribution', () => {
+  it('mixed-case queue name (OrderSync) receives matched Grafana evidence', async () => {
+    const mixedCaseEdge: QueueEdge = {
+      id: globalThis.crypto.randomUUID(),
+      queueName: 'OrderSync',   // mixed case — should still match 'ordersync queue depth'
+      producerSymbol: 'ZohoSyncWorker',
+      producerFile: 'src/workers/zoho-sync.worker.ts',
+      workerSymbol: null,
+      workerFile: null,
+      source: 'stitcher',
+      project: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const dbMixed = makeDb([mixedCaseEdge]);
+
+    const fakeMetrics: MetricsProvider = {
+      id: 'grafana',
+      kind: 'metrics',
+      async health() { return { ok: true, detail: 'fake' }; },
+      async findPanels() { return []; },
+      async analyze() {
+        return [{
+          dashboardUid: 'dash-1',
+          panelTitle: 'ordersync queue depth',  // lowercase version of 'OrderSync'
+          kind: 'queue' as const,
+          anomaly: 'queue-growth' as const,
+          labels: {},
+          baselineAvg: 10,
+          currentAvg: 5000,
+          ratio: 500,
+          lastValue: 5000,
+        }];
+      },
+      async rawRange() { return []; },
+      toEvidence(findings: MetricFinding[]): Evidence[] {
+        return findings.map((f, i) => ({
+          id: `ev_metric_${i}`,
+          source: 'metrics' as const,
+          kind: 'metric' as const,
+          title: `${f.panelTitle}: queue-growth`,
+          relevance: 0.8,
+          payload: {},
+          links: {},
+          provenance: { query: 'zoho', collectedAt: new Date().toISOString() },
+        }));
+      },
     };
 
     const report = await investigate(
       { hint: 'zoho' },
-      { code: fakeCode, db: fakeDbWithQueues, queue: makeQueueProvider(verboseState) },
+      { code: fakeCode, db: dbMixed, metrics: fakeMetrics, connectors: { grafana: true } },
     );
 
-    // report.confidence is the final value after gap ceiling — must be < 0.9
-    // so one provider snapshot cannot push confidence near 1.0 on its own.
-    expect(report.confidence).toBeLessThan(0.9);
+    const ws = report.hypotheses.find((h) => h.category === 'worker-slowdown');
+    expect(ws).toBeDefined();
+    expect(ws?.verdict).toBe('supported');
+  });
+
+  it('panel matching orders does not contaminate preorders hypothesis', async () => {
+    const ordersEdge: QueueEdge = {
+      id: globalThis.crypto.randomUUID(),
+      queueName: 'orders',
+      producerSymbol: 'ZohoSyncWorker',
+      producerFile: 'src/workers/zoho-sync.worker.ts',
+      workerSymbol: null,
+      workerFile: null,
+      source: 'stitcher',
+      project: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const preordersEdge: QueueEdge = {
+      id: globalThis.crypto.randomUUID(),
+      queueName: 'preorders',
+      producerSymbol: 'ZohoSyncWorker',
+      producerFile: 'src/workers/zoho-sync.worker.ts',
+      workerSymbol: null,
+      workerFile: null,
+      source: 'stitcher',
+      project: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const dbOverlap = makeDb([ordersEdge, preordersEdge]);
+
+    const fakeMetrics: MetricsProvider = {
+      id: 'grafana',
+      kind: 'metrics',
+      async health() { return { ok: true, detail: 'fake' }; },
+      async findPanels() { return []; },
+      async analyze() {
+        return [{
+          dashboardUid: 'dash-1',
+          // Panel title only contains 'orders', not 'preorders'
+          panelTitle: 'orders queue depth',
+          kind: 'queue' as const,
+          anomaly: 'queue-growth' as const,
+          labels: {},
+          baselineAvg: 10,
+          currentAvg: 5000,
+          ratio: 500,
+          lastValue: 5000,
+        }];
+      },
+      async rawRange() { return []; },
+      toEvidence(findings: MetricFinding[]): Evidence[] {
+        return findings.map((f, i) => ({
+          id: `ev_metric_${i}`,
+          source: 'metrics' as const,
+          kind: 'metric' as const,
+          title: `${f.panelTitle}: queue-growth`,
+          relevance: 0.8,
+          payload: {},
+          links: {},
+          provenance: { query: 'zoho', collectedAt: new Date().toISOString() },
+        }));
+      },
+    };
+
+    const report = await investigate(
+      { hint: 'zoho' },
+      { code: fakeCode, db: dbOverlap, metrics: fakeMetrics, connectors: { grafana: true } },
+    );
+
+    // 'orders' panel → orders worker-slowdown is supported
+    const wsOrders = report.hypotheses.find(
+      (h) => h.category === 'worker-slowdown' && h.statement.includes('orders'),
+    );
+    // 'preorders' panel was not present → preorders worker-slowdown must remain unconfirmed
+    const wsPreorders = report.hypotheses.find(
+      (h) => h.category === 'worker-slowdown' && h.statement.includes('preorders'),
+    );
+    expect(wsOrders?.verdict).toBe('supported');
+    expect(wsPreorders?.verdict).toBe('unconfirmed');
   });
 });

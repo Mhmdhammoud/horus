@@ -57,6 +57,7 @@ import { buildTimeline } from './timeline.js';
 import { correlate } from './correlate.js';
 import { rankSeeds } from './seeds.js';
 import { normalizeEvidence } from './normalize.js';
+import { computeWeightedEvidenceConfidence } from './confidence.js';
 
 /** Dependencies the engine needs: a code provider and a database handle. */
 export interface EngineDeps {
@@ -493,9 +494,19 @@ export async function investigate(
       // queue-growth must reference a known queue name; latency/error-rate must match
       // the investigated service when one is given — without a service scope the
       // correlation is too loose to be causal evidence.
-      const queueNamesSet = new Set(queueHits.map((e) => e.queueName.toLowerCase()));
+      // Canonical-to-normalized map: match using normalized form, store under original case.
+      // A queue named 'OrderSync' lowercases to 'ordersync', which is what appears in
+      // panel titles. Storing by canonical name ensures hypothesis lookup succeeds.
+      const queueNormToCanonical = new Map<string, string>();
+      for (const edge of queueHits) {
+        const norm = edge.queueName.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        if (!queueNormToCanonical.has(norm)) queueNormToCanonical.set(norm, edge.queueName);
+      }
       const serviceFilter = (input.service ?? '').toLowerCase();
       const collectedAt = new Date().toISOString();
+      // Tracks which evidence IDs have already been added to queueMetricEvIds so
+      // a panel matching multiple queues doesn't insert the same ID twice.
+      const seenQueueMetricEvIds = new Set<string>();
 
       for (let i = 0; i < mEvidence.length; i++) {
         const ev = mEvidence[i];
@@ -520,15 +531,25 @@ export async function investigate(
           if (relevant) latencyMetricEvIds.push(ev.id);
         } else if (f.anomaly === 'queue-growth') {
           // Attribute each queue-growth anomaly to the specific queue(s) it matches.
-          // This prevents an anomaly on 'orders' from boosting 'email' hypotheses.
-          for (const queueName of queueNamesSet) {
-            const matchesQueue =
-              panelLower.includes(queueName) || labelVals.some((v) => v.includes(queueName));
+          // Match using normalized panel/label strings with word-boundary checks so
+          // 'orders' does not match inside 'preorders'. Store under canonical queue name
+          // so hypothesis lookup (which uses original case) finds the entry.
+          const panelNorm = f.panelTitle.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+          const labelNorms = Object.values(f.labels).map(
+            (v) => v.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(),
+          );
+          for (const [norm, canonical] of queueNormToCanonical) {
+            const escaped = norm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const re = new RegExp(`(?:^| )${escaped}(?:$| )`);
+            const matchesQueue = re.test(panelNorm) || labelNorms.some((lv) => re.test(lv));
             if (matchesQueue) {
-              queueMetricEvIds.push(ev.id);
-              const list = queueMetricEvIdsByQueue.get(queueName) ?? [];
-              list.push(ev.id);
-              queueMetricEvIdsByQueue.set(queueName, list);
+              if (!seenQueueMetricEvIds.has(ev.id)) {
+                seenQueueMetricEvIds.add(ev.id);
+                queueMetricEvIds.push(ev.id);
+              }
+              const list = queueMetricEvIdsByQueue.get(canonical) ?? [];
+              if (!list.includes(ev.id)) list.push(ev.id);
+              queueMetricEvIdsByQueue.set(canonical, list);
             }
           }
         }
@@ -886,36 +907,8 @@ export async function investigate(
     request: { hint: input.hint, service: input.service },
   });
 
-  // g. confidence — relevance-weighted, capped per source dimension.
-  //
-  // Two goals:
-  //   1. Runtime evidence (observational: logs, metrics, queue-state, etc.) counts
-  //      more than structural evidence (code graph: symbols, flows, edges).
-  //   2. One verbose provider cannot saturate confidence: a single BullMQ snapshot
-  //      can emit 5+ derived records; without a per-source cap, those records would
-  //      inflate evidence quality beyond what any single observation warrants.
-  //
-  // Strategy: each evidence item contributes (relevance × runtime_weight). Weights
-  // are 1.5 for runtime, 0.5 for structural. We cap the total contribution per
-  // Evidence.source at 2.0, then normalize by 6 (3 independent sources at max → 1.0).
-  const sourceContributions = new Map<string, number>();
-  for (const e of evidence) {
-    const isRuntime =
-      e.kind === 'log' ||
-      e.kind === 'metric' ||
-      e.kind === 'commit' ||
-      e.kind === 'queue-state' ||
-      e.kind === 'redis-key' ||
-      e.kind === 'state';
-    const w = (isRuntime ? 1.5 : 0.5) * clamp01(e.relevance);
-    sourceContributions.set(e.source, (sourceContributions.get(e.source) ?? 0) + w);
-  }
-  const MAX_CONTRIBUTION_PER_SOURCE = 2.0;
-  const cappedSum = [...sourceContributions.values()].reduce(
-    (acc, w) => acc + Math.min(w, MAX_CONTRIBUTION_PER_SOURCE),
-    0,
-  );
-  const evidenceConfidence = clamp01(cappedSum / 6);
+  // g. confidence
+  const evidenceConfidence = computeWeightedEvidenceConfidence(evidence);
   const seedResolved = seeds.length > 0 ? 1 : 0;
   const confidence = clamp01(0.5 * evidenceConfidence + 0.5 * seedResolved);
 
