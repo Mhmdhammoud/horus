@@ -220,6 +220,8 @@ export function analysisToEvidence(
       links: {},
       provenance: { query, collectedAt },
       ...(s.lastSeen ? { timestamp: s.lastSeen } : {}),
+      ...(s.isNew !== undefined ? { isNew: s.isNew } : {}),
+      ...(typeof s.ratio === 'number' && Number.isFinite(s.ratio) ? { ratio: s.ratio } : {}),
     });
   });
 

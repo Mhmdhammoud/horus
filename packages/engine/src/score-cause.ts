@@ -222,13 +222,12 @@ function factorRuntimeSignals(items: Evidence[], now: string): ScoreExplanation 
   let recurrenceDelta = 0;
   let recurrenceReason = '';
   for (const ev of items.filter((e) => e.kind === 'log')) {
-    const p = ev.payload as { isNew?: boolean; ratio?: number };
-    if (p.isNew === true) {
+    if (ev.isNew === true) {
       recurrenceDelta = Math.max(recurrenceDelta, 0.05);
       recurrenceReason = 'New error signature (isNew=true)';
-    } else if (typeof p.ratio === 'number' && p.ratio >= 3.0) {
+    } else if (typeof ev.ratio === 'number' && ev.ratio >= 3.0) {
       recurrenceDelta = Math.max(recurrenceDelta, 0.03);
-      recurrenceReason = `Error spike (ratio ${p.ratio.toFixed(1)}×)`;
+      recurrenceReason = `Error spike (ratio ${ev.ratio.toFixed(1)}×)`;
     }
   }
 

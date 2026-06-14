@@ -303,7 +303,7 @@ describe('scoreCause — scenario 5: runtime signals (recency + recurrence)', ()
 
   it('runtime-signals fires for a new log signature (isNew=true)', () => {
     const ev = makeEvidence('ev-new-err', 'log', 'logs', 0.95, 'critical', {
-      payload: { isNew: true },
+      isNew: true,
     });
     const input = makeInput({ baseScore: 0.40, sourceEvidenceIds: ['ev-new-err'] });
     const result = scoreCause(input, makeCtx([ev]));
@@ -315,7 +315,7 @@ describe('scoreCause — scenario 5: runtime signals (recency + recurrence)', ()
 
   it('runtime-signals fires for a spiking log signature (ratio >= 3)', () => {
     const ev = makeEvidence('ev-spike', 'log', 'logs', 0.9, 'high', {
-      payload: { ratio: 4.5 },
+      ratio: 4.5,
     });
     const input = makeInput({ baseScore: 0.40, sourceEvidenceIds: ['ev-spike'] });
     const result = scoreCause(input, makeCtx([ev]));

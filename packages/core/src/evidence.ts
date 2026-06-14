@@ -79,6 +79,18 @@ export interface Evidence {
   priority?: EvidencePriority;
   /** Broad functional grouping; assigned by the normalization layer. */
   category?: EvidenceCategory;
+  /**
+   * Normalized recurrence signal: true when this error/event is a brand-new
+   * signature that has never been seen before. Providers set this field so the
+   * scorer can read it without inspecting provider-specific payload shapes.
+   */
+  isNew?: boolean;
+  /**
+   * Normalized recurrence signal: current-window count divided by baseline.
+   * Values ≥ 3.0 indicate a significant spike. Providers set this field so the
+   * scorer can read it without inspecting provider-specific payload shapes.
+   */
+  ratio?: number;
 }
 
 /** A resolved code symbol, as returned by the code provider. */
