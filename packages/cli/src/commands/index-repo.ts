@@ -1,24 +1,44 @@
 import pc from 'picocolors';
-import { loadConfig } from '@horus/core';
-import { AxonHttpClient, axonHostUrlForRepo } from '@horus/connectors';
+import { loadConfig, resolveEnvironment } from '@horus/core';
+import { AxonHttpClient } from '@horus/connectors';
 import { createDb } from '@horus/db';
 import { stitch } from '@horus/stitcher';
 
-export async function runIndex(opts: { config?: string }): Promise<number> {
+export async function runIndex(opts: {
+  config?: string;
+  project?: string;
+  env?: string;
+}): Promise<number> {
   try {
     const config = await loadConfig(opts.config);
-    // HOR-34: the Axon host is now per project/environment. Resolve the default
-    // (single) project/env's Axon host.
-    const hostUrl = axonHostUrlForRepo(config);
+
+    // HOR-34: the Axon host is per project/environment. Resolve the chosen
+    // project/env (or the single one). The queue map is replaced per run, so
+    // index the project you are about to investigate.
+    let renv;
+    try {
+      renv = resolveEnvironment(config, { project: opts.project, env: opts.env });
+    } catch (err) {
+      console.error(pc.red((err as Error).message));
+      return 1;
+    }
+
+    const hostUrl = renv.connectors.axon?.hostUrl;
     if (!hostUrl) {
-      console.error(pc.red('No Axon connector configured for the default project/env.'));
+      console.error(
+        pc.red(`No Axon connector configured for ${renv.project}/${renv.env}.`),
+      );
       return 1;
     }
     const axon = new AxonHttpClient({ baseUrl: hostUrl });
 
     const health = await axon.health();
     if (!health.ok) {
-      console.error(pc.red('Axon host unreachable — start it with: axon host --port 8420'));
+      console.error(
+        pc.red(
+          `Axon host unreachable for ${renv.project}/${renv.env} (${hostUrl}) — start it with: axon host`,
+        ),
+      );
       return 1;
     }
 
@@ -26,7 +46,8 @@ export async function runIndex(opts: { config?: string }): Promise<number> {
     try {
       const summary = await stitch(axon, db);
       console.log(
-        'Stitched ' +
+        pc.dim(`[${renv.project}/${renv.env}]  `) +
+          'Stitched ' +
           summary.edges +
           ' queue edge(s) across ' +
           summary.queues +

@@ -73,10 +73,12 @@ export function buildProgram(): Command {
 
   program
     .command('index')
-    .description('Build the queue map (run the stitcher against the Axon host)')
+    .description('Build the queue map for a project (run the stitcher against its Axon host)')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .action(async (opts: { config?: string }) => {
-      process.exitCode = await runIndex({ config: opts.config });
+    .option('--project <name>', 'project name')
+    .option('--env <name>', 'environment name (e.g. production)')
+    .action(async (opts: { config?: string; project?: string; env?: string }) => {
+      process.exitCode = await runIndex(opts);
     });
 
   program
