@@ -7,6 +7,7 @@ import type { Evidence, Symbol, Flow } from '@horus/core';
 import type { Timeline } from './timeline.js';
 import type { CorrelationResult } from './correlate.js';
 import type { ValidatedHypothesis } from './validate.js';
+import type { SimilarIncident } from './memory.js';
 
 /** The user-supplied incident hint plus optional scoping. */
 export interface InvestigationInput {
@@ -53,6 +54,8 @@ export interface InvestigationReport {
   findings: ReportFinding[];
   suspectedCauses: SuspectedCause[];
   hypotheses: ValidatedHypothesis[];
+  /** Similar past incidents recalled from institutional memory (context only). */
+  similarIncidents: SimilarIncident[];
   /** 0–1 overall confidence in the investigation. */
   confidence: number;
   nextActions: string[];

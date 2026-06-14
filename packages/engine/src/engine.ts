@@ -31,6 +31,7 @@ import {
 } from '@horus/db';
 import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
+import { recallSimilar, storeIncidentMemory, deriveTags } from './memory.js';
 import type {
   InvestigationInput,
   InvestigationReport,
@@ -151,6 +152,7 @@ export async function investigate(
       findings: [],
       suspectedCauses: [],
       hypotheses: [],
+      similarIncidents: [],
       confidence: 0,
       nextActions: [
         `No symbols matched "${hint}". Try a more specific hint — an exact function, class, or file name.`,
@@ -394,6 +396,7 @@ export async function investigate(
     findings,
     suspectedCauses: rankedCauses,
     hypotheses: validated,
+    similarIncidents: [],
     confidence,
     nextActions,
   };
@@ -401,6 +404,15 @@ export async function investigate(
   // j. PERSIST — may overwrite report.id with the DB-assigned id.
   const persistedId = await persist(db, input, report);
   if (persistedId) report.id = persistedId;
+
+  // k. INCIDENT MEMORY (HOR-18) — recall similar past incidents THEN store.
+  //    Past incidents are CONTEXT ONLY; they must never override report.confidence.
+  if (persistedId !== null) {
+    const tags = deriveTags(report);
+    report.similarIncidents = await recallSimilar(db, tags, persistedId);
+    await storeIncidentMemory(db, persistedId, report);
+  }
+  // If persist failed (db down / no id), similarIncidents stays [] and we skip store.
 
   return report;
 }

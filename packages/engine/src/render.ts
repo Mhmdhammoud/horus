@@ -25,6 +25,26 @@ export function renderReport(r: InvestigationReport): string {
   lines.push(r.summary);
   lines.push('');
 
+  lines.push('## Similar past incidents');
+  if (r.similarIncidents.length === 0) {
+    lines.push('(none on record)');
+  } else {
+    for (const s of r.similarIncidents) {
+      lines.push(
+        `- ${s.title} (overlap ${(s.overlap * 100).toFixed(0)}%) — shared: ${s.sharedTags.join(', ')}`,
+      );
+      if (s.summary) {
+        const truncated =
+          s.summary.length > 80 ? s.summary.slice(0, 77) + '...' : s.summary;
+        lines.push(`    ${truncated}`);
+      }
+    }
+    lines.push(
+      'Context only — past incidents inform, but never override, the current evidence.',
+    );
+  }
+  lines.push('');
+
   lines.push('## Seed(s)');
   if (r.seeds.length === 0) {
     lines.push('(none)');
@@ -177,6 +197,26 @@ export function reportToMarkdown(r: InvestigationReport): string {
   out.push('');
   out.push('## Summary');
   out.push(r.summary);
+  out.push('');
+
+  out.push('## Similar past incidents');
+  if (r.similarIncidents.length === 0) {
+    out.push('(none on record)');
+  } else {
+    for (const s of r.similarIncidents) {
+      out.push(
+        `- ${s.title} (overlap ${(s.overlap * 100).toFixed(0)}%) — shared: ${s.sharedTags.join(', ')}`,
+      );
+      if (s.summary) {
+        const truncated =
+          s.summary.length > 80 ? s.summary.slice(0, 77) + '...' : s.summary;
+        out.push(`  _${truncated}_`);
+      }
+    }
+    out.push(
+      '_Context only — past incidents inform, but never override, the current evidence._',
+    );
+  }
   out.push('');
 
   out.push('## Suspected causes');
