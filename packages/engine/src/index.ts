@@ -24,3 +24,4 @@ export * from './gaps.js';
 export * from './multi-repo.js';
 export * from './ownership.js';
 export * from './render-ownership.js';
+export * from './postmortem.js';

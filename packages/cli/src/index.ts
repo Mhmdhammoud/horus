@@ -15,6 +15,7 @@ import { runSearch } from './commands/search.js';
 import { runInvestigations } from './commands/investigations.js';
 import { runReplay } from './commands/replay.js';
 import { runOwner } from './commands/owner.js';
+import { runPostmortem } from './commands/postmortem.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -250,6 +251,14 @@ export function buildProgram(): Command {
     .option('--format <fmt>', 'text | markdown | json', 'text')
     .action(async (id: string, opts: { config?: string; format?: string }) => {
       process.exitCode = await runReplay(id, { config: opts.config, format: opts.format });
+    });
+
+  program
+    .command('postmortem <id>')
+    .description('Draft an editable incident postmortem from a saved investigation')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .action(async (id: string, opts: { config?: string }) => {
+      process.exitCode = await runPostmortem(id, { config: opts.config });
     });
 
   program
