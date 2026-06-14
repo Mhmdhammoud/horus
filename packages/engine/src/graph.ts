@@ -195,15 +195,41 @@ const PROPAGATION_FACTOR = 0.7;
 /** Minimum implication score for a node to be marked `implicated: true`. */
 const IMPLICATION_THRESHOLD = 0.6;
 
+/**
+ * Kinds that the normalization layer always classifies as `priority: 'info'`.
+ * Structural evidence provides topology context, not anomaly signals — it must
+ * not implicate infrastructure nodes on its own.
+ */
+const STRUCTURAL_KINDS: ReadonlySet<string> = new Set([
+  'symbol', 'flow', 'impact', 'queue-edge',
+]);
+
+/**
+ * Return true when evidence should be excluded from implication scoring.
+ *
+ * When evidence has been through `normalizeEvidence()` (i.e. priority is set),
+ * `priority === 'info'` is the authoritative signal — it covers structural kinds,
+ * low-relevance commits, and healthy snapshots. When evidence is un-normalized
+ * (tests, fixtures), fall back to the structural-kind set so the guard still
+ * fires for the kinds that would always receive `priority: 'info'`.
+ */
+function isStructuralEvidence(ev: Evidence): boolean {
+  if (ev.priority !== undefined) return ev.priority === 'info';
+  return STRUCTURAL_KINDS.has(ev.kind);
+}
+
 function scoreImplication(nodes: NodeMap, edges: EdgeMap, evidence: Evidence[]): void {
   const evById = new Map(evidence.map((e) => [e.id, e]));
 
-  // Pass 1: base score = max relevance of directly-attached evidence.
+  // Pass 1: base score = max relevance of non-structural, directly-attached
+  // evidence. Structural evidence (queue-edge, symbol, flow, impact — always
+  // priority: 'info') is excluded so topology alone cannot implicate a node.
   for (const node of nodes.values()) {
     if (node.type === 'evidence') continue;
     node.implicationScore = node.evidenceIds.reduce((max, eid) => {
       const ev = evById.get(eid);
-      return ev !== undefined ? Math.max(max, ev.relevance) : max;
+      if (!ev || isStructuralEvidence(ev)) return max;
+      return Math.max(max, ev.relevance);
     }, 0);
   }
 

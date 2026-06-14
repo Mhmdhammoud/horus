@@ -178,7 +178,7 @@ describe('buildGraph — queue-state evidence', () => {
     const queueNodes = g.nodes.filter((n) => n.id === 'queue:sync');
     expect(queueNodes).toHaveLength(1);
     expect(queueNodes[0]!.evidenceIds).toEqual(['ev-qs-4a', 'ev-qs-4b']);
-    // Max relevance of the two evidence items
+    // implicationScore = max relevance of the two queue-state items
     expect(queueNodes[0]!.implicationScore).toBeCloseTo(0.88);
   });
 });
@@ -342,7 +342,7 @@ describe('buildGraph — mixed evidence', () => {
     expect(queueNodes).toHaveLength(1);
     // Both evidence items are attached to the single queue node
     expect(queueNodes[0]!.evidenceIds).toEqual(['ev-mixed-edge', 'ev-mixed-state']);
-    // implicationScore uses the max relevance across both
+    // implicationScore = 0.88 from queue-state; queue-edge is structural (excluded)
     expect(queueNodes[0]!.implicationScore).toBeCloseTo(0.88);
   });
 
@@ -441,16 +441,17 @@ describe('buildGraph — deterministic output', () => {
 
 describe('buildGraph — implication propagation', () => {
   it('high-relevance queue-state propagates score to connected service and worker', () => {
-    // queue-edge has low relevance so service/worker have low direct scores
+    // queue-edge is structural evidence — excluded from implication scoring, so
+    // service and worker start with base score 0 and receive only propagated score
     const edge = makeEv({
       id: 'ev-prop-edge',
       source: 'queue',
       kind: 'queue-edge',
-      relevance: 0.1,
+      relevance: 0.9,
       payload: { queueName: 'jobs', producerSymbol: 'Producer', workerSymbol: 'Consumer' },
       links: {},
     });
-    // queue-state has high relevance — should propagate to neighbours
+    // queue-state is runtime evidence — contributes to implication scoring
     const state = makeEv({
       id: 'ev-prop-state',
       source: 'queue',
@@ -465,23 +466,43 @@ describe('buildGraph — implication propagation', () => {
     const service = g.nodes.find((n) => n.id === 'service:Producer')!;
     const worker = g.nodes.find((n) => n.id === 'worker:Consumer')!;
 
-    // Queue gets max(0.1, 0.9) = 0.9 directly from its attached evidence
+    // Queue: structural queue-edge excluded; queue-state (0.9) is included
     expect(queue.implicationScore).toBeCloseTo(0.9);
     expect(queue.implicated).toBe(true);
 
-    // Service and worker had direct score 0.1; queue propagates 0.9 * 0.7 = 0.63
+    // Service and worker: structural evidence excluded → base score 0.
+    // Queue propagates 0.9 × 0.7 = 0.63 in one hop.
     expect(service.implicationScore).toBeCloseTo(0.63);
     expect(service.implicated).toBe(true);
     expect(worker.implicationScore).toBeCloseTo(0.63);
     expect(worker.implicated).toBe(true);
   });
 
-  it('low-relevance evidence produces no implication propagation', () => {
+  it('structural queue-edge evidence alone does not implicate any node', () => {
+    const edge = makeEv({
+      id: 'ev-struct-only',
+      source: 'queue',
+      kind: 'queue-edge',
+      relevance: 0.9, // high relevance but structural kind — excluded from scoring
+      payload: { queueName: 'topology', producerSymbol: 'Prod', workerSymbol: 'Work' },
+      links: {},
+    });
+    const g = buildGraph([edge]);
+    const queue = g.nodes.find((n) => n.id === 'queue:topology')!;
+    const service = g.nodes.find((n) => n.id === 'service:Prod')!;
+    const worker = g.nodes.find((n) => n.id === 'worker:Work')!;
+    expect(queue.implicated).toBe(false);
+    expect(queue.implicationScore).toBe(0);
+    expect(service.implicated).toBe(false);
+    expect(worker.implicated).toBe(false);
+  });
+
+  it('low-relevance runtime evidence produces no implication propagation', () => {
     const edge = makeEv({
       id: 'ev-noprop-edge',
       source: 'queue',
       kind: 'queue-edge',
-      relevance: 0.1,
+      relevance: 0.9,
       payload: { queueName: 'idle', producerSymbol: 'Idle', workerSymbol: 'Worker' },
       links: {},
     });
@@ -489,17 +510,18 @@ describe('buildGraph — implication propagation', () => {
       id: 'ev-noprop-state',
       source: 'queue',
       kind: 'queue-state',
-      relevance: 0.3,
+      relevance: 0.3, // healthy snapshot — below implication threshold
       payload: { queueName: 'idle' },
       links: { queueName: 'idle' },
     });
     const g = buildGraph([edge, state]);
 
-    // queue: max(0.1, 0.3) = 0.3, not implicated
+    // queue-state is runtime evidence: queue.implicationScore = 0.3, not implicated
     const queue = g.nodes.find((n) => n.id === 'queue:idle')!;
     expect(queue.implicated).toBe(false);
+    expect(queue.implicationScore).toBeCloseTo(0.3);
 
-    // service: direct score 0.1, propagated 0.3 * 0.7 = 0.21 — neither > threshold
+    // Propagated 0.3 × 0.7 = 0.21 — below the 0.6 threshold
     const service = g.nodes.find((n) => n.id === 'service:Idle')!;
     expect(service.implicated).toBe(false);
   });
