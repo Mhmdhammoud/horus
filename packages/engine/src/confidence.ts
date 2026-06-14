@@ -18,15 +18,20 @@ const RUNTIME_KINDS = new Set<EvidenceKind>([
   'state',
 ]);
 
-// A single evidence source (provider) can contribute at most this much to
-// the weighted sum. Prevents one verbose provider from saturating confidence
-// regardless of how many derived records it emits.
-const MAX_CONTRIBUTION_PER_SOURCE = 2.0;
+// Runtime sources carry direct live observations — allow each to contribute up
+// to 2.0 before the source cap kicks in.
+const MAX_RUNTIME_CONTRIBUTION = 2.0;
 
-// Normalize: 3 independent high-quality sources at max contribution → 1.0.
+// Structural sources (code graph symbols, flow edges, queue-edge topology)
+// provide supporting context, not live confirmation. Cap them lower so a
+// verbose code graph cannot saturate confidence the way runtime anomalies can.
+const MAX_STRUCTURAL_CONTRIBUTION = 0.6;
+
+// Normalize: 3 independent high-quality runtime sources at max contribution → 1.0.
 const NORMALIZATION = 6;
 
 function clamp01(n: number): number {
+  if (Number.isNaN(n)) return 0;
   if (n < 0) return 0;
   if (n > 1) return 1;
   return n;
@@ -36,21 +41,35 @@ function clamp01(n: number): number {
  * Compute an evidence-quality confidence value (0–1) for a set of evidence.
  *
  * Each item contributes `clamp01(relevance) × (1.5 if runtime, else 0.5)`.
- * Contributions are grouped by `Evidence.source` and each source is capped
- * at `MAX_CONTRIBUTION_PER_SOURCE` before summing, so a single verbose
- * provider (many derived records from one snapshot) cannot saturate the result.
+ * Contributions are accumulated separately for runtime and structural kinds,
+ * each grouped by `Evidence.source`. Runtime sources are capped at
+ * MAX_RUNTIME_CONTRIBUTION (2.0); structural sources at MAX_STRUCTURAL_CONTRIBUTION
+ * (0.6). The two sums are then combined and normalised by 6.
  *
- * Normalised by 6 — three independent high-quality runtime sources reach 1.0.
+ * Separate caps ensure that a verbose code graph (many symbol/flow records)
+ * cannot contribute as much as a runtime provider emitting live anomalies.
  */
 export function computeWeightedEvidenceConfidence(evidence: Evidence[]): number {
-  const sourceContributions = new Map<string, number>();
+  const runtimeBySource = new Map<string, number>();
+  const structuralBySource = new Map<string, number>();
+
   for (const e of evidence) {
-    const w = (RUNTIME_KINDS.has(e.kind) ? 1.5 : 0.5) * clamp01(e.relevance);
-    sourceContributions.set(e.source, (sourceContributions.get(e.source) ?? 0) + w);
+    const r = clamp01(e.relevance);
+    if (RUNTIME_KINDS.has(e.kind)) {
+      runtimeBySource.set(e.source, (runtimeBySource.get(e.source) ?? 0) + 1.5 * r);
+    } else {
+      structuralBySource.set(e.source, (structuralBySource.get(e.source) ?? 0) + 0.5 * r);
+    }
   }
-  const cappedSum = [...sourceContributions.values()].reduce(
-    (acc, w) => acc + Math.min(w, MAX_CONTRIBUTION_PER_SOURCE),
+
+  const runtimeSum = [...runtimeBySource.values()].reduce(
+    (acc, w) => acc + Math.min(w, MAX_RUNTIME_CONTRIBUTION),
     0,
   );
-  return clamp01(cappedSum / NORMALIZATION);
+  const structuralSum = [...structuralBySource.values()].reduce(
+    (acc, w) => acc + Math.min(w, MAX_STRUCTURAL_CONTRIBUTION),
+    0,
+  );
+
+  return clamp01((runtimeSum + structuralSum) / NORMALIZATION);
 }

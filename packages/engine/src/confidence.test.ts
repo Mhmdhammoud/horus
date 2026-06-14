@@ -45,9 +45,9 @@ describe('computeWeightedEvidenceConfidence', () => {
     expect(result).toBeCloseTo(0.5 / 6, 5);
   });
 
-  it('per-source cap: adding more records from the same source does not increase confidence beyond 2.0/6', () => {
-    // Each queue-state item at relevance 1.0 contributes 1.5.
-    // Two items = 3.0, but source cap is 2.0. Capped at 2.0/6.
+  it('runtime per-source cap: adding more records from the same source does not increase confidence beyond 2.0/6', () => {
+    // Each queue-state item at relevance 1.0 contributes 1.5 to the runtime bucket.
+    // Two items = 3.0, but runtime source cap is 2.0. Capped at 2.0/6.
     const two = computeWeightedEvidenceConfidence([
       makeEv('queue-state', 'queue', 1.0),
       makeEv('queue-state', 'queue', 1.0),
@@ -60,7 +60,30 @@ describe('computeWeightedEvidenceConfidence', () => {
     expect(two).toBeCloseTo(2.0 / 6, 5);
   });
 
-  it('adding an independent source increases confidence beyond the capped single-source value', () => {
+  it('structural per-source cap: many code-graph records are capped at 0.6/6 — far below runtime cap', () => {
+    // Each symbol item at relevance 1.0 contributes 0.5 to the structural bucket.
+    // 2 items → 1.0, but structural cap is 0.6. So result = 0.6/6.
+    const ten = computeWeightedEvidenceConfidence(
+      Array.from({ length: 10 }, () => makeEv('symbol', 'code', 1.0)),
+    );
+    expect(ten).toBeCloseTo(0.6 / 6, 5);
+  });
+
+  it('many structural records produce lower confidence than equivalent many runtime records', () => {
+    // Even saturating the structural cap produces less than saturating the runtime cap.
+    const manyStructural = computeWeightedEvidenceConfidence(
+      Array.from({ length: 10 }, () => makeEv('symbol', 'code', 1.0)),
+    );
+    const manyRuntime = computeWeightedEvidenceConfidence(
+      Array.from({ length: 10 }, () => makeEv('log', 'logs', 1.0)),
+    );
+    // Structural: capped at 0.6/6 ≈ 0.1; Runtime: capped at 2.0/6 ≈ 0.333
+    expect(manyStructural).toBeLessThan(manyRuntime);
+    expect(manyStructural).toBeCloseTo(0.6 / 6, 5);
+    expect(manyRuntime).toBeCloseTo(2.0 / 6, 5);
+  });
+
+  it('adding an independent runtime source increases confidence beyond the capped single-source value', () => {
     const oneSource = computeWeightedEvidenceConfidence(
       Array.from({ length: 10 }, () => makeEv('queue-state', 'queue', 1.0)),
     );
@@ -102,9 +125,9 @@ describe('computeWeightedEvidenceConfidence', () => {
     expect(result).toBeLessThan(0.4);
   });
 
-  it('three independent high-quality runtime sources produce full evidence confidence', () => {
+  it('three independent high-quality runtime sources reach ≈ 5/6 evidence confidence', () => {
     const result = computeWeightedEvidenceConfidence([
-      makeEv('log', 'logs', 1.0),      // source cap hits 1.5 < 2.0 but just one item
+      makeEv('log', 'logs', 1.0),      // contributes 1.5 (below runtime cap)
       makeEv('metric', 'metrics', 1.0),
       makeEv('queue-state', 'queue', 1.0),
       makeEv('queue-state', 'queue', 0.9),  // same source — adds to 'queue' bucket toward cap
