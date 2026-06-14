@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Evidence } from '@horus/core';
 import type { InvestigationGraph } from './graph.js';
-import type { CauseInput, ScoringContext, ScoringFinding } from './score-cause.js';
+import type { CauseInput, ScoringContext, ScoringFinding, ScoringRequest } from './score-cause.js';
 import { scoreCause, rankCauses } from './score-cause.js';
 
 // ---------------------------------------------------------------------------
@@ -327,12 +327,205 @@ describe('scoreCause — scenario 5: runtime signals (recency + recurrence)', ()
     expect(factor!.reason).toContain('spike');
   });
 
-  it('runtime-signals does not fire for old evidence (>24h)', () => {
+  it('runtime-signals does not fire for evidence in the 24h–3d neutral window', () => {
     const oldTs = '2026-06-12T20:00:00.000Z'; // 2 days before FIXED_NOW
     const ev = makeEvidence('ev-old', 'log', 'logs', 0.7, 'high', { timestamp: oldTs });
     const input = makeInput({ baseScore: 0.40, sourceEvidenceIds: ['ev-old'] });
     const result = scoreCause(input, makeCtx([ev]));
     const factor = result.explanations.find((e) => e.factor === 'runtime-signals');
+    expect(factor).toBeUndefined();
+  });
+
+  it('runtime-signals fires with -0.02 decay for evidence 3–7 days old', () => {
+    const staleTs = '2026-06-10T20:00:00.000Z'; // 4 days before FIXED_NOW
+    const ev = makeEvidence('ev-stale', 'log', 'logs', 0.7, 'high', { timestamp: staleTs });
+    const input = makeInput({ baseScore: 0.50, sourceEvidenceIds: ['ev-stale'] });
+    const result = scoreCause(input, makeCtx([ev]));
+    const factor = result.explanations.find((e) => e.factor === 'runtime-signals');
+    expect(factor).toBeDefined();
+    expect(factor!.delta).toBeCloseTo(-0.02, 3);
+    expect(factor!.reason).toContain('3–7 days');
+  });
+
+  it('runtime-signals fires with -0.05 decay for evidence older than 7 days', () => {
+    const veryStaleTs = '2026-06-06T20:00:00.000Z'; // 8 days before FIXED_NOW
+    const ev = makeEvidence('ev-very-stale', 'log', 'logs', 0.7, 'high', { timestamp: veryStaleTs });
+    const input = makeInput({ baseScore: 0.50, sourceEvidenceIds: ['ev-very-stale'] });
+    const result = scoreCause(input, makeCtx([ev]));
+    const factor = result.explanations.find((e) => e.factor === 'runtime-signals');
+    expect(factor).toBeDefined();
+    expect(factor!.delta).toBeCloseTo(-0.05, 3);
+    expect(factor!.reason).toContain('7 days');
+  });
+
+  it('stale evidence lowers finalScore below baseScore', () => {
+    const veryStaleTs = '2026-06-06T20:00:00.000Z'; // 8 days
+    // No priority so evidence-quality factor is neutral — only decay fires.
+    const ev = makeEvidence('ev-ancient', 'log', 'logs', 0.6, undefined, { timestamp: veryStaleTs });
+    const input = makeInput({ baseScore: 0.50, sourceEvidenceIds: ['ev-ancient'] });
+    const result = scoreCause(input, makeCtx([ev]));
+    expect(result.finalScore).toBeLessThan(0.50);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 11: Provider reliability
+// ---------------------------------------------------------------------------
+
+describe('scoreCause — scenario 11: provider reliability', () => {
+  it('fires with +0.03 when average source reliability is >= 0.80', () => {
+    const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.7, 'high');
+    const input = makeInput({ baseScore: 0.50, sourceEvidenceIds: ['ev-q'] });
+    const ctx: ScoringContext = {
+      ...makeCtx([ev]),
+      providerReliability: { queue: 0.90 },
+    };
+    const result = scoreCause(input, ctx);
+    const factor = result.explanations.find((e) => e.factor === 'provider-reliability');
+    expect(factor).toBeDefined();
+    expect(factor!.delta).toBe(0.03);
+  });
+
+  it('fires with -0.03 when average source reliability is < 0.50', () => {
+    const ev = makeEvidence('ev-q', 'log', 'logs', 0.7, 'high');
+    const input = makeInput({ baseScore: 0.50, sourceEvidenceIds: ['ev-q'] });
+    const ctx: ScoringContext = {
+      ...makeCtx([ev]),
+      providerReliability: { logs: 0.30 },
+    };
+    const result = scoreCause(input, ctx);
+    const factor = result.explanations.find((e) => e.factor === 'provider-reliability');
+    expect(factor).toBeDefined();
+    expect(factor!.delta).toBe(-0.03);
+  });
+
+  it('does not fire when average reliability is in the neutral range (0.50–0.79)', () => {
+    const ev = makeEvidence('ev-q', 'log', 'logs', 0.7, 'high');
+    const input = makeInput({ baseScore: 0.50, sourceEvidenceIds: ['ev-q'] });
+    const ctx: ScoringContext = {
+      ...makeCtx([ev]),
+      providerReliability: { logs: 0.65 },
+    };
+    const result = scoreCause(input, ctx);
+    const factor = result.explanations.find((e) => e.factor === 'provider-reliability');
+    expect(factor).toBeUndefined();
+  });
+
+  it('does not fire when ctx.providerReliability is absent', () => {
+    const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.7, 'high');
+    const input = makeInput({ baseScore: 0.50, sourceEvidenceIds: ['ev-q'] });
+    const result = scoreCause(input, makeCtx([ev]));
+    const factor = result.explanations.find((e) => e.factor === 'provider-reliability');
+    expect(factor).toBeUndefined();
+  });
+
+  it('unlisted sources default to 0.65 (neutral) in reliability calculation', () => {
+    // Use a valid ProviderKind but don't include it in the reliability map.
+    const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.7, 'high');
+    const input = makeInput({ baseScore: 0.50, sourceEvidenceIds: ['ev-q'] });
+    const ctx: ScoringContext = {
+      ...makeCtx([ev]),
+      providerReliability: {}, // empty map — 'queue' source not listed, defaults to 0.65
+    };
+    const result = scoreCause(input, ctx);
+    const factor = result.explanations.find((e) => e.factor === 'provider-reliability');
+    // avg = 0.65 (default) → neutral range → no factor
+    expect(factor).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 12: Request / implicated-path context
+// ---------------------------------------------------------------------------
+
+describe('scoreCause — scenario 12: request/path context', () => {
+  function makeServiceGraph(service: string, evId: string, implicated: boolean): InvestigationGraph {
+    return {
+      nodes: [
+        {
+          id: `service:${service}`,
+          type: 'service',
+          label: service,
+          evidenceIds: [evId],
+          implicated,
+          implicationScore: implicated ? 0.8 : 0.2,
+        },
+      ],
+      edges: [],
+    };
+  }
+
+  it('fires with +0.04 when queried service is an implicated graph node', () => {
+    const evId = 'ev-log';
+    const ev = makeEvidence(evId, 'log', 'logs', 0.8, 'high');
+    const graph = makeServiceGraph('leadcall-api-prod', evId, true);
+    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: [evId] });
+    const ctx: ScoringContext = {
+      evidence: [ev],
+      graph,
+      now: FIXED_NOW,
+      request: { hint: 'zoho sync', service: 'leadcall-api-prod' },
+    };
+    const result = scoreCause(input, ctx);
+    const factor = result.explanations.find((e) => e.factor === 'request-context');
+    expect(factor).toBeDefined();
+    expect(factor!.delta).toBe(0.04);
+  });
+
+  it('does not fire when the service node is not implicated', () => {
+    const evId = 'ev-log';
+    const ev = makeEvidence(evId, 'log', 'logs', 0.8, 'high');
+    const graph = makeServiceGraph('leadcall-api-prod', evId, false);
+    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: [evId] });
+    const ctx: ScoringContext = {
+      evidence: [ev],
+      graph,
+      now: FIXED_NOW,
+      request: { service: 'leadcall-api-prod' },
+    };
+    const result = scoreCause(input, ctx);
+    const factor = result.explanations.find((e) => e.factor === 'request-context');
+    expect(factor).toBeUndefined();
+  });
+
+  it('does not fire when the cause evidence does not overlap with the service node', () => {
+    const ev = makeEvidence('ev-other', 'log', 'logs', 0.8, 'high');
+    const graph = makeServiceGraph('leadcall-api-prod', 'ev-different', true);
+    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: ['ev-other'] });
+    const ctx: ScoringContext = {
+      evidence: [ev],
+      graph,
+      now: FIXED_NOW,
+      request: { service: 'leadcall-api-prod' },
+    };
+    const result = scoreCause(input, ctx);
+    const factor = result.explanations.find((e) => e.factor === 'request-context');
+    expect(factor).toBeUndefined();
+  });
+
+  it('does not fire when ctx.request is absent', () => {
+    const evId = 'ev-log';
+    const ev = makeEvidence(evId, 'log', 'logs', 0.8, 'high');
+    const graph = makeServiceGraph('leadcall-api-prod', evId, true);
+    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: [evId] });
+    const result = scoreCause(input, { evidence: [ev], graph, now: FIXED_NOW });
+    const factor = result.explanations.find((e) => e.factor === 'request-context');
+    expect(factor).toBeUndefined();
+  });
+
+  it('does not fire when request has only hint (no service)', () => {
+    const evId = 'ev-log';
+    const ev = makeEvidence(evId, 'log', 'logs', 0.8, 'high');
+    const graph = makeServiceGraph('leadcall-api-prod', evId, true);
+    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: [evId] });
+    const ctx: ScoringContext = {
+      evidence: [ev],
+      graph,
+      now: FIXED_NOW,
+      request: { hint: 'zoho sync crashed' },
+    };
+    const result = scoreCause(input, ctx);
+    const factor = result.explanations.find((e) => e.factor === 'request-context');
     expect(factor).toBeUndefined();
   });
 });

@@ -706,7 +706,19 @@ export async function investigate(
   // Score + rank via the Cause Scoring Engine — graph proximity, evidence quality,
   // source diversity, recency, recurrence, blast radius, and finding
   // corroboration applied as factors.
-  const rankedCauses = rankCauses(causeInputs, { evidence, graph, findings });
+  const providerReliability: Record<string, number> = {
+    [deps.code.id]: 0.80,
+    ...(deps.logs != null ? { [deps.logs.id]: 0.70 } : {}),
+    ...(deps.mongo != null ? { [deps.mongo.id]: 0.85 } : {}),
+    ...(deps.queue != null ? { [deps.queue.id]: 0.90 } : {}),
+  };
+  const rankedCauses = rankCauses(causeInputs, {
+    evidence,
+    graph,
+    findings,
+    providerReliability,
+    request: { hint: input.hint, service: input.service },
+  });
 
   // g. confidence
   const evidenceConfidence = clamp01(evidence.length / 8);

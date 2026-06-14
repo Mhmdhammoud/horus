@@ -64,11 +64,19 @@ interface ScoringFinding {
   evidenceIds: string[];
 }
 
+// Investigation request forwarded to the scorer for Factor 9.
+interface ScoringRequest {
+  hint?: string;
+  service?: string;
+}
+
 interface ScoringContext {
-  evidence: Evidence[];          // normalized evidence from the investigation
-  graph: InvestigationGraph;     // infrastructure topology (HOR-14)
-  findings?: ScoringFinding[];   // engine findings; used by the finding-uncertainty factor
-  now?: string;                  // ISO-8601 reference timestamp (for recency; injectable for tests)
+  evidence: Evidence[];                      // normalized evidence from the investigation
+  graph: InvestigationGraph;                 // infrastructure topology (HOR-14)
+  findings?: ScoringFinding[];               // engine findings; used by finding-uncertainty (Factor 7)
+  providerReliability?: Record<string, number>; // source ID → 0–1; used by Factor 8
+  request?: ScoringRequest;                  // investigation request; used by Factor 9
+  now?: string;                              // ISO-8601 reference timestamp (injectable for tests)
 }
 ```
 
@@ -88,10 +96,12 @@ After all factor deltas are summed, post-delta constraints (see below) may clamp
 | 1 | Evidence quality | `evidence-quality` | ±0.50 | Any non-info evidence attached; penalizes all-info |
 | 2 | Source diversity | `source-diversity` | +0.10 | 2+ independent provider kinds (logs, queue, state, …) |
 | 3 | Graph proximity | `graph-proximity` | +0.10 | `maxImplicationScore` > 0 for evidence IDs in implicated graph nodes |
-| 4 | Runtime signals | `runtime-signals` | +0.10 | Evidence from the last hour (+0.05) / 24 h (+0.02), or new/spiking log signatures |
+| 4 | Runtime signals | `runtime-signals` | +0.10 / −0.05 | Recent evidence boosts; stale evidence (3–7d: −0.02, >7d: −0.05) decays |
 | 5 | Blast radius | `blast-radius` | +0.05 | `metadata.blastRadius` > 0 |
 | 6 | Signal strength | `signal-strength` | +0.03 / −0.05 | High-relevance anomaly (+0.03); structural-only (−0.05) |
 | 7 | Finding uncertainty | `finding-uncertainty` | −0.06 | Relevant findings all have confidence < 0.60 |
+| 8 | Provider reliability | `provider-reliability` | ±0.03 | avg source reliability ≥ 0.80 (+0.03) or < 0.50 (−0.03) |
+| 9 | Request context | `request-context` | +0.04 | Queried service is an implicated `service` graph node for this cause |
 
 ### Factor 1 — Evidence quality (severity × confidence)
 
@@ -127,13 +137,15 @@ Two sub-signals combined into one factor:
 **Recency** — age of the most recent evidence timestamp relative to `ctx.now`:
 - ≤ 1 hour: +0.05
 - ≤ 24 hours: +0.02
-- Older: 0
+- 24 h – 3 days: 0 (neutral)
+- 3 – 7 days: −0.02 (stale — may predate the current incident)
+- > 7 days: −0.05 (very stale — likely predates the current incident)
 
 **Recurrence** — for `log` evidence, reads the top-level `Evidence` fields `isNew` and `ratio` (normalized from the provider by `engine.ts`, not from `ev.payload`):
 - `isNew: true`: +0.05 (new error signature, never seen before)
 - `ratio ≥ 3.0`: +0.03 (error spike)
 
-The two sub-signals are added. A new, recent log signature can produce a +0.10 combined delta.
+The two sub-signals are added. A new, recent log signature can produce a +0.10 combined delta. A stale single-source log entry can bottom out at −0.05.
 
 ### Factor 5 — Blast radius
 
@@ -144,6 +156,35 @@ delta = clamp(blastRadius / 20, 0, 1) × 0.05
 ```
 
 Capped at +0.05 (for ≥ 20 affected symbols). This intentionally modest weight ensures blast radius alone cannot elevate a structural cause to "likely".
+
+### Factor 8 — Provider reliability
+
+Different evidence sources have different intrinsic reliability. A structured queue-state snapshot is more reliable than log-scraping with potential gaps. The factor reads `ScoringContext.providerReliability` — a map of `source` ID → 0–1 score built by `engine.ts` from the set of connected providers.
+
+Default reliability per provider kind (set by `engine.ts`):
+
+| Provider kind | Default reliability |
+|---------------|-------------------|
+| Queue runtime | 0.90 |
+| State (MongoDB) | 0.85 |
+| Code (static analysis) | 0.80 |
+| Logs (Elasticsearch) | 0.70 |
+| Unknown / unlisted | 0.65 |
+
+Score thresholds:
+- avg ≥ 0.80 → +0.03
+- 0.50 ≤ avg < 0.80 → null (neutral)
+- avg < 0.50 → −0.03
+
+When `ctx.providerReliability` is absent, the factor is skipped entirely.
+
+### Factor 9 — Request / implicated-path context
+
+When the investigation was scoped to a specific service (via `InvestigationInput.service`), the scorer checks whether that service appears as an implicated `service`-type node in the graph whose `evidenceIds` overlap with this cause's `sourceEvidenceIds`. This is complementary to graph-proximity (which measures implication strength for any node): request-context rewards causes that land on the exact service the operator was investigating.
+
+- Queried service matches an implicated graph service node for this cause → +0.04
+- No `ctx.request.service` → null (hint-only queries are too loose for deterministic matching)
+- Service node not implicated, or evidence doesn't overlap → null
 
 ### Factor 6 — Signal strength
 

@@ -86,6 +86,16 @@ export interface ScoringFinding {
   evidenceIds: string[];
 }
 
+/**
+ * Investigation request parameters forwarded to the scorer.
+ * Used by the request-context factor to check whether the queried service
+ * is directly implicated by a cause's evidence in the graph.
+ */
+export interface ScoringRequest {
+  hint?: string;
+  service?: string;
+}
+
 /** Contextual data the scorer uses to compute factor adjustments. */
 export interface ScoringContext {
   /** Normalized evidence from the current investigation. */
@@ -94,10 +104,21 @@ export interface ScoringContext {
   graph: InvestigationGraph;
   /**
    * Findings produced by the investigation engine. Used by the
-   * finding-corroboration factor: causes backed by high-confidence anomaly
-   * findings score higher. Omit when calling the scorer outside the engine.
+   * finding-uncertainty factor to penalize causes whose evidence is only
+   * referenced by low-confidence findings. Omit when calling the scorer
+   * outside the engine.
    */
   findings?: ScoringFinding[];
+  /**
+   * Map of provider source ID → reliability score (0–1). Built by engine.ts
+   * from the set of connected providers. When absent, Factor 8 is skipped.
+   */
+  providerReliability?: Record<string, number>;
+  /**
+   * Original investigation request. When present, Factor 9 checks whether
+   * the queried service is directly implicated in the graph for this cause.
+   */
+  request?: ScoringRequest;
   /**
    * Reference timestamp for recency calculations. Defaults to now if omitted.
    * Inject a fixed value in tests to ensure determinism.
@@ -227,12 +248,20 @@ function factorRuntimeSignals(items: Evidence[], now: string): ScoreExplanation 
   const newestTs = timestamps[0];
   if (newestTs !== undefined) {
     const ageMs = nowMs - newestTs;
-    if (ageMs <= 3_600_000) {
+    if (ageMs <= 3_600_000) {           // ≤ 1 hour
       recencyDelta = 0.05;
       recencyReason = 'Evidence from within the last hour';
-    } else if (ageMs <= 86_400_000) {
+    } else if (ageMs <= 86_400_000) {   // ≤ 24 hours
       recencyDelta = 0.02;
       recencyReason = 'Evidence from within the last 24 hours';
+    } else if (ageMs <= 259_200_000) {  // 24 h – 3 days: neutral
+      // no contribution either way
+    } else if (ageMs <= 604_800_000) {  // 3 – 7 days: stale
+      recencyDelta = -0.02;
+      recencyReason = 'Most recent evidence is 3–7 days old — may predate this incident';
+    } else {                            // > 7 days: very stale
+      recencyDelta = -0.05;
+      recencyReason = 'Most recent evidence is over 7 days old — likely predates this incident';
     }
   }
 
@@ -249,7 +278,7 @@ function factorRuntimeSignals(items: Evidence[], now: string): ScoreExplanation 
   }
 
   const delta = +(recencyDelta + recurrenceDelta).toFixed(3);
-  if (delta <= 0) return null;
+  if (Math.abs(delta) < 0.001) return null;
 
   const parts: string[] = [];
   if (recencyReason) parts.push(recencyReason);
@@ -341,6 +370,82 @@ function factorFindingUncertainty(
   };
 }
 
+/**
+ * Factor 8 — Provider reliability.
+ *
+ * Different evidence providers have different intrinsic reliability. A code
+ * provider emitting structured static-analysis evidence is more reliable than
+ * a log-scraping pipeline that may have gaps or noise. This factor reads
+ * `ScoringContext.providerReliability` (a caller-supplied map of source ID →
+ * 0–1 score) and adjusts based on the average reliability of the sources
+ * behind the cause's evidence.
+ *
+ * - avg ≥ 0.80 → +0.03 (high-reliability evidence base)
+ * - avg < 0.50 → −0.03 (low-reliability evidence base)
+ * - 0.50 ≤ avg < 0.80 → null (neutral; no reason to adjust)
+ * - `ctx.providerReliability` absent → null (factor skipped)
+ */
+function factorProviderReliability(
+  items: Evidence[],
+  reliability: Record<string, number>,
+): ScoreExplanation | null {
+  if (items.length === 0) return null;
+  const sources = [...new Set(items.map((e) => e.source))];
+  const scores = sources.map((s) => reliability[s] ?? 0.65);
+  const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+  if (avg >= 0.80) {
+    return {
+      factor: 'provider-reliability',
+      delta: 0.03,
+      reason: `Evidence from high-reliability provider(s) (avg reliability ${avg.toFixed(2)})`,
+    };
+  }
+  if (avg < 0.50) {
+    return {
+      factor: 'provider-reliability',
+      delta: -0.03,
+      reason: `Evidence from low-reliability provider(s) (avg reliability ${avg.toFixed(2)})`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Factor 9 — Request / implicated-path context.
+ *
+ * When the investigation was scoped to a specific service, we check whether
+ * that service appears as an **implicated** `service`-type node in the graph
+ * whose evidenceIds overlap with this cause's sourceEvidenceIds.
+ *
+ * This is complementary to graph-proximity (which measures implication
+ * strength for any node): request-context rewards causes that land on the
+ * exact service the operator was investigating, not just any implicated node.
+ *
+ * No boost when `ctx.request.service` is absent (hint-only queries are too
+ * loose for deterministic matching at this layer).
+ */
+function factorRequestContext(
+  sourceEvidenceIds: string[],
+  graph: InvestigationGraph,
+  request: ScoringRequest,
+): ScoreExplanation | null {
+  if (!request.service) return null;
+  const serviceNodeId = `service:${request.service}`;
+  const idSet = new Set(sourceEvidenceIds);
+  const matched = graph.nodes.some(
+    (n) =>
+      n.id === serviceNodeId &&
+      n.implicated &&
+      n.evidenceIds.some((eid) => idSet.has(eid)),
+  );
+  if (!matched) return null;
+  return {
+    factor: 'request-context',
+    delta: 0.04,
+    reason: `Cause directly implicates the investigated service (${request.service})`,
+  };
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /**
@@ -362,6 +467,8 @@ export function scoreCause(input: CauseInput, ctx: ScoringContext): CauseCandida
     factorBlastRadius(input.metadata),
     factorSignalStrength(attached),
     factorFindingUncertainty(input.sourceEvidenceIds, ctx.findings ?? []),
+    ctx.providerReliability ? factorProviderReliability(attached, ctx.providerReliability) : null,
+    ctx.request ? factorRequestContext(input.sourceEvidenceIds, ctx.graph, ctx.request) : null,
   ];
 
   const explanations = rawFactors.filter((f): f is ScoreExplanation => f !== null);
