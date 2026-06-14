@@ -20,7 +20,8 @@ import type {
   Symbol,
   SymbolContext,
 } from '@horus/core';
-import type { CodeProvider, LogsProvider, LogRecord } from '@horus/connectors';
+import type { CodeProvider, LogsProvider, LogAnalysis } from '@horus/connectors';
+import { shortTs } from '@horus/connectors';
 import type { HorusDb, QueueEdge } from '@horus/db';
 import {
   evidence as evidenceTable,
@@ -298,55 +299,52 @@ export async function investigate(
     changeEvId = ev.id;
   }
 
-  // e0. RUNTIME LOGS (HOR-13) — optional, never breaks the investigation on failure.
-  let records: LogRecord[] = [];
-  let buckets: { key: string; count: number }[] = [];
-  let errorLogCount = 0;
+  // e0. RUNTIME LOG EVIDENCE (HOR-10/13) — synthesize error SIGNATURES, not raw log
+  // dumps. Optional; never breaks the investigation on failure.
+  let analysis: LogAnalysis | null = null;
   const logEvIds: string[] = [];
-  const aggEvIds: string[] = [];
 
   if (deps.logs) {
     try {
       const from = logWindowFrom(input.since);
-      const logQuery = { service: input.service, from, text: hint, limit: 25 };
-      records = await deps.logs.searchLogs(logQuery);
+      // Error signatures are scoped by service + window, NOT by the hint text:
+      // the errors that matter to an incident rarely contain the hint words in
+      // their message (the hint resolves the code seed; the service scopes logs).
+      analysis = await deps.logs.analyzeErrors({ service: input.service, from });
 
-      const cappedRecords = records.slice(0, 25);
-      for (const r of cappedRecords) {
-        const isErr = r.level === 'error' || r.level === 'fatal';
-        if (isErr) errorLogCount++;
+      for (const s of analysis.signatures.slice(0, 15)) {
+        const tags: string[] = [];
+        if (s.isNew) tags.push('NEW');
+        else if (s.ratio !== undefined && Number.isFinite(s.ratio) && s.ratio >= 1.5) {
+          tags.push(`spike x${s.ratio.toFixed(1)}`);
+        }
+        const svc = s.services.length > 0 ? ` · ${s.services.slice(0, 3).join(', ')}` : '';
+        const tagStr = tags.length > 0 ? ` [${tags.join(', ')}]` : '';
         const ev = mkEv(
           'log',
-          (`[${r.level}] ${r.component ?? r.service ?? ''}: ${r.message}`).slice(0, 160),
+          `Error ${s.key}: ${s.count}x (first ${shortTs(s.firstSeen)}, last ${shortTs(s.lastSeen)})${svc}${tagStr}`.slice(
+            0,
+            180,
+          ),
           {
-            level: r.level,
-            levelValue: r.levelValue,
-            component: r.component,
-            eventCode: r.eventCode,
-            service: r.service,
-            index: r.index,
+            signature: s.key,
+            count: s.count,
+            firstSeen: s.firstSeen,
+            lastSeen: s.lastSeen,
+            services: s.services,
+            isNew: s.isNew ?? false,
+            ratio: s.ratio ?? null,
+            sampleMessage: s.sampleMessage ?? null,
           },
           {},
-          r.timestamp,
-          isErr ? 0.9 : 0.5,
+          s.lastSeen || undefined,
+          s.isNew ? 0.95 : s.ratio !== undefined && s.ratio >= 1.5 ? 0.9 : 0.8,
         );
         logEvIds.push(ev.id);
       }
-
-      buckets = await deps.logs.aggregateErrors({ service: input.service, from });
-      for (const b of buckets) {
-        const ev = mkEv(
-          'log',
-          `${b.count}x error ${b.key}`,
-          { eventCode: b.key, count: b.count, aggregate: true },
-          {},
-          undefined,
-          Math.min(1, b.count / 100),
-        );
-        aggEvIds.push(ev.id);
-      }
     } catch {
       // Logs failure must never break the investigation — continue without log evidence.
+      analysis = null;
     }
   }
 
@@ -420,23 +418,32 @@ export async function investigate(
     });
   }
 
-  // Runtime log findings (only when logs were gathered)
-  if (records.length > 0) {
+  // Runtime error-signature findings (only when log evidence was synthesized)
+  if (analysis !== null && analysis.signatures.length > 0) {
+    const newN = analysis.newSignatures.length;
+    const affected =
+      analysis.affectedServices.length > 0
+        ? analysis.affectedServices.join(', ')
+        : (input.service ?? 'the service');
     findings.push({
       kind: 'observation',
-      title: `Gathered ${records.length} runtime log line(s) (${errorLogCount} error-level) for ${input.service ?? 'the service'} in the window`,
-      confidence: 0.6,
+      title: `${analysis.signatures.length} error signature(s) (${newN} new, ${analysis.totalErrors} error(s)) — affected: ${affected}`,
+      confidence: 0.65,
       evidenceIds: logEvIds,
     });
-  }
-  if (buckets.length > 0) {
-    const topBucket = buckets[0];
-    if (topBucket !== undefined) {
+
+    const top = analysis.signatures[0];
+    if (top !== undefined) {
+      const flag = top.isNew
+        ? ' (NEW)'
+        : top.ratio !== undefined && Number.isFinite(top.ratio) && top.ratio >= 1.5
+          ? ` (spike x${top.ratio.toFixed(1)})`
+          : '';
       findings.push({
         kind: 'anomaly',
-        title: `Top runtime error: ${topBucket.count}x ${topBucket.key}`,
+        title: `Top error signature: ${top.key} — ${top.count}x${flag}, last ${shortTs(top.lastSeen)}`,
         confidence: 0.7,
-        evidenceIds: aggEvIds,
+        evidenceIds: logEvIds.slice(0, 1),
       });
     }
   }
@@ -474,17 +481,18 @@ export async function investigate(
     });
   }
 
-  // Runtime-errors + queue-path cause: only when we have error logs AND a queue path.
-  if (errorLogCount > 0 && queueHits.length > 0) {
+  // Runtime-errors + queue-path cause: only when we have error evidence AND a queue path.
+  if (analysis !== null && analysis.signatures.length > 0 && queueHits.length > 0) {
     const firstQueue = queueHits[0];
     const queueLabel =
       firstQueue !== undefined
         ? `"${firstQueue.queueName}" (${firstQueue.producerSymbol ?? 'unknown'} -> ${firstQueue.workerSymbol ?? 'unknown'})`
         : 'the queue path';
+    const topSig = analysis.signatures[0];
     suspectedCauses.push({
-      statement: `Runtime error logs (${errorLogCount} error-level) correlate with the implicated queue path ${queueLabel}`,
+      statement: `Runtime errors (${analysis.totalErrors}${topSig ? `, top ${topSig.key}` : ''}) correlate with the implicated queue path ${queueLabel}`,
       score: clamp01(0.3 + impactNorm * 0.3),
-      evidenceIds: aggEvIds.length > 0 ? aggEvIds : logEvIds,
+      evidenceIds: logEvIds.slice(0, 3),
     });
   }
 

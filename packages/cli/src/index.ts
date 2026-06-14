@@ -364,22 +364,28 @@ export function buildProgram(): Command {
 
   program
     .command('logs [service]')
-    .description('Query structured logs as evidence (Elasticsearch)')
+    .description(
+      'Synthesize error evidence from logs (signatures, first/last, affected services); --raw for lines',
+    )
     .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--project <name>', 'project name')
+    .option('--env <name>', 'environment name (e.g. production)')
     .option('--since <when>', 'time window, e.g. 24h, 7d, or an ISO date')
-    .option('--level <level>', 'minimum level: trace|debug|info|warn|error|fatal')
+    .option('--level <level>', 'minimum level (with --raw): trace|debug|info|warn|error|fatal')
     .option('--grep <text>', 'match text in the message')
-    .option('--errors', 'aggregate error-level logs by event_code')
-    .option('--limit <n>', 'max records')
+    .option('--raw', 'dump individual log lines instead of synthesized evidence')
+    .option('--limit <n>', 'max records (with --raw)')
     .action(
       async (
         service: string | undefined,
         opts: {
           config?: string;
+          project?: string;
+          env?: string;
           since?: string;
           level?: string;
           grep?: string;
-          errors?: boolean;
+          raw?: boolean;
           limit?: string;
         },
       ) => {

@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Symbol, SymbolContext, ImpactResult, ChangeSet, CypherResult } from '@horus/core';
 import type { CodeProvider } from '@horus/connectors';
-import type { LogsProvider, LogRecord, ErrorBucket } from '@horus/connectors';
+import type { LogsProvider, LogRecord, ErrorBucket, LogAnalysis } from '@horus/connectors';
 import type { HorusDb } from '@horus/db';
 import { investigate, logWindowFrom } from './engine.js';
 
@@ -148,6 +148,37 @@ const FAKE_LOG_INFO: LogRecord = {
 
 const FAKE_BUCKET: ErrorBucket = { key: 'HTTPFLT001', count: 9 };
 
+// HOR-10: the engine now consumes synthesized error SIGNATURES, not raw lines.
+const FAKE_ANALYSIS: LogAnalysis = {
+  window: { from: 'x', to: 'y' },
+  totalErrors: 14,
+  signatures: [
+    {
+      key: 'HTTPFLT001',
+      count: 9,
+      firstSeen: '2026-06-13T10:00:00.000Z',
+      lastSeen: '2026-06-13T15:00:00.000Z',
+      services: ['leadcall-api-prod'],
+      isNew: true,
+      baselineCount: 0,
+      ratio: Infinity,
+      sampleMessage: 'Zoho API returned 503 Service Unavailable',
+    },
+    {
+      key: 'DBPOOL02',
+      count: 5,
+      firstSeen: '2026-06-13T09:00:00.000Z',
+      lastSeen: '2026-06-13T14:00:00.000Z',
+      services: ['leadcall-api-prod'],
+      isNew: false,
+      baselineCount: 2,
+      ratio: 2.5,
+    },
+  ],
+  newSignatures: ['HTTPFLT001'],
+  affectedServices: ['leadcall-api-prod'],
+};
+
 const fakeLogs: LogsProvider = {
   id: 'fake-logs',
   kind: 'logs',
@@ -163,6 +194,9 @@ const fakeLogs: LogsProvider = {
   },
   async errorDeltas(_baseline, _current, _field?) {
     return [];
+  },
+  async analyzeErrors(_q, _field?) {
+    return FAKE_ANALYSIS;
   },
   toEvidence(_records) {
     return [];
@@ -184,28 +218,31 @@ describe('investigate() WITH logs provider (HOR-13)', () => {
     expect(logEvidence.length).toBeGreaterThan(0);
   });
 
-  it('log evidence has relevance 0.9 for error-level records', async () => {
+  it('a NEW error signature yields evidence with relevance 0.95', async () => {
     const report = await investigate(
       { hint: 'zoho', service: 'leadcall-api-prod' },
       { code: fakeCode, db: fakeDb, logs: fakeLogs },
     );
 
-    const errorLogEv = report.evidence.find(
-      (e) => e.kind === 'log' && e.relevance === 0.9,
+    const newSigEv = report.evidence.find(
+      (e) => e.kind === 'log' && e.relevance === 0.95,
     );
-    expect(errorLogEv).toBeDefined();
+    expect(newSigEv).toBeDefined();
+    expect(newSigEv?.title).toContain('HTTPFLT001');
+    expect(newSigEv?.title).toContain('NEW');
   });
 
-  it('log evidence has relevance 0.5 for info-level records', async () => {
+  it('a spiking (non-new) error signature yields evidence with relevance 0.9', async () => {
     const report = await investigate(
       { hint: 'zoho', service: 'leadcall-api-prod' },
       { code: fakeCode, db: fakeDb, logs: fakeLogs },
     );
 
-    const infoLogEv = report.evidence.find(
-      (e) => e.kind === 'log' && e.relevance === 0.5 && !(e.payload as Record<string, unknown>)?.['aggregate'],
+    const spikeEv = report.evidence.find(
+      (e) => e.kind === 'log' && e.relevance === 0.9,
     );
-    expect(infoLogEv).toBeDefined();
+    expect(spikeEv).toBeDefined();
+    expect(spikeEv?.title).toContain('DBPOOL02');
   });
 
   it('clears the logs gap (no gap with dimension "logs")', async () => {
@@ -229,31 +266,22 @@ describe('investigate() WITH logs provider (HOR-13)', () => {
     }
   });
 
-  it('includes a finding whose title mentions "runtime log line"', async () => {
+  it('includes an observation finding summarizing the error signatures', async () => {
     const report = await investigate(
       { hint: 'zoho', service: 'leadcall-api-prod' },
       { code: fakeCode, db: fakeDb, logs: fakeLogs },
     );
 
     const logFinding = report.findings.find((f) =>
-      f.title.toLowerCase().includes('runtime log line'),
+      f.title.toLowerCase().includes('error signature'),
     );
     expect(logFinding).toBeDefined();
-  });
-
-  it('log-gathering finding has kind "observation"', async () => {
-    const report = await investigate(
-      { hint: 'zoho', service: 'leadcall-api-prod' },
-      { code: fakeCode, db: fakeDb, logs: fakeLogs },
-    );
-
-    const logFinding = report.findings.find((f) =>
-      f.title.toLowerCase().includes('runtime log line'),
-    );
     expect(logFinding?.kind).toBe('observation');
+    // 2 signatures, 1 new, 14 errors
+    expect(logFinding?.title).toContain('1 new');
   });
 
-  it('includes a finding whose title mentions the bucket error key', async () => {
+  it('includes an anomaly finding naming the top error signature', async () => {
     const report = await investigate(
       { hint: 'zoho', service: 'leadcall-api-prod' },
       { code: fakeCode, db: fakeDb, logs: fakeLogs },
@@ -263,6 +291,7 @@ describe('investigate() WITH logs provider (HOR-13)', () => {
       (f) => f.kind === 'anomaly' && f.title.includes('HTTPFLT001'),
     );
     expect(anomalyFinding).toBeDefined();
+    expect(anomalyFinding?.title).toContain('NEW');
   });
 
   it('confidence ceiling is not reduced by the logs gap (since logs are present)', async () => {
