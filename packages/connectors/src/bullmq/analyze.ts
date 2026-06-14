@@ -83,13 +83,16 @@ export function fmtMs(ms: number): string {
 export function analyzeQueueSignals(q: QueueCounts): QueueSignal[] {
   const signals: QueueSignal[] = [];
 
-  // Starvation takes highest priority (waiting but no workers processing)
+  // Starvation-like signal: waiting jobs with no active workers in this snapshot.
+  // A single zero-active observation is not proof of starvation — workers may be
+  // idle between polls or all jobs may have just completed. Relevance is kept
+  // moderate; the engine should not treat this alone as a confirmed cause.
   if (q.waiting >= STARVATION_MIN && q.active === 0) {
     signals.push({
       queueName: q.queueName,
       kind: 'worker-starvation',
-      title: `${q.queueName}: ${q.waiting} waiting jobs, 0 active workers (starvation)`,
-      relevance: 0.9,
+      title: `${q.queueName}: ${q.waiting} waiting jobs, 0 active workers — possible starvation`,
+      relevance: 0.7,
       payload: { queueName: q.queueName, waiting: q.waiting, active: 0 },
     });
   } else if (q.waiting > BACKLOG_HIGH) {
@@ -142,10 +145,14 @@ export function analyzeQueueSignals(q: QueueCounts): QueueSignal[] {
     });
   }
 
-  // Failed breakdown: only when a single reason dominates (>= BREAKDOWN_PCT_THRESHOLD%)
+  // Failed breakdown: only when a single reason dominates (>= BREAKDOWN_PCT_THRESHOLD%).
+  // Divide by sample total (not q.failed) — q.failed reflects all retained failures,
+  // but breakdown counts come from a fixed-size sample (FAILED_SAMPLE), so the
+  // denominator must match the sample to produce meaningful percentages.
   if (q.failedBreakdown && q.failedBreakdown.length > 0 && q.failed > 0) {
     const top = q.failedBreakdown[0]!;
-    const pct = Math.round((top.count / Math.max(q.failed, 1)) * 100);
+    const sampleTotal = q.failedBreakdown.reduce((sum, b) => sum + b.count, 0);
+    const pct = Math.round((top.count / Math.max(sampleTotal, 1)) * 100);
     if (pct >= BREAKDOWN_PCT_THRESHOLD) {
       signals.push({
         queueName: q.queueName,
