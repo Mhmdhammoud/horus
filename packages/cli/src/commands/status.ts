@@ -5,7 +5,7 @@ import {
   loadConfig,
   type HorusConfig,
 } from '@horus/core';
-import { AxonHttpClient } from '@horus/connectors';
+import { AxonHttpClient, checkAxonCompatibility } from '@horus/connectors';
 import { checkDatabase } from '@horus/db';
 
 interface Check {
@@ -50,16 +50,28 @@ export async function runStatus(configPath?: string): Promise<number> {
     const axonUrl = config.axon.hostUrl;
     const dbUrl = config.database.url;
 
-    const [axonResult, h] = await Promise.all([
-      new AxonHttpClient({ baseUrl: axonUrl }).health(),
+    const axon = new AxonHttpClient({ baseUrl: axonUrl });
+
+    const [health, compat, h] = await Promise.all([
+      axon.health(),
+      checkAxonCompatibility(axon),
       checkDatabase(dbUrl),
     ]);
 
+    let versionPart: string;
+    if (compat.version === null) {
+      versionPart = 'version unknown';
+    } else if (compat.matches) {
+      versionPart = `v${compat.version} (pinned ✓)`;
+    } else {
+      versionPart = `v${compat.version} (pinned ${compat.pinned} — MISMATCH)`;
+    }
+
     checks.push({
       label: 'Axon',
-      ok: axonResult.ok,
-      detail: axonResult.ok
-        ? `responded ${axonResult.status} at ${axonUrl}`
+      ok: health.ok,
+      detail: health.ok
+        ? `responded ${health.status} · ${versionPart} at ${axonUrl}`
         : `unreachable — run 'axon host --port 8420' (${axonUrl})`,
     });
 

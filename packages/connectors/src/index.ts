@@ -11,3 +11,4 @@ export * from './axon/index.js';
 export * from './contract.js';
 export * from './factory.js';
 export * from './axon/provider.js';
+export * from './compat.js';

@@ -23,48 +23,105 @@ export class AxonHttpError extends Error {
 export interface AxonClientOptions {
   baseUrl: string;
   timeoutMs?: number;
+  maxRetries?: number;
 }
 
 export class AxonHttpClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
+  private readonly maxRetries: number;
 
   constructor(opts: AxonClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
     this.timeoutMs = opts.timeoutMs ?? 15000;
+    this.maxRetries = opts.maxRetries ?? 2;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const url = `${this.baseUrl}${path}`;
+
+    const headers: Record<string, string> = {};
+    let bodyStr: string | undefined;
+
+    if (body !== undefined) {
+      headers['content-type'] = 'application/json';
+      bodyStr = JSON.stringify(body);
+    }
+
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+
+      try {
+        const res = await fetch(url, {
+          method,
+          headers,
+          body: bodyStr,
+          signal: controller.signal,
+        });
+
+        if (res.status >= 500) {
+          const text = await res.text();
+          if (attempt < this.maxRetries) {
+            await this.sleep(150 * 2 ** attempt);
+            continue;
+          }
+          throw new AxonHttpError(
+            `Axon request failed: ${method} ${path} -> HTTP ${res.status}`,
+            res.status,
+            text,
+          );
+        }
+
+        if (!res.ok) {
+          // 4xx — never retry
+          const text = await res.text();
+          throw new AxonHttpError(
+            `Axon request failed: ${method} ${path} -> HTTP ${res.status}`,
+            res.status,
+            text,
+          );
+        }
+
+        return (await res.json()) as T;
+      } catch (err) {
+        if (err instanceof AxonHttpError) {
+          throw err;
+        }
+        // Distinguish AbortError (timeout/cancel) from network errors
+        if (err instanceof Error && err.name === 'AbortError') {
+          throw err;
+        }
+        // Network error — retry if attempts remain
+        if (attempt < this.maxRetries) {
+          await this.sleep(150 * 2 ** attempt);
+          continue;
+        }
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    // Unreachable — TypeScript needs a return here
+    throw new Error('Unexpected end of retry loop');
+  }
+
+  async version(): Promise<string | null> {
+    const url = `${this.baseUrl}/openapi.json`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-
     try {
-      const headers: Record<string, string> = {};
-      let bodyStr: string | undefined;
-
-      if (body !== undefined) {
-        headers['content-type'] = 'application/json';
-        bodyStr = JSON.stringify(body);
-      }
-
-      const res = await fetch(url, {
-        method,
-        headers,
-        body: bodyStr,
-        signal: controller.signal,
-      });
-
-      if (!res.ok) {
-        const text = await res.text();
-        throw new AxonHttpError(
-          `Axon request failed: ${method} ${path} -> HTTP ${res.status}`,
-          res.status,
-          text,
-        );
-      }
-
-      return (await res.json()) as T;
+      const res = await fetch(url, { signal: controller.signal });
+      if (!res.ok) return null;
+      const data = (await res.json()) as { info?: { version?: string } };
+      return data.info?.version ?? null;
+    } catch {
+      return null;
     } finally {
       clearTimeout(timer);
     }
