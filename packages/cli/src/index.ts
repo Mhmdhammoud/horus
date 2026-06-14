@@ -21,6 +21,7 @@ import { runAsk } from './commands/ask.js';
 import { runOnboard } from './commands/onboard.js';
 import { runSimulate } from './commands/simulate.js';
 import { runLogs } from './commands/logs.js';
+import { runMetrics } from './commands/metrics.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -375,6 +376,29 @@ export function buildProgram(): Command {
         },
       ) => {
         process.exitCode = await runLogs(service, opts);
+      },
+    );
+
+  program
+    .command('metrics [query]')
+    .description('Query Prometheus metrics as evidence (via Grafana datasource proxy)')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--since <when>', 'range window, e.g. 1h, 30m, 2d (range mode)')
+    .option('--step <secs>', 'range step seconds (default 60)')
+    .option('--baseline', 'compare the --since window vs the preceding window')
+    .option('--spikes', 'flag z-score spikes within the --since window')
+    .action(
+      async (
+        query: string | undefined,
+        opts: {
+          config?: string;
+          since?: string;
+          step?: string;
+          baseline?: boolean;
+          spikes?: boolean;
+        },
+      ) => {
+        process.exitCode = await runMetrics(query, opts);
       },
     );
 

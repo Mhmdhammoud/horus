@@ -15,6 +15,9 @@ import type { CodeProvider } from './contract.js';
 import { ElasticsearchClient } from './elasticsearch/client.js';
 import { ElasticsearchLogsProvider } from './elasticsearch/provider.js';
 import type { LogsProvider } from './elasticsearch/provider.js';
+import { PrometheusClient } from './prometheus/client.js';
+import { PrometheusMetricsProvider } from './prometheus/provider.js';
+import type { MetricsProvider } from './prometheus/provider.js';
 
 export interface Connectors {
   code: CodeProvider;
@@ -74,6 +77,37 @@ export function logsProviderFromConfig(config: HorusConfig): LogsProvider | null
   return new ElasticsearchLogsProvider(
     new ElasticsearchClient({ baseUrl: url, username, password }),
     { indexPattern },
+  );
+}
+
+/**
+ * Build a `MetricsProvider` wired to Prometheus, resolving credentials from config
+ * then env vars. Supports direct Prometheus URL or a Grafana datasource proxy.
+ * Returns null when neither PROM_URL nor GRAFANA_URL is available.
+ */
+export function metricsProviderFromConfig(config: HorusConfig): MetricsProvider | null {
+  const promCfg = config.providers.prometheus;
+  const direct = promCfg?.url ?? process.env['PROM_URL'];
+
+  let baseUrl: string;
+  let username: string | undefined;
+  let password: string | undefined;
+
+  if (direct !== undefined && direct !== '') {
+    baseUrl = direct;
+    username = promCfg?.username ?? process.env['PROM_USERNAME'];
+    password = promCfg?.password ?? process.env['PROM_PASSWORD'];
+  } else {
+    const grafanaUrl = process.env['GRAFANA_URL'];
+    if (grafanaUrl === undefined || grafanaUrl === '') return null;
+    baseUrl = `${grafanaUrl}/api/datasources/proxy/uid/Prometheus`;
+    username = process.env['GRAFANA_USER'];
+    password = process.env['GRAFANA_PASSWORD'];
+  }
+
+  return new PrometheusMetricsProvider(
+    new PrometheusClient({ baseUrl, username, password }),
+    { defaultStep: 60 },
   );
 }
 

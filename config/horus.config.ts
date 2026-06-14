@@ -43,6 +43,10 @@ export default defineConfig({
       password: process.env['ES_PASSWORD'],
       indexPattern: process.env['ES_INDEX_PATTERN'] ?? 'leadcall-api-prod-*',
     },
-    // prometheus: { url: process.env.PROM_URL },
+    prometheus: {
+      url: process.env['PROM_URL'],
+      username: process.env['PROM_USERNAME'],
+      password: process.env['PROM_PASSWORD'],
+    },
   },
 });
