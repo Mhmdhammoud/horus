@@ -5,6 +5,7 @@ import { runExplain } from './commands/explain.js';
 import { runIndex } from './commands/index-repo.js';
 import { runQueues } from './commands/queues.js';
 import { runInvestigate } from './commands/investigate.js';
+import { runChanges } from './commands/changes.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -80,6 +81,17 @@ export function buildProgram(): Command {
         });
       },
     );
+
+  program
+    .command('changes <base> [compare]')
+    .description(
+      'Show what changed between two git refs and which flows are affected (Axon change-impact)',
+    )
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--json', 'output JSON')
+    .action(async (base: string, compare: string | undefined, opts: { config?: string; json?: boolean }) => {
+      process.exitCode = await runChanges(base, compare, { config: opts.config, json: opts.json });
+    });
 
   return program;
 }
