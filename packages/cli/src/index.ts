@@ -4,6 +4,7 @@ import { runStatus } from './commands/status.js';
 import { runExplain } from './commands/explain.js';
 import { runIndex } from './commands/index-repo.js';
 import { runQueues } from './commands/queues.js';
+import { runInvestigate } from './commands/investigate.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -58,6 +59,27 @@ export function buildProgram(): Command {
     .action(async (name: string | undefined, opts: { config?: string }) => {
       process.exitCode = await runQueues(name, { config: opts.config });
     });
+
+  program
+    .command('investigate <hint>')
+    .description('Run a deterministic investigation for an incident hint')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'repository to scope to')
+    .option('--since <ref>', 'git ref/range for change-impact (e.g. HEAD~5)')
+    .option('--json', 'output JSON')
+    .action(
+      async (
+        hint: string,
+        opts: { config?: string; repo?: string; since?: string; json?: boolean },
+      ) => {
+        process.exitCode = await runInvestigate(hint, {
+          config: opts.config,
+          repo: opts.repo,
+          since: opts.since,
+          json: opts.json,
+        });
+      },
+    );
 
   return program;
 }

@@ -1,0 +1,92 @@
+/**
+ * Human-facing renderers for an InvestigationReport. Pure, deterministic, no I/O.
+ */
+
+import type { InvestigationReport } from './types.js';
+
+/** Short, citable evidence id (first 8 chars). */
+function shortId(id: string): string {
+  return id.slice(0, 8);
+}
+
+/** A clean, sectioned text report suitable for a terminal or a log. */
+export function renderReport(r: InvestigationReport): string {
+  const lines: string[] = [];
+
+  lines.push(`# Investigation ${r.id}`);
+  lines.push(`Hint: ${r.input.hint}`);
+  if (r.input.repo) lines.push(`Repo: ${r.input.repo}`);
+  if (r.input.service) lines.push(`Service: ${r.input.service}`);
+  if (r.input.since) lines.push(`Since: ${r.input.since}`);
+  lines.push(`Confidence: ${r.confidence.toFixed(2)}`);
+  lines.push('');
+
+  lines.push('## Summary');
+  lines.push(r.summary);
+  lines.push('');
+
+  lines.push('## Seed(s)');
+  if (r.seeds.length === 0) {
+    lines.push('(none)');
+  } else {
+    for (const s of r.seeds) {
+      const line = s.startLine ?? 0;
+      const sig = s.signature ? ` — ${s.signature}` : '';
+      lines.push(`- ${s.name} (${s.filePath}:${line})${sig}`);
+    }
+  }
+  lines.push('');
+
+  lines.push('## Findings');
+  if (r.findings.length === 0) {
+    lines.push('(none)');
+  } else {
+    for (const f of r.findings) {
+      lines.push(`- [${f.confidence.toFixed(2)}] ${f.title}`);
+      if (f.detail) lines.push(`    ${f.detail}`);
+      if (f.evidenceIds.length > 0) {
+        lines.push(`    evidence: ${f.evidenceIds.map(shortId).join(', ')}`);
+      }
+    }
+  }
+  lines.push('');
+
+  lines.push('## Suspected causes (ranked)');
+  if (r.suspectedCauses.length === 0) {
+    lines.push('(none)');
+  } else {
+    r.suspectedCauses.forEach((c, i) => {
+      lines.push(`${i + 1}. [${c.score.toFixed(2)}] ${c.statement}`);
+      if (c.evidenceIds.length > 0) {
+        lines.push(`    evidence: ${c.evidenceIds.map(shortId).join(', ')}`);
+      }
+    });
+  }
+  lines.push('');
+
+  lines.push('## Evidence');
+  if (r.evidence.length === 0) {
+    lines.push('(none)');
+  } else {
+    for (const e of r.evidence) {
+      lines.push(`- ${shortId(e.id)} [${e.source}/${e.kind}] ${e.title}`);
+    }
+  }
+  lines.push('');
+
+  lines.push('## Next actions');
+  if (r.nextActions.length === 0) {
+    lines.push('(none)');
+  } else {
+    for (const a of r.nextActions) {
+      lines.push(`- ${a}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/** Stable JSON serialization of the full report. */
+export function reportToJSON(r: InvestigationReport): string {
+  return JSON.stringify(r, null, 2);
+}

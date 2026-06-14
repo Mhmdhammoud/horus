@@ -18,6 +18,7 @@
     "@horus/connectors": "workspace:*",
     "@horus/core": "workspace:*",
     "@horus/db": "workspace:*",
+    "@horus/engine": "workspace:*",
     "@horus/stitcher": "workspace:*",
     "commander": "^12.1.0",
     "drizzle-orm": "^0.38.3",

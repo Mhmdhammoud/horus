@@ -50,6 +50,9 @@ importers:
       '@horus/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@horus/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
       '@horus/stitcher':
         specifier: workspace:*
         version: link:../../packages/stitcher
@@ -89,6 +92,9 @@ importers:
       '@horus/db':
         specifier: workspace:*
         version: link:../db
+      '@horus/engine':
+        specifier: workspace:*
+        version: link:../engine
       '@horus/stitcher':
         specifier: workspace:*
         version: link:../stitcher
@@ -129,6 +135,21 @@ importers:
       drizzle-kit:
         specifier: ^0.30.1
         version: 0.30.6
+
+  packages/engine:
+    dependencies:
+      '@horus/connectors':
+        specifier: workspace:*
+        version: link:../connectors
+      '@horus/core':
+        specifier: workspace:*
+        version: link:../core
+      '@horus/db':
+        specifier: workspace:*
+        version: link:../db
+      '@horus/stitcher':
+        specifier: workspace:*
+        version: link:../stitcher
 
   packages/stitcher:
     dependencies:

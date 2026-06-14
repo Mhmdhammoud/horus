@@ -1,5 +1,5 @@
 {
-  "name": "@horus/cli",
+  "name": "@horus/engine",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,12 +11,9 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@horus/connectors": "workspace:*",
     "@horus/core": "workspace:*",
+    "@horus/connectors": "workspace:*",
     "@horus/db": "workspace:*",
-    "@horus/engine": "workspace:*",
-    "@horus/stitcher": "workspace:*",
-    "commander": "^12.1.0",
-    "picocolors": "^1.1.1"
+    "@horus/stitcher": "workspace:*"
   }
 }
