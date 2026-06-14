@@ -23,6 +23,9 @@ import type { MetricsProvider } from './grafana/provider.js';
 import { MongoStateClient } from './mongodb/client.js';
 import { MongoStateProvider } from './mongodb/provider.js';
 import type { StateProvider } from './mongodb/provider.js';
+import { BullMQRedisClient } from './bullmq/client.js';
+import { BullMQRuntimeProvider } from './bullmq/provider.js';
+import type { QueueRuntimeProvider } from './bullmq/provider.js';
 
 // ---------------------------------------------------------------------------
 // Environment-scoped builders (primary API, HOR-34)
@@ -63,6 +66,16 @@ export function metricsForEnv(renv: ResolvedEnvironment): MetricsProvider | null
     new GrafanaClient({ baseUrl: g.url, username: g.username, password: g.password }),
     { defaultStep: 60 },
   );
+}
+
+/**
+ * Return a BullMQ `QueueRuntimeProvider` for the given resolved environment, or
+ * `null` when no Redis connector is configured (no URL).
+ */
+export function queueForEnv(renv: ResolvedEnvironment): QueueRuntimeProvider | null {
+  const r = renv.connectors.redis;
+  if (!r?.url) return null;
+  return new BullMQRuntimeProvider(new BullMQRedisClient({ url: r.url }));
 }
 
 /**
