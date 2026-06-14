@@ -9,9 +9,29 @@ export type ProviderKind =
   | 'code' // Axon
   | 'logs' // Elasticsearch
   | 'metrics' // Prometheus
-  | 'state' // Redis
+  | 'state' // Redis / MongoDB
   | 'queue' // BullMQ
   | 'history'; // Git
+
+/**
+ * Cross-provider severity scale, assigned by the normalization layer (never by
+ * providers). `critical` and `high` are actionable anomalies; `info` is
+ * structural context that enriches the picture without signalling a problem.
+ */
+export type EvidenceSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
+
+/**
+ * Broad functional category for grouping and filtering across providers.
+ * Assigned by the normalization layer, not by individual providers.
+ */
+export type EvidenceCategory =
+  | 'queue'      // BullMQ backlog, starvation, failures
+  | 'database'   // MongoDB state anomalies
+  | 'logs'       // Elasticsearch error patterns
+  | 'code'       // Axon symbols, flows, impact blast-radius
+  | 'deployment' // Git commits
+  | 'metrics'    // Grafana time-series
+  | 'other';
 
 /** The shape of a single evidence item. */
 export type EvidenceKind =
@@ -52,6 +72,10 @@ export interface Evidence {
   links: EvidenceLinks;
   /** Reproducibility: the query that produced this and when. */
   provenance: { query: string; collectedAt: string };
+  /** Assigned by the normalization layer; absent until normalizeEvidence() runs. */
+  severity?: EvidenceSeverity;
+  /** Broad functional grouping; assigned by the normalization layer. */
+  category?: EvidenceCategory;
 }
 
 /** A resolved code symbol, as returned by the code provider. */
