@@ -20,7 +20,7 @@ import type {
   Symbol,
   SymbolContext,
 } from '@horus/core';
-import type { CodeProvider } from '@horus/connectors';
+import type { CodeProvider, LogsProvider, LogRecord } from '@horus/connectors';
 import type { HorusDb, QueueEdge } from '@horus/db';
 import {
   evidence as evidenceTable,
@@ -47,6 +47,8 @@ import { correlate } from './correlate.js';
 export interface EngineDeps {
   code: CodeProvider;
   db: HorusDb;
+  /** Optional Elasticsearch logs provider — when absent the investigation runs Axon-only. */
+  logs?: LogsProvider | null;
 }
 
 /** Map an evidence kind to its originating provider. */
@@ -89,9 +91,37 @@ function relevanceForKind(kind: EvidenceKind): number {
       return 0.6;
     case 'commit':
       return 0.65;
+    case 'log':
+      return 0.5;
     default:
       return 0.5;
   }
+}
+
+/**
+ * Compute the start of the log query window from `since`.
+ * Accepts duration strings like 24h, 7d, 30m, 90s; anything else defaults to
+ * 7 days ago. Returns an ISO-8601 timestamp.
+ */
+export function logWindowFrom(since: string | undefined): string {
+  const DURATION_RE = /^(\d+)([smhd])$/;
+  const now = Date.now();
+  if (since !== undefined) {
+    const m = DURATION_RE.exec(since.trim());
+    if (m !== null) {
+      const value = Number(m[1]);
+      const unit = m[2] as 's' | 'm' | 'h' | 'd';
+      const msMap: Record<typeof unit, number> = {
+        s: 1_000,
+        m: 60_000,
+        h: 3_600_000,
+        d: 86_400_000,
+      };
+      return new Date(now - value * msMap[unit]).toISOString();
+    }
+  }
+  // Default: 7 days ago
+  return new Date(now - 7 * 86_400_000).toISOString();
 }
 
 /** Does `since` look like a range or a concrete ref worth diffing? */
@@ -121,13 +151,14 @@ export async function investigate(
     payload: unknown,
     links: EvidenceLinks,
     timestamp?: string,
+    relevance?: number,
   ): Evidence {
     const ev: Evidence = {
       id: globalThis.crypto.randomUUID(),
       source: sourceForKind(kind),
       kind,
       title,
-      relevance: relevanceForKind(kind),
+      relevance: relevance !== undefined ? relevance : relevanceForKind(kind),
       payload,
       links,
       provenance: { query: hint, collectedAt },
@@ -267,6 +298,58 @@ export async function investigate(
     changeEvId = ev.id;
   }
 
+  // e0. RUNTIME LOGS (HOR-13) — optional, never breaks the investigation on failure.
+  let records: LogRecord[] = [];
+  let buckets: { key: string; count: number }[] = [];
+  let errorLogCount = 0;
+  const logEvIds: string[] = [];
+  const aggEvIds: string[] = [];
+
+  if (deps.logs) {
+    try {
+      const from = logWindowFrom(input.since);
+      const logQuery = { service: input.service, from, text: hint, limit: 25 };
+      records = await deps.logs.searchLogs(logQuery);
+
+      const cappedRecords = records.slice(0, 25);
+      for (const r of cappedRecords) {
+        const isErr = r.level === 'error' || r.level === 'fatal';
+        if (isErr) errorLogCount++;
+        const ev = mkEv(
+          'log',
+          (`[${r.level}] ${r.component ?? r.service ?? ''}: ${r.message}`).slice(0, 160),
+          {
+            level: r.level,
+            levelValue: r.levelValue,
+            component: r.component,
+            eventCode: r.eventCode,
+            service: r.service,
+            index: r.index,
+          },
+          {},
+          r.timestamp,
+          isErr ? 0.9 : 0.5,
+        );
+        logEvIds.push(ev.id);
+      }
+
+      buckets = await deps.logs.aggregateErrors({ service: input.service, from });
+      for (const b of buckets) {
+        const ev = mkEv(
+          'log',
+          `${b.count}x error ${b.key}`,
+          { eventCode: b.key, count: b.count, aggregate: true },
+          {},
+          undefined,
+          Math.min(1, b.count / 100),
+        );
+        aggEvIds.push(ev.id);
+      }
+    } catch {
+      // Logs failure must never break the investigation — continue without log evidence.
+    }
+  }
+
   // e. TIMELINE (deterministic; built after all evidence is accumulated)
   const timeline = buildTimeline(evidence);
 
@@ -337,6 +420,27 @@ export async function investigate(
     });
   }
 
+  // Runtime log findings (only when logs were gathered)
+  if (records.length > 0) {
+    findings.push({
+      kind: 'observation',
+      title: `Gathered ${records.length} runtime log line(s) (${errorLogCount} error-level) for ${input.service ?? 'the service'} in the window`,
+      confidence: 0.6,
+      evidenceIds: logEvIds,
+    });
+  }
+  if (buckets.length > 0) {
+    const topBucket = buckets[0];
+    if (topBucket !== undefined) {
+      findings.push({
+        kind: 'anomaly',
+        title: `Top runtime error: ${topBucket.count}x ${topBucket.key}`,
+        confidence: 0.7,
+        evidenceIds: aggEvIds,
+      });
+    }
+  }
+
   // f. SUSPECTED CAUSES
   const suspectedCauses: SuspectedCause[] = [];
   const impactNorm = clamp01(impact.affected / 20);
@@ -367,6 +471,20 @@ export async function investigate(
       statement: `${top.name} sits on a high-fan-out path (${impact.affected} affected) and may propagate the fault`,
       score: clamp01(impactNorm * 0.5 + (queueHits.length > 0 ? 0.1 : 0)),
       evidenceIds: [impactEv.id, seedEv.id],
+    });
+  }
+
+  // Runtime-errors + queue-path cause: only when we have error logs AND a queue path.
+  if (errorLogCount > 0 && queueHits.length > 0) {
+    const firstQueue = queueHits[0];
+    const queueLabel =
+      firstQueue !== undefined
+        ? `"${firstQueue.queueName}" (${firstQueue.producerSymbol ?? 'unknown'} -> ${firstQueue.workerSymbol ?? 'unknown'})`
+        : 'the queue path';
+    suspectedCauses.push({
+      statement: `Runtime error logs (${errorLogCount} error-level) correlate with the implicated queue path ${queueLabel}`,
+      score: clamp01(0.3 + impactNorm * 0.3),
+      evidenceIds: aggEvIds.length > 0 ? aggEvIds : logEvIds,
     });
   }
 

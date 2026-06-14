@@ -1,6 +1,6 @@
 import pc from 'picocolors';
 import { loadConfig } from '@horus/core';
-import { createConnectors } from '@horus/connectors';
+import { createConnectors, logsProviderFromConfig } from '@horus/connectors';
 import { createDb } from '@horus/db';
 import { investigate, renderReport, reportToJSON, reportToMarkdown } from '@horus/engine';
 
@@ -10,6 +10,7 @@ export async function runInvestigate(
     config?: string;
     repo?: string;
     since?: string;
+    service?: string;
     json?: boolean;
     format?: string;
   },
@@ -17,6 +18,7 @@ export async function runInvestigate(
   try {
     const config = await loadConfig(opts.config);
     const { code } = createConnectors(config);
+    const logs = logsProviderFromConfig(config);
 
     const health = await code.health();
     if (!health.ok) {
@@ -29,8 +31,8 @@ export async function runInvestigate(
     const { db, sql } = createDb(config.database.url);
     try {
       const report = await investigate(
-        { hint, repo: opts.repo, since: opts.since },
-        { code, db },
+        { hint, repo: opts.repo, since: opts.since, service: opts.service },
+        { code, db, logs },
       );
       // --json is back-compat for --format json.
       const format = opts.json ? 'json' : (opts.format ?? 'text');

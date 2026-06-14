@@ -89,6 +89,10 @@ export function buildProgram(): Command {
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--repo <name>', 'repository to scope to')
     .option('--since <ref>', 'git ref/range for change-impact (e.g. HEAD~5)')
+    .option(
+      '--service <name>',
+      'service name to scope runtime logs, e.g. leadcall-api-prod',
+    )
     .option('--json', 'output JSON (alias for --format json)')
     .option('--format <fmt>', 'output format: text | markdown | json', 'text')
     .action(
@@ -98,6 +102,7 @@ export function buildProgram(): Command {
           config?: string;
           repo?: string;
           since?: string;
+          service?: string;
           json?: boolean;
           format?: string;
         },
@@ -106,6 +111,7 @@ export function buildProgram(): Command {
           config: opts.config,
           repo: opts.repo,
           since: opts.since,
+          service: opts.service,
           json: opts.json,
           format: opts.format,
         });
