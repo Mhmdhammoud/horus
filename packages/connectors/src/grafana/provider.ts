@@ -62,7 +62,9 @@ export class GrafanaMetricsProvider implements MetricsProvider {
       let dashboardObj: unknown;
       try {
         dashboardObj = await this.client.getDashboard(dash.uid, signal);
-      } catch {
+      } catch (err) {
+        // Abort must propagate — only skip genuinely failed dashboard fetches.
+        if (signal?.aborted) throw signal.reason ?? err;
         continue;
       }
       const panels = extractPanels(dashboardObj);
@@ -96,6 +98,7 @@ export class GrafanaMetricsProvider implements MetricsProvider {
     for (const panel of panels) {
       signal?.throwIfAborted();
       for (const rawExpr of panel.exprs) {
+        signal?.throwIfAborted();
         const expr = sanitizeExpr(rawExpr);
         if (expr === null) continue;
 
@@ -121,8 +124,9 @@ export class GrafanaMetricsProvider implements MetricsProvider {
             current,
           );
           allFindings.push(...findings);
-        } catch {
-          // One bad query must not abort the whole run
+        } catch (err) {
+          // Abort must propagate — only skip genuinely bad individual queries.
+          if (signal?.aborted) throw signal.reason ?? err;
           continue;
         }
       }

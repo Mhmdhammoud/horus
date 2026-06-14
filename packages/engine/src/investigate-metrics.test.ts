@@ -381,9 +381,13 @@ describe('investigate() WITHOUT metrics provider', () => {
 // ---------------------------------------------------------------------------
 
 describe('investigate() — timeout aborts metrics provider', () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+  });
+
   it('passes an AbortSignal to metrics.analyze() so the provider can cancel in-flight work', async () => {
     let capturedSignal: AbortSignal | undefined;
-    const metrics: typeof fakeCode extends never ? never : MetricsProvider = {
+    const metrics: MetricsProvider = {
       id: 'grafana',
       kind: 'metrics',
       async health() { return { ok: true, detail: 'fake' }; },
@@ -403,31 +407,49 @@ describe('investigate() — timeout aborts metrics provider', () => {
     expect(capturedSignal).toBeInstanceOf(AbortSignal);
   });
 
-  it('returns a valid report even when metrics.analyze() rejects on abort', async () => {
-    const metrics: MetricsProvider = {
+  it('aborts signal when deadline fires and marks metrics collection as failed', async () => {
+    vi.useFakeTimers();
+    let capturedSignal: AbortSignal | undefined;
+
+    // Provider blocks until its signal is aborted — simulates a slow Grafana.
+    const slowMetrics: MetricsProvider = {
       id: 'grafana',
       kind: 'metrics',
       async health() { return { ok: true, detail: 'fake' }; },
       async findPanels() { return []; },
       async analyze(opts) {
-        // Simulate the provider honoring the signal and throwing AbortError.
-        opts.signal?.throwIfAborted();
+        capturedSignal = opts.signal;
+        // Block until abort fires or 60 s safety net.
+        await new Promise<void>((_, reject) => {
+          opts.signal?.addEventListener('abort', () => reject(opts.signal?.reason ?? new Error('aborted')));
+          setTimeout(() => reject(new Error('safety-net timeout')), 60_000);
+        });
         return [];
       },
       async rawRange() { return []; },
       toEvidence() { return []; },
     };
-    // Pre-abort the signal to trigger the early throw path immediately.
-    const ac = new AbortController();
-    ac.abort(new Error('pre-aborted'));
-    // Use the already-aborted signal by injecting a custom provider that aborts on signal check.
-    const report = await investigate(
+
+    const reportPromise = investigate(
       { hint: 'zoho' },
-      { code: fakeCode, db: fakeDb, metrics },
+      { code: fakeCode, db: fakeDb, metrics: slowMetrics, connectors: { grafana: true } },
     );
-    // Investigation should complete successfully regardless.
+
+    // Advance past the 10-second metrics deadline.
+    await vi.advanceTimersByTimeAsync(11_000);
+    const report = await reportPromise;
+
+    // Signal must have been aborted by the deadline.
+    expect(capturedSignal?.aborted).toBe(true);
+
+    // Because the provider threw on abort, metricsCollected stays false.
+    const metricsGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'metrics');
+    expect(metricsGap).toBeDefined();
+    expect(metricsGap?.confidenceImpact).toBe(0.1);
+
+    // Report is still valid.
     expect(report.confidence).toBeGreaterThanOrEqual(0);
-    expect(report.evidence).toBeDefined();
+    vi.useRealTimers();
   });
 });
 
