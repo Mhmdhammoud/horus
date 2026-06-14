@@ -62,9 +62,10 @@ export class BullMQRuntimeProvider implements QueueRuntimeProvider {
       isPaused: paused > 0,
     };
 
-    // Oldest waiting job: index 0 is the oldest (BullMQ RPUSHes, LPOPs from left)
+    // Oldest waiting job: BullMQ LPUSHes new jobs (index 0 = newest); workers
+    // RPOPLPUSH from the tail, so the oldest unprocessed job is at index -1.
     if (waiting > 0) {
-      const oldestJobId = await this.client.listIndex(this.client.queueKey(name, 'wait'), 0);
+      const oldestJobId = await this.client.listIndex(this.client.queueKey(name, 'wait'), -1);
       if (oldestJobId !== null) {
         const fields = await this.client.jobFields(name, oldestJobId, ['timestamp']);
         const ts = fields['timestamp'];
