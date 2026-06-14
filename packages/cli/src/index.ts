@@ -17,6 +17,7 @@ import { runReplay } from './commands/replay.js';
 import { runOwner } from './commands/owner.js';
 import { runPostmortem } from './commands/postmortem.js';
 import { runScore, runScores } from './commands/score.js';
+import { runAsk } from './commands/ask.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -289,6 +290,19 @@ export function buildProgram(): Command {
     .option('--json', 'output JSON')
     .action(async (id: string, opts: { config?: string; json?: boolean }) => {
       process.exitCode = await runScore(id, { config: opts.config, json: opts.json });
+    });
+
+  program
+    .command('ask <id> <directive>')
+    .description(
+      'Refine a saved investigation with a follow-up directive ' +
+        '(e.g. "focus on queue behavior", "ignore deployment changes") — ' +
+        'reuses evidence, no re-query',
+    )
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--json', 'output JSON')
+    .action(async (id: string, directive: string, opts: { config?: string; json?: boolean }) => {
+      process.exitCode = await runAsk(id, directive, { config: opts.config, json: opts.json });
     });
 
   program
