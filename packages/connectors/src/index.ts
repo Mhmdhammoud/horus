@@ -15,3 +15,4 @@ export * from './compat.js';
 export * from './git/index.js';
 export * from './elasticsearch/index.js';
 export * from './grafana/index.js';
+export * from './mongodb/index.js';

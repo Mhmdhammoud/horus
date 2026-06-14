@@ -20,6 +20,9 @@ import type { LogsProvider } from './elasticsearch/provider.js';
 import { GrafanaClient } from './grafana/client.js';
 import { GrafanaMetricsProvider } from './grafana/provider.js';
 import type { MetricsProvider } from './grafana/provider.js';
+import { MongoStateClient } from './mongodb/client.js';
+import { MongoStateProvider } from './mongodb/provider.js';
+import type { StateProvider } from './mongodb/provider.js';
 
 // ---------------------------------------------------------------------------
 // Environment-scoped builders (primary API, HOR-34)
@@ -58,6 +61,24 @@ export function metricsForEnv(renv: ResolvedEnvironment): MetricsProvider | null
   return new GrafanaMetricsProvider(
     new GrafanaClient({ baseUrl: g.url, username: g.username, password: g.password }),
     { defaultStep: 60 },
+  );
+}
+
+/**
+ * Return a MongoDB `StateProvider` for the given resolved environment, or `null`
+ * when no Mongo connector is configured (no URL — e.g. a different cluster whose
+ * URL env var is unset). Read-only, allowlisted collections only.
+ */
+export function mongoForEnv(renv: ResolvedEnvironment): StateProvider | null {
+  const m = renv.connectors.mongodb;
+  if (!m || !m.url || !m.database) return null;
+  return new MongoStateProvider(
+    new MongoStateClient({
+      url: m.url,
+      database: m.database,
+      allowlist: m.collections,
+    }),
+    { database: m.database, collections: m.collections, staleHours: 24 },
   );
 }
 

@@ -23,6 +23,7 @@ export type EvidenceKind =
   | 'queue-state'
   | 'queue-edge'
   | 'redis-key'
+  | 'state' // application/DB state (MongoDB)
   | 'impact';
 
 /** Graph back-references that let a human (or the engine) jump to the source. */

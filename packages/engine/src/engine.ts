@@ -20,7 +20,13 @@ import type {
   Symbol,
   SymbolContext,
 } from '@horus/core';
-import type { CodeProvider, LogsProvider, LogAnalysis } from '@horus/connectors';
+import type {
+  CodeProvider,
+  LogsProvider,
+  LogAnalysis,
+  StateProvider,
+  StateAnalysis,
+} from '@horus/connectors';
 import { shortTs } from '@horus/connectors';
 import type { HorusDb, QueueEdge } from '@horus/db';
 import {
@@ -50,6 +56,8 @@ export interface EngineDeps {
   db: HorusDb;
   /** Optional Elasticsearch logs provider — when absent the investigation runs Axon-only. */
   logs?: LogsProvider | null;
+  /** Optional MongoDB state provider — folds application-state anomalies as evidence. */
+  mongo?: StateProvider | null;
 }
 
 /** Map an evidence kind to its originating provider. */
@@ -65,6 +73,7 @@ function sourceForKind(kind: EvidenceKind): ProviderKind {
     case 'metric':
       return 'metrics';
     case 'redis-key':
+    case 'state':
       return 'state';
     default:
       return 'code';
@@ -348,6 +357,48 @@ export async function investigate(
     }
   }
 
+  // e0b. MONGODB STATE (HOR-33) — application-state anomalies as evidence. Optional;
+  // never breaks the investigation on failure. Counts/state only — no raw documents.
+  let stateAnalysis: StateAnalysis | null = null;
+  const stateEvIds: string[] = [];
+
+  if (deps.mongo) {
+    try {
+      stateAnalysis = await deps.mongo.analyzeState();
+      for (const c of stateAnalysis.collections) {
+        for (const a of c.anomalies) {
+          const ev = mkEv(
+            'state',
+            `${c.collection}: ${a.count} doc(s) in state "${a.value}"`,
+            { collection: c.collection, status: a.value, count: a.count, totalDocs: c.count },
+            {},
+            undefined,
+            0.85,
+          );
+          stateEvIds.push(ev.id);
+        }
+        if (c.isStale === true && c.lastActivity) {
+          const ev = mkEv(
+            'state',
+            `${c.collection}: stale — last ${c.dateField} at ${shortTs(c.lastActivity)}`,
+            {
+              collection: c.collection,
+              dateField: c.dateField,
+              lastActivity: c.lastActivity,
+              ageHours: c.ageHours,
+            },
+            {},
+            c.lastActivity,
+            0.8,
+          );
+          stateEvIds.push(ev.id);
+        }
+      }
+    } catch {
+      stateAnalysis = null;
+    }
+  }
+
   // e. TIMELINE (deterministic; built after all evidence is accumulated)
   const timeline = buildTimeline(evidence);
 
@@ -446,6 +497,19 @@ export async function investigate(
         evidenceIds: logEvIds.slice(0, 1),
       });
     }
+  }
+
+  // Application-state findings (MongoDB, HOR-33)
+  if (stateAnalysis !== null && stateEvIds.length > 0) {
+    const collsWithSignals = stateAnalysis.collections.filter(
+      (c) => c.anomalies.length > 0 || c.isStale === true,
+    ).length;
+    findings.push({
+      kind: 'anomaly',
+      title: `Application state: ${stateEvIds.length} anomaly/stale signal(s) across ${collsWithSignals} collection(s) in ${stateAnalysis.database}`,
+      confidence: 0.65,
+      evidenceIds: stateEvIds,
+    });
   }
 
   // f. SUSPECTED CAUSES

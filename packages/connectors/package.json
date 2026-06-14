@@ -11,6 +11,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@horus/core": "workspace:*"
+    "@horus/core": "workspace:*",
+    "mongodb": "^7.3.0"
   }
 }

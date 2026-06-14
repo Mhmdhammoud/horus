@@ -23,6 +23,7 @@
     "commander": "^12.1.0",
     "drizzle-orm": "^0.38.3",
     "jiti": "^2.4.2",
+    "mongodb": "^7.3.0",
     "picocolors": "^1.1.1",
     "postgres": "^3.4.5",
     "zod": "^3.24.1"

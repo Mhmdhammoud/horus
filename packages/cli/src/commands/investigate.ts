@@ -1,6 +1,6 @@
 import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
-import { codeForEnv, logsForEnv } from '@horus/connectors';
+import { codeForEnv, logsForEnv, mongoForEnv } from '@horus/connectors';
 import { createDb } from '@horus/db';
 import { investigate, renderReport, reportToJSON, reportToMarkdown } from '@horus/engine';
 
@@ -56,6 +56,7 @@ export async function runInvestigate(
     }
 
     const logs = logsForEnv(renv);
+    const mongo = mongoForEnv(renv);
 
     // Resolve service name: CLI flag > connector default > undefined
     const service = opts.service ?? renv.connectors.elasticsearch?.serviceName;
@@ -64,7 +65,7 @@ export async function runInvestigate(
     try {
       const report = await investigate(
         { hint, repo: projectName, since: opts.since, service },
-        { code, db, logs },
+        { code, db, logs, mongo },
       );
       // --json is back-compat for --format json.
       const format = opts.json ? 'json' : (opts.format ?? 'text');
@@ -77,6 +78,7 @@ export async function runInvestigate(
       console.log(rendered);
     } finally {
       await sql.end();
+      if (mongo) await mongo.close();
     }
 
     return 0;

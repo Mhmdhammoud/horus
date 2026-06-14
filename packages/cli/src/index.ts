@@ -22,6 +22,7 @@ import { runOnboard } from './commands/onboard.js';
 import { runSimulate } from './commands/simulate.js';
 import { runLogs } from './commands/logs.js';
 import { runMetrics } from './commands/metrics.js';
+import { runState } from './commands/state.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -390,6 +391,26 @@ export function buildProgram(): Command {
         },
       ) => {
         process.exitCode = await runLogs(service, opts);
+      },
+    );
+
+  program
+    .command('state')
+    .description(
+      'Surface application-state evidence from MongoDB (read-only, allowlisted): counts, staleness, anomalous statuses',
+    )
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--project <name>', 'project name')
+    .option('--env <name>', 'environment name (e.g. production)')
+    .option('--stale-hours <n>', 'staleness threshold in hours (default 24)')
+    .action(
+      async (opts: {
+        config?: string;
+        project?: string;
+        env?: string;
+        staleHours?: string;
+      }) => {
+        process.exitCode = await runState(opts);
       },
     );
 
