@@ -91,15 +91,24 @@ After the graph is built, a two-pass scoring algorithm assigns `implicationScore
 `implicated` to every infrastructure node:
 
 **Pass 1 — base score**: `implicationScore = max(evidence.relevance)` across all
-directly-attached evidence items.
+directly-attached evidence items **with `priority` other than `'info'`**. Evidence
+excluded from scoring: structural kinds (`queue-edge`, `symbol`, `flow`, `impact`) and
+any item the normalization layer classifies as `priority: 'info'` (healthy snapshots,
+low-relevance commits). Topology alone cannot implicate a node — only runtime anomaly
+evidence counts.
 
-**Pass 2 — one-hop propagation**: for each infrastructure node, its score propagates
-to direct neighbours at `score × 0.7`. Propagation is bidirectional: a backed-up queue
-implies its producer service and its worker; a failing service implies the queue it
-emits to.
+**Pass 2 — one-hop propagation**: all base scores are snapshotted before any
+propagation begins. Each infrastructure node propagates `baseScore × 0.7` to its direct
+neighbours. The snapshot guarantees exactly one hop — a score received from propagation
+cannot cascade to further neighbours in the same pass. Propagation is bidirectional:
+a backed-up queue implies its producer service and its worker; a failing service implies
+the queue it emits to. A failing service does **not** imply the queue's workers because
+that path requires two hops.
 
 **`implicated: true`** is set when `implicationScore ≥ 0.6` (the medium priority
-threshold from the normalization layer).
+threshold from the normalization layer). `maxImplicationScore()` only returns scores
+from implicated nodes — healthy or topology-only nodes with `implicationScore < 0.6`
+never contribute to cause boosting.
 
 ### Example
 

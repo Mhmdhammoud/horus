@@ -497,6 +497,45 @@ describe('buildGraph — implication propagation', () => {
     expect(worker.implicated).toBe(false);
   });
 
+  it('service anomaly propagates to its queue but not through the queue to its worker', () => {
+    // The single-hop guarantee: service → queue (one hop) is implicated,
+    // but queue → worker (second hop) must not receive score in the same pass.
+    const log = makeEv({
+      id: 'ev-svc-anomaly',
+      source: 'logs',
+      kind: 'log',
+      relevance: 0.9,
+      payload: { services: ['api'] },
+      links: {},
+    });
+    const edge = makeEv({
+      id: 'ev-q-edge',
+      source: 'queue',
+      kind: 'queue-edge',
+      relevance: 0.9,
+      payload: { queueName: 'orders', producerSymbol: 'api', workerSymbol: 'OrderWorker' },
+      links: {},
+    });
+    const g = buildGraph([log, edge]);
+
+    const service = g.nodes.find((n) => n.id === 'service:api')!;
+    const queue = g.nodes.find((n) => n.id === 'queue:orders')!;
+    const worker = g.nodes.find((n) => n.id === 'worker:OrderWorker')!;
+
+    // Service: direct log evidence (runtime, not excluded) → base score 0.9
+    expect(service.implicationScore).toBeCloseTo(0.9);
+    expect(service.implicated).toBe(true);
+
+    // Queue: no runtime evidence directly; receives one-hop propagation from service
+    expect(queue.implicationScore).toBeCloseTo(0.63); // 0.9 × 0.7
+    expect(queue.implicated).toBe(true);
+
+    // Worker: would require a second hop (service→queue→worker). Queue base score
+    // was 0 at propagation read time, so worker receives nothing.
+    expect(worker.implicationScore).toBe(0);
+    expect(worker.implicated).toBe(false);
+  });
+
   it('low-relevance runtime evidence produces no implication propagation', () => {
     const edge = makeEv({
       id: 'ev-noprop-edge',

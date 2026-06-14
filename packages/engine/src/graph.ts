@@ -212,8 +212,12 @@ const STRUCTURAL_KINDS: ReadonlySet<string> = new Set([
  * low-relevance commits, and healthy snapshots. When evidence is un-normalized
  * (tests, fixtures), fall back to the structural-kind set so the guard still
  * fires for the kinds that would always receive `priority: 'info'`.
+ *
+ * Named "excluded" rather than "structural" because `priority: 'info'` also
+ * covers non-structural evidence that has no anomaly signal (e.g. a healthy
+ * queue-state snapshot, a low-relevance commit).
  */
-function isStructuralEvidence(ev: Evidence): boolean {
+function isExcludedFromImplication(ev: Evidence): boolean {
   if (ev.priority !== undefined) return ev.priority === 'info';
   return STRUCTURAL_KINDS.has(ev.kind);
 }
@@ -228,7 +232,7 @@ function scoreImplication(nodes: NodeMap, edges: EdgeMap, evidence: Evidence[]):
     if (node.type === 'evidence') continue;
     node.implicationScore = node.evidenceIds.reduce((max, eid) => {
       const ev = evById.get(eid);
-      if (!ev || isStructuralEvidence(ev)) return max;
+      if (!ev || isExcludedFromImplication(ev)) return max;
       return Math.max(max, ev.relevance);
     }, 0);
   }
