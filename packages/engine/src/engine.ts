@@ -52,6 +52,7 @@ import type {
 import { buildTimeline } from './timeline.js';
 import { correlate } from './correlate.js';
 import { rankSeeds } from './seeds.js';
+import { normalizeEvidence } from './normalize.js';
 
 /** Dependencies the engine needs: a code provider and a database handle. */
 export interface EngineDeps {
@@ -431,6 +432,11 @@ export async function investigate(
       queueRuntimeState = null;
     }
   }
+
+  // e0d. NORMALIZE — fill in cross-provider severity + category before any
+  // downstream step reads them. Idempotent; safe to call even if a provider
+  // failed and contributed zero items.
+  normalizeEvidence(evidence);
 
   // e. TIMELINE (deterministic; built after all evidence is accumulated)
   const timeline = buildTimeline(evidence);

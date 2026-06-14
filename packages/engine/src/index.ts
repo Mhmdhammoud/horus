@@ -33,3 +33,4 @@ export * from './onboard.js';
 export * from './render-onboard.js';
 export * from './simulate.js';
 export * from './render-simulate.js';
+export * from './normalize.js';
