@@ -9,6 +9,7 @@ import { runChanges } from './commands/changes.js';
 import { runTimeline } from './commands/timeline.js';
 import { runWhatChanged } from './commands/what-changed.js';
 import { runArchitecture } from './commands/architecture.js';
+import { runBlastRadius } from './commands/blast-radius.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -176,6 +177,24 @@ export function buildProgram(): Command {
     .action(async (opts: { config?: string; json?: boolean }) => {
       process.exitCode = await runArchitecture({ config: opts.config, json: opts.json });
     });
+
+  program
+    .command('blast-radius <query>')
+    .description(
+      'Failure-propagation analysis: upstream/downstream dependencies + blast radius across async boundaries',
+    )
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('-d, --depth <n>', 'traversal depth', (v) => parseInt(v, 10))
+    .option('--json', 'output JSON')
+    .action(
+      async (query: string, opts: { config?: string; depth?: number; json?: boolean }) => {
+        process.exitCode = await runBlastRadius(query, {
+          config: opts.config,
+          depth: opts.depth,
+          json: opts.json,
+        });
+      },
+    );
 
   return program;
 }

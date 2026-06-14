@@ -17,3 +17,5 @@ export * from './what-changed.js';
 export * from './render-what-changed.js';
 export * from './architecture.js';
 export * from './render-architecture.js';
+export * from './blast-radius.js';
+export * from './render-blast-radius.js';
