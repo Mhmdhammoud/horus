@@ -2,11 +2,17 @@ import pc from 'picocolors';
 import { loadConfig } from '@horus/core';
 import { createConnectors } from '@horus/connectors';
 import { createDb } from '@horus/db';
-import { investigate, renderReport, reportToJSON } from '@horus/engine';
+import { investigate, renderReport, reportToJSON, reportToMarkdown } from '@horus/engine';
 
 export async function runInvestigate(
   hint: string,
-  opts: { config?: string; repo?: string; since?: string; json?: boolean },
+  opts: {
+    config?: string;
+    repo?: string;
+    since?: string;
+    json?: boolean;
+    format?: string;
+  },
 ): Promise<number> {
   try {
     const config = await loadConfig(opts.config);
@@ -26,7 +32,15 @@ export async function runInvestigate(
         { hint, repo: opts.repo, since: opts.since },
         { code, db },
       );
-      console.log(opts.json ? reportToJSON(report) : renderReport(report));
+      // --json is back-compat for --format json.
+      const format = opts.json ? 'json' : (opts.format ?? 'text');
+      const rendered =
+        format === 'json'
+          ? reportToJSON(report)
+          : format === 'markdown' || format === 'md'
+            ? reportToMarkdown(report)
+            : renderReport(report);
+      console.log(rendered);
     } finally {
       await sql.end();
     }

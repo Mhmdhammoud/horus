@@ -69,17 +69,25 @@ export function buildProgram(): Command {
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--repo <name>', 'repository to scope to')
     .option('--since <ref>', 'git ref/range for change-impact (e.g. HEAD~5)')
-    .option('--json', 'output JSON')
+    .option('--json', 'output JSON (alias for --format json)')
+    .option('--format <fmt>', 'output format: text | markdown | json', 'text')
     .action(
       async (
         hint: string,
-        opts: { config?: string; repo?: string; since?: string; json?: boolean },
+        opts: {
+          config?: string;
+          repo?: string;
+          since?: string;
+          json?: boolean;
+          format?: string;
+        },
       ) => {
         process.exitCode = await runInvestigate(hint, {
           config: opts.config,
           repo: opts.repo,
           since: opts.since,
           json: opts.json,
+          format: opts.format,
         });
       },
     );
