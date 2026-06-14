@@ -456,23 +456,20 @@ export async function investigate(
   let metricsCollected = false;
 
   if (deps.metrics) {
+    const ac = new AbortController();
     let metricsTimerId: ReturnType<typeof setTimeout> | undefined;
     try {
       const fromMs = new Date(logWindowFrom(input.since)).getTime();
       const toMs = Date.now();
-      const mFindings = await Promise.race([
-        deps.metrics.analyze({
-          hint: input.hint,
-          from: Math.floor(fromMs / 1000),
-          to: Math.floor(toMs / 1000),
-        }),
-        new Promise<never>((_, reject) => {
-          metricsTimerId = setTimeout(() => reject(new Error('metrics timeout')), METRICS_TIMEOUT_MS);
-          // unref() prevents the timer from keeping the Node process alive if
-          // metrics.analyze() resolves first.
-          (metricsTimerId as { unref?: () => void }).unref?.();
-        }),
-      ]);
+      metricsTimerId = setTimeout(() => ac.abort(new Error('metrics timeout')), METRICS_TIMEOUT_MS);
+      // unref() prevents the timer from keeping the Node process alive.
+      (metricsTimerId as { unref?: () => void }).unref?.();
+      const mFindings = await deps.metrics.analyze({
+        hint: input.hint,
+        from: Math.floor(fromMs / 1000),
+        to: Math.floor(toMs / 1000),
+        signal: ac.signal,
+      });
 
       const mEvidence = deps.metrics.toEvidence(mFindings);
       const anomalous = mFindings.filter((f) => f.anomaly !== 'none');

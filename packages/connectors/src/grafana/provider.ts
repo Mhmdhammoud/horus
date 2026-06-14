@@ -22,8 +22,8 @@ import type { MetricFinding } from './analyze.js';
 // ---------------------------------------------------------------------------
 
 export interface MetricsProvider extends Provider {
-  findPanels(hint?: string): Promise<Panel[]>;
-  analyze(opts: { hint?: string; from: number; to: number; step?: number }): Promise<MetricFinding[]>;
+  findPanels(hint?: string, signal?: AbortSignal): Promise<Panel[]>;
+  analyze(opts: { hint?: string; from: number; to: number; step?: number; signal?: AbortSignal }): Promise<MetricFinding[]>;
   rawRange(expr: string, from: number, to: number, step?: number): Promise<MetricSeries[]>;
   toEvidence(findings: MetricFinding[]): Evidence[];
   health(): Promise<HealthStatus>;
@@ -53,14 +53,15 @@ export class GrafanaMetricsProvider implements MetricsProvider {
    * (e.g. "latency", "queue") would wrongly exclude the dashboard that holds them.
    * Each panel is tagged with the dashboardUid it came from.
    */
-  async findPanels(hint?: string): Promise<Panel[]> {
-    const dashboards = await this.client.searchDashboards();
+  async findPanels(hint?: string, signal?: AbortSignal): Promise<Panel[]> {
+    const dashboards = await this.client.searchDashboards(undefined, signal);
     const allPanels: Panel[] = [];
 
     for (const dash of dashboards) {
+      signal?.throwIfAborted();
       let dashboardObj: unknown;
       try {
-        dashboardObj = await this.client.getDashboard(dash.uid);
+        dashboardObj = await this.client.getDashboard(dash.uid, signal);
       } catch {
         continue;
       }
@@ -84,26 +85,30 @@ export class GrafanaMetricsProvider implements MetricsProvider {
     from: number;
     to: number;
     step?: number;
+    signal?: AbortSignal;
   }): Promise<MetricFinding[]> {
+    const { signal } = opts;
     const step = opts.step ?? this.opts.defaultStep;
     const windowSecs = opts.to - opts.from;
-    const panels = await this.findPanels(opts.hint);
+    const panels = await this.findPanels(opts.hint, signal);
     const allFindings: MetricFinding[] = [];
 
     for (const panel of panels) {
+      signal?.throwIfAborted();
       for (const rawExpr of panel.exprs) {
         const expr = sanitizeExpr(rawExpr);
         if (expr === null) continue;
 
         try {
           const [currentResp, baselineResp] = await Promise.all([
-            this.client.datasourceRange(panel.datasourceUid, expr, opts.from, opts.to, step),
+            this.client.datasourceRange(panel.datasourceUid, expr, opts.from, opts.to, step, signal),
             this.client.datasourceRange(
               panel.datasourceUid,
               expr,
               opts.from - windowSecs,
               opts.from,
               step,
+              signal,
             ),
           ]);
           const current = parseRange(currentResp);

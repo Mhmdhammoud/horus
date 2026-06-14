@@ -32,8 +32,8 @@ export class GrafanaClient {
     return headers;
   }
 
-  private async getJson(url: string): Promise<unknown> {
-    const res = await fetch(url, { method: 'GET', headers: this.buildHeaders() });
+  private async getJson(url: string, signal?: AbortSignal): Promise<unknown> {
+    const res = await fetch(url, { method: 'GET', headers: this.buildHeaders(), signal });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new Error(`Grafana GET ${url} -> ${res.status}: ${text}`);
@@ -57,13 +57,14 @@ export class GrafanaClient {
   /** GET /api/search?type=dash-db[&query=<q>] */
   async searchDashboards(
     query?: string,
+    signal?: AbortSignal,
   ): Promise<{ uid: string; title: string; folderTitle?: string }[]> {
     const qs = new URLSearchParams({ type: 'dash-db' });
     if (query !== undefined && query !== '') {
       qs.set('query', query);
     }
     const url = `${this.baseUrl}/api/search?${qs.toString()}`;
-    const raw = await this.getJson(url);
+    const raw = await this.getJson(url, signal);
     if (!Array.isArray(raw)) return [];
     return (raw as unknown[]).map((item) => {
       const it = item as Record<string, unknown>;
@@ -77,9 +78,9 @@ export class GrafanaClient {
   }
 
   /** GET /api/dashboards/uid/<uid> — returns the .dashboard object. */
-  async getDashboard(uid: string): Promise<unknown> {
+  async getDashboard(uid: string, signal?: AbortSignal): Promise<unknown> {
     const url = `${this.baseUrl}/api/dashboards/uid/${encodeURIComponent(uid)}`;
-    const raw = await this.getJson(url);
+    const raw = await this.getJson(url, signal);
     const r = raw as Record<string, unknown>;
     return r['dashboard'];
   }
@@ -94,6 +95,7 @@ export class GrafanaClient {
     startSecs: number,
     endSecs: number,
     stepSecs: number,
+    signal?: AbortSignal,
   ): Promise<unknown> {
     const qs = new URLSearchParams({
       query: expr,
@@ -102,7 +104,7 @@ export class GrafanaClient {
       step: String(stepSecs),
     });
     const url = `${this.baseUrl}/api/datasources/proxy/uid/${encodeURIComponent(dsUid)}/api/v1/query_range?${qs.toString()}`;
-    const raw = await this.getJson(url);
+    const raw = await this.getJson(url, signal);
     const r = raw as Record<string, unknown>;
     if (r['status'] === 'error') {
       const errMsg = typeof r['error'] === 'string' ? r['error'] : 'unknown error';
