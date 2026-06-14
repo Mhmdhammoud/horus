@@ -87,9 +87,11 @@ describe('scoreCause — scenario 1: no evidence attached', () => {
     expect(result.band).toBe('likely');
   });
 
-  it('band is "highly-likely" for baseScore 0.90', () => {
+  it('band is "likely" for baseScore 0.90 with no evidence (single-source ceiling)', () => {
+    // No attached evidence → 0 distinct sources ≤ 1 → ceiling at 0.84 → 'likely'.
     const result = scoreCause(makeInput({ baseScore: 0.90 }), makeCtx([]));
-    expect(result.band).toBe('highly-likely');
+    expect(result.band).toBe('likely');
+    expect(result.finalScore).toBe(0.84);
   });
 
   it('returns no explanations when no factors fire', () => {
@@ -493,75 +495,132 @@ describe('scoreCause — scenario 8: all factors combined', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Scenario 9: Finding corroboration
+// Scenario 9: Finding uncertainty penalty
 // ---------------------------------------------------------------------------
 
-describe('scoreCause — scenario 9: finding corroboration', () => {
-  it('finding-corroboration fires when a high-confidence anomaly finding shares evidence', () => {
+describe('scoreCause — scenario 9: finding uncertainty', () => {
+  it('finding-uncertainty fires when relevant findings have max confidence < 0.60', () => {
     const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.85, 'high');
-    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: ['ev-q'] });
+    const input = makeInput({ baseScore: 0.50, sourceEvidenceIds: ['ev-q'] });
     const findings: ScoringFinding[] = [
-      { kind: 'anomaly', confidence: 0.85, evidenceIds: ['ev-q'] },
+      { kind: 'anomaly', confidence: 0.40, evidenceIds: ['ev-q'] },
     ];
     const result = scoreCause(input, { ...makeCtx([ev]), findings });
-    const factor = result.explanations.find((e) => e.factor === 'finding-corroboration');
+    const factor = result.explanations.find((e) => e.factor === 'finding-uncertainty');
     expect(factor).toBeDefined();
-    expect(factor!.delta).toBe(0.05);
+    expect(factor!.delta).toBeLessThan(0); // always negative
+    // delta = -(0.60 - 0.40) * 0.10 = -0.020
+    expect(factor!.delta).toBeCloseTo(-0.02, 3);
   });
 
-  it('two corroborating findings produce a +0.10 delta', () => {
-    const ev1 = makeEvidence('ev-q1', 'queue-state', 'queue', 0.85, 'high');
-    const ev2 = makeEvidence('ev-log', 'log', 'logs', 0.9, 'critical');
-    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: ['ev-q1', 'ev-log'] });
-    const findings: ScoringFinding[] = [
-      { kind: 'anomaly', confidence: 0.8, evidenceIds: ['ev-q1'] },
-      { kind: 'correlation', confidence: 0.7, evidenceIds: ['ev-log'] },
-    ];
-    const result = scoreCause(input, { ...makeCtx([ev1, ev2]), findings });
-    const factor = result.explanations.find((e) => e.factor === 'finding-corroboration');
-    expect(factor).toBeDefined();
-    expect(factor!.delta).toBe(0.10);
-  });
-
-  it('observation findings are not counted even when they share evidence', () => {
+  it('finding-uncertainty does not fire when max confidence >= 0.60', () => {
     const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.85, 'high');
-    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: ['ev-q'] });
+    const input = makeInput({ baseScore: 0.50, sourceEvidenceIds: ['ev-q'] });
     const findings: ScoringFinding[] = [
-      { kind: 'observation', confidence: 0.9, evidenceIds: ['ev-q'] },
+      { kind: 'anomaly', confidence: 0.75, evidenceIds: ['ev-q'] },
     ];
     const result = scoreCause(input, { ...makeCtx([ev]), findings });
-    const factor = result.explanations.find((e) => e.factor === 'finding-corroboration');
+    const factor = result.explanations.find((e) => e.factor === 'finding-uncertainty');
     expect(factor).toBeUndefined();
   });
 
-  it('findings with confidence < 0.6 are not counted', () => {
+  it('observation findings are not counted', () => {
     const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.85, 'high');
-    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: ['ev-q'] });
+    const input = makeInput({ baseScore: 0.50, sourceEvidenceIds: ['ev-q'] });
     const findings: ScoringFinding[] = [
-      { kind: 'anomaly', confidence: 0.55, evidenceIds: ['ev-q'] },
+      { kind: 'observation', confidence: 0.20, evidenceIds: ['ev-q'] },
     ];
     const result = scoreCause(input, { ...makeCtx([ev]), findings });
-    const factor = result.explanations.find((e) => e.factor === 'finding-corroboration');
+    const factor = result.explanations.find((e) => e.factor === 'finding-uncertainty');
     expect(factor).toBeUndefined();
   });
 
-  it('finding-corroboration does not fire when no evidence IDs overlap', () => {
+  it('finding-uncertainty does not fire when no evidence IDs overlap', () => {
     const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.85, 'high');
-    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: ['ev-q'] });
+    const input = makeInput({ baseScore: 0.50, sourceEvidenceIds: ['ev-q'] });
     const findings: ScoringFinding[] = [
-      { kind: 'anomaly', confidence: 0.85, evidenceIds: ['ev-other'] },
+      { kind: 'anomaly', confidence: 0.30, evidenceIds: ['ev-other'] },
     ];
     const result = scoreCause(input, { ...makeCtx([ev]), findings });
-    const factor = result.explanations.find((e) => e.factor === 'finding-corroboration');
+    const factor = result.explanations.find((e) => e.factor === 'finding-uncertainty');
     expect(factor).toBeUndefined();
   });
 
-  it('finding-corroboration does not fire when ctx.findings is omitted', () => {
+  it('finding-uncertainty does not fire when ctx.findings is omitted', () => {
     const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.85, 'high');
-    const input = makeInput({ baseScore: 0.45, sourceEvidenceIds: ['ev-q'] });
+    const input = makeInput({ baseScore: 0.50, sourceEvidenceIds: ['ev-q'] });
     const result = scoreCause(input, makeCtx([ev]));
-    const factor = result.explanations.find((e) => e.factor === 'finding-corroboration');
+    const factor = result.explanations.find((e) => e.factor === 'finding-uncertainty');
     expect(factor).toBeUndefined();
+  });
+
+  it('finding-uncertainty never produces a positive delta', () => {
+    const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.85, 'high');
+    const input = makeInput({ baseScore: 0.50, sourceEvidenceIds: ['ev-q'] });
+    // Even with very low confidence findings, delta must be ≤ 0
+    for (const confidence of [0, 0.1, 0.3, 0.55, 0.59]) {
+      const findings: ScoringFinding[] = [
+        { kind: 'anomaly', confidence, evidenceIds: ['ev-q'] },
+      ];
+      const result = scoreCause(input, { ...makeCtx([ev]), findings });
+      for (const exp of result.explanations) {
+        if (exp.factor === 'finding-uncertainty') {
+          expect(exp.delta).toBeLessThanOrEqual(0);
+        }
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 10: Single-source ceiling
+// ---------------------------------------------------------------------------
+
+describe('scoreCause — scenario 10: single-source ceiling', () => {
+  it('single provider cannot reach highly-likely (capped at 0.84)', () => {
+    const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.95, 'critical');
+    // Provide high baseScore that would normally exceed 0.85
+    const input = makeInput({ baseScore: 0.80, sourceEvidenceIds: ['ev-q'] });
+    const result = scoreCause(input, makeCtx([ev]));
+    expect(result.finalScore).toBeLessThanOrEqual(0.84);
+    expect(result.band).not.toBe('highly-likely');
+  });
+
+  it('two independent providers can reach highly-likely', () => {
+    const qEv = makeEvidence('ev-q', 'queue-state', 'queue', 0.95, 'critical');
+    const logEv = makeEvidence('ev-log', 'log', 'logs', 0.95, 'critical');
+    const input = makeInput({ baseScore: 0.80, sourceEvidenceIds: ['ev-q', 'ev-log'] });
+    const result = scoreCause(input, makeCtx([qEv, logEv]));
+    // Two distinct sources → ceiling does not apply
+    expect(result.finalScore).toBeGreaterThan(0.84);
+    expect(result.band).toBe('highly-likely');
+  });
+
+  it('single-source-ceiling explanation appears when the cap fires', () => {
+    const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.95, 'critical');
+    const input = makeInput({ baseScore: 0.80, sourceEvidenceIds: ['ev-q'] });
+    const result = scoreCause(input, makeCtx([ev]));
+    const ceiling = result.explanations.find((e) => e.factor === 'single-source-ceiling');
+    expect(ceiling).toBeDefined();
+    expect(ceiling!.delta).toBeLessThan(0);
+  });
+
+  it('ceiling does not fire when finalScore is already at or below 0.84', () => {
+    const ev = makeEvidence('ev-q', 'queue-state', 'queue', 0.6, 'medium');
+    const input = makeInput({ baseScore: 0.50, sourceEvidenceIds: ['ev-q'] });
+    const result = scoreCause(input, makeCtx([ev]));
+    expect(result.finalScore).toBeLessThanOrEqual(0.84);
+    const ceiling = result.explanations.find((e) => e.factor === 'single-source-ceiling');
+    expect(ceiling).toBeUndefined();
+  });
+
+  it('two same-source evidence items are still single-source (by provider kind)', () => {
+    const ev1 = makeEvidence('ev-q1', 'queue-state', 'queue', 0.95, 'critical');
+    const ev2 = makeEvidence('ev-q2', 'queue-state', 'queue', 0.95, 'critical');
+    const input = makeInput({ baseScore: 0.80, sourceEvidenceIds: ['ev-q1', 'ev-q2'] });
+    const result = scoreCause(input, makeCtx([ev1, ev2]));
+    expect(result.finalScore).toBeLessThanOrEqual(0.84);
+    expect(result.band).not.toBe('highly-likely');
   });
 });
 

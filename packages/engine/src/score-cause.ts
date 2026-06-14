@@ -307,32 +307,37 @@ function factorSignalStrength(items: Evidence[]): ScoreExplanation | null {
 }
 
 /**
- * Factor 7 — Finding corroboration.
+ * Factor 7 — Finding uncertainty.
  *
- * An investigation finding that shares evidence with this cause lends
- * additional credibility. Only `anomaly` and `correlation` findings at
- * confidence ≥ 0.6 are counted; structural `observation` findings are ignored.
+ * Engine findings are deterministic interpretations of the same evidence IDs,
+ * not independent observations. This factor therefore never boosts a score
+ * (doing so would double-count one signal). Instead it penalises causes whose
+ * evidence only appears in low-confidence findings: if the investigation itself
+ * is not confident about what the evidence means, the cause should not score
+ * too high either.
  *
- * - 1 corroborating finding → +0.05
- * - 2+ corroborating findings → +0.10
+ * - No relevant findings, or max finding confidence ≥ 0.60 → 0 (neutral)
+ * - All relevant findings below 0.60 → negative delta proportional to the gap:
+ *     delta = −(0.60 − maxConfidence) × 0.10   (max −0.06)
  */
-function factorFindingCorroboration(
+function factorFindingUncertainty(
   sourceEvidenceIds: string[],
   findings: ScoringFinding[],
 ): ScoreExplanation | null {
+  if (findings.length === 0) return null;
   const idSet = new Set(sourceEvidenceIds);
-  const matching = findings.filter(
-    (f) =>
-      f.kind !== 'observation' &&
-      f.confidence >= 0.6 &&
-      f.evidenceIds.some((eid) => idSet.has(eid)),
+  const relevant = findings.filter(
+    (f) => f.kind !== 'observation' && f.evidenceIds.some((eid) => idSet.has(eid)),
   );
-  if (matching.length === 0) return null;
-  const delta = matching.length >= 2 ? 0.10 : 0.05;
+  if (relevant.length === 0) return null;
+  const maxConfidence = Math.max(...relevant.map((f) => f.confidence));
+  if (maxConfidence >= 0.60) return null; // investigation is confident — neutral
+  const delta = +( -(0.60 - maxConfidence) * 0.10 ).toFixed(3);
+  if (delta === 0) return null;
   return {
-    factor: 'finding-corroboration',
+    factor: 'finding-uncertainty',
     delta,
-    reason: `${matching.length} corroborating finding(s) at confidence ≥ 0.6 share evidence with this cause`,
+    reason: `Relevant findings have low confidence (max ${maxConfidence.toFixed(2)}) — investigation uncertain about evidence significance`,
   };
 }
 
@@ -356,12 +361,29 @@ export function scoreCause(input: CauseInput, ctx: ScoringContext): CauseCandida
     factorRuntimeSignals(attached, now),
     factorBlastRadius(input.metadata),
     factorSignalStrength(attached),
-    factorFindingCorroboration(input.sourceEvidenceIds, ctx.findings ?? []),
+    factorFindingUncertainty(input.sourceEvidenceIds, ctx.findings ?? []),
   ];
 
   const explanations = rawFactors.filter((f): f is ScoreExplanation => f !== null);
   const totalDelta = explanations.reduce((sum, e) => sum + e.delta, 0);
-  const finalScore = clamp01(input.baseScore + totalDelta);
+  let rawScore = clamp01(input.baseScore + totalDelta);
+
+  // Single-source ceiling: the `highly-likely` band (≥ 0.85) is documented as
+  // requiring strong multi-source confirmation. A single provider can accumulate
+  // many factor boosts from different angles of the same signal, so we hard-cap
+  // single-source candidates at 0.84 regardless of factor totals.
+  const distinctSources = new Set(attached.map((e) => e.source)).size;
+  if (distinctSources <= 1 && rawScore > 0.84) {
+    const ceilingDelta = +(0.84 - rawScore).toFixed(3);
+    explanations.push({
+      factor: 'single-source-ceiling',
+      delta: ceilingDelta,
+      reason: 'Highly-likely requires multi-source corroboration — capped at 0.84 (single provider)',
+    });
+    rawScore = 0.84;
+  }
+
+  const finalScore = rawScore;
   const band = getBand(finalScore);
 
   // Derive affectedNodeIds from the graph rather than relying on callers to
