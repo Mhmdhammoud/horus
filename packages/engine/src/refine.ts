@@ -6,7 +6,7 @@
  * synchronous; no I/O, no randomness, no AI/LLM.
  */
 
-import type { InvestigationReport, SuspectedCause } from './types.js';
+import type { InvestigationReport, CauseCandidate } from './types.js';
 import type { ValidatedHypothesis } from './validate.js';
 import type { Evidence } from '@horus/core';
 
@@ -21,7 +21,7 @@ export interface RefinedView {
   mode: RefineMode;
   topics: string[];
   hypotheses: ValidatedHypothesis[];
-  suspectedCauses: SuspectedCause[];
+  suspectedCauses: CauseCandidate[];
   evidence: Evidence[];
   note: string;
 }
@@ -175,7 +175,7 @@ export function refineInvestigation(
     );
 
     let suspectedCauses = r.suspectedCauses.filter((c) =>
-      keywords.some((k) => c.statement.toLowerCase().includes(k)),
+      keywords.some((k) => c.title.toLowerCase().includes(k)),
     );
     if (suspectedCauses.length === 0) {
       suspectedCauses = r.suspectedCauses;
@@ -195,7 +195,7 @@ export function refineInvestigation(
   const evidence = r.evidence.filter((e) => !matchedKinds.includes(e.kind));
 
   const suspectedCauses = r.suspectedCauses.filter(
-    (c) => !keywords.some((k) => c.statement.toLowerCase().includes(k)),
+    (c) => !keywords.some((k) => c.title.toLowerCase().includes(k)),
   );
 
   const note =

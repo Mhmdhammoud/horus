@@ -8,7 +8,7 @@ import { generatePostmortem } from './postmortem.js';
 import type { InvestigationReport } from './types.js';
 import type { Evidence } from '@horus/core';
 import type { ValidatedHypothesis } from './validate.js';
-import type { SuspectedCause } from './types.js';
+import type { CauseCandidate } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Synthetic fixtures
@@ -40,10 +40,17 @@ const syntheticHypothesis: ValidatedHypothesis = {
   missingEvidence: ['runtime metrics'],
 };
 
-const syntheticSuspectedCause: SuspectedCause = {
-  statement: 'Connection pool exhaustion under peak load.',
-  score: 0.72,
-  evidenceIds: ['ev-abcdef1234567890'],
+const syntheticSuspectedCause: CauseCandidate = {
+  id: 'cause:infrastructure',
+  title: 'Connection pool exhaustion under peak load.',
+  category: 'infrastructure',
+  sourceEvidenceIds: ['ev-abcdef1234567890'],
+  affectedNodeIds: [],
+  baseScore: 0.65,
+  finalScore: 0.72,
+  confidence: 0.72,
+  band: 'likely',
+  explanations: [],
 };
 
 const syntheticReport: InvestigationReport = {

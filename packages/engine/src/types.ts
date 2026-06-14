@@ -10,6 +10,9 @@ import type { ValidatedHypothesis } from './validate.js';
 import type { SimilarIncident } from './memory.js';
 import type { GapAnalysis } from './gaps.js';
 import type { InvestigationGraph } from './graph.js';
+import type { CauseCandidate } from './score-cause.js';
+
+export type { CauseCandidate };
 
 /** The user-supplied incident hint plus optional scoping. */
 export interface InvestigationInput {
@@ -35,14 +38,6 @@ export interface ReportFinding {
   evidenceIds: string[];
 }
 
-/** A ranked candidate root cause. */
-export interface SuspectedCause {
-  statement: string;
-  /** 0–1 deterministic score; higher ranks first. */
-  score: number;
-  evidenceIds: string[];
-}
-
 /** The full investigation report — also the persisted shape. */
 export interface InvestigationReport {
   id: string;
@@ -54,7 +49,8 @@ export interface InvestigationReport {
   timeline: Timeline;
   correlation: CorrelationResult;
   findings: ReportFinding[];
-  suspectedCauses: SuspectedCause[];
+  /** Ranked cause candidates produced by the Cause Scoring Engine (HOR-15). */
+  suspectedCauses: CauseCandidate[];
   hypotheses: ValidatedHypothesis[];
   /** Similar past incidents recalled from institutional memory (context only). */
   similarIncidents: SimilarIncident[];

@@ -113,7 +113,7 @@ export function generatePostmortem(r: InvestigationReport): string {
         `_No hypotheses reached 'supported' status. The leading suspected cause is unconfirmed:_`,
       );
       lines.push('');
-      lines.push(`1. **(score ${topCause.score.toFixed(2)})** ${topCause.statement}`);
+      lines.push(`1. **(score ${topCause.finalScore.toFixed(2)}, ${topCause.band})** ${topCause.title}`);
     } else {
       lines.push(
         '_No confirmed contributing factors were identified. Further evidence is needed._',
@@ -166,7 +166,7 @@ export function generatePostmortem(r: InvestigationReport): string {
     lines.push(`_${gapCaveat}_`);
   } else if (topSuspectedCause) {
     lines.push(
-      `**CANDIDATE** _(score ${topSuspectedCause.score.toFixed(2)}, unconfirmed)_: ${topSuspectedCause.statement}`,
+      `**CANDIDATE** _(score ${topSuspectedCause.finalScore.toFixed(2)}, ${topSuspectedCause.band}, unconfirmed)_: ${topSuspectedCause.title}`,
     );
     lines.push('');
     lines.push(`_${gapCaveat}_`);

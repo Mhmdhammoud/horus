@@ -198,10 +198,10 @@ export function renderReport(r: InvestigationReport): string {
     lines.push('(none)');
   } else {
     r.suspectedCauses.forEach((c, i) => {
-      const queueTag = c.evidenceIds.some((id) => queueIds.has(id)) ? ' [↑ queue]' : '';
-      lines.push(`${i + 1}. [${c.score.toFixed(2)}] ${c.statement}${queueTag}`);
-      if (c.evidenceIds.length > 0) {
-        lines.push(`    evidence: ${c.evidenceIds.map(shortId).join(', ')}`);
+      const queueTag = c.sourceEvidenceIds.some((id) => queueIds.has(id)) ? ' [↑ queue]' : '';
+      lines.push(`${i + 1}. [${c.finalScore.toFixed(2)} / ${c.band}] ${c.title}${queueTag}`);
+      if (c.sourceEvidenceIds.length > 0) {
+        lines.push(`    evidence: ${c.sourceEvidenceIds.map(shortId).join(', ')}`);
       }
     });
   }
@@ -337,8 +337,8 @@ export function reportToMarkdown(r: InvestigationReport): string {
     out.push('_none_');
   } else {
     r.suspectedCauses.forEach((c, i) => {
-      const queueTag = c.evidenceIds.some((id) => mdQueueIds.has(id)) ? ' `[↑ queue]`' : '';
-      out.push(`${i + 1}. **(${c.score.toFixed(2)})**${queueTag} ${c.statement}`);
+      const queueTag = c.sourceEvidenceIds.some((id) => mdQueueIds.has(id)) ? ' `[↑ queue]`' : '';
+      out.push(`${i + 1}. **(${c.finalScore.toFixed(2)}, ${c.band})**${queueTag} ${c.title}`);
     });
   }
   out.push('');

@@ -71,14 +71,28 @@ const REPORT: InvestigationReport = {
   findings: [],
   suspectedCauses: [
     {
-      statement: 'A queue backlog caused delayed processing.',
-      score: 0.8,
-      evidenceIds: [queueEdgeEv.id],
+      id: 'cause:queue-backlog',
+      title: 'A queue backlog caused delayed processing.',
+      category: 'queue-backlog',
+      sourceEvidenceIds: [queueEdgeEv.id],
+      affectedNodeIds: [],
+      baseScore: 0.75,
+      finalScore: 0.8,
+      confidence: 0.8,
+      band: 'likely' as const,
+      explanations: [],
     },
     {
-      statement: 'A deployment regression introduced the fault.',
-      score: 0.6,
-      evidenceIds: [commitEv.id],
+      id: 'cause:deployment-regression',
+      title: 'A deployment regression introduced the fault.',
+      category: 'deployment-regression',
+      sourceEvidenceIds: [commitEv.id],
+      affectedNodeIds: [],
+      baseScore: 0.55,
+      finalScore: 0.6,
+      confidence: 0.6,
+      band: 'possible' as const,
+      explanations: [],
     },
   ],
   hypotheses: [
@@ -141,7 +155,7 @@ describe('refineInvestigation', () => {
     // The first cause mentions "queue", second does not — at least one kept
     expect(v.suspectedCauses.length).toBeGreaterThan(0);
     const hasQueueCause = v.suspectedCauses.some((c) =>
-      c.statement.toLowerCase().includes('queue'),
+      c.title.toLowerCase().includes('queue'),
     );
     expect(hasQueueCause).toBe(true);
   });

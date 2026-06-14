@@ -54,7 +54,7 @@ export function renderRefined(r: InvestigationReport, v: RefinedView): string {
     lines.push('_(nothing matches this directive)_');
   } else {
     v.suspectedCauses.forEach((c, i) => {
-      lines.push(i + 1 + '. [' + c.score.toFixed(2) + '] ' + c.statement);
+      lines.push(i + 1 + '. [' + c.finalScore.toFixed(2) + ' / ' + c.band + '] ' + c.title);
     });
   }
   lines.push('');

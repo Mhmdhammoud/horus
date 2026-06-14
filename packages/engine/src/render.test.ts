@@ -5,8 +5,27 @@
 
 import { describe, it, expect } from 'vitest';
 import type { Evidence } from '@horus/core';
-import type { InvestigationReport } from './types.js';
+import type { InvestigationReport, CauseCandidate } from './types.js';
 import { renderReport, reportToMarkdown, groupQueueEvidence } from './render.js';
+
+function makeCause(title: string, finalScore: number, sourceEvidenceIds: string[]): CauseCandidate {
+  const band = finalScore >= 0.85 ? 'highly-likely' as const
+    : finalScore >= 0.65 ? 'likely' as const
+    : finalScore >= 0.40 ? 'possible' as const
+    : 'observation' as const;
+  return {
+    id: `cause:${title.slice(0, 24).replace(/\s+/g, '-')}`,
+    title,
+    category: 'other',
+    sourceEvidenceIds,
+    affectedNodeIds: [],
+    baseScore: finalScore,
+    finalScore,
+    confidence: finalScore,
+    band,
+    explanations: [],
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -229,8 +248,8 @@ describe('renderReport — queue-backed suspected causes', () => {
     const r = makeReport({
       evidence: [backlogEv, summaryEv],
       suspectedCauses: [
-        { statement: 'Queue zoho-sync is backed up', score: 0.7, evidenceIds: ['ev_qs_1'] },
-        { statement: 'Recent deploy broke auth', score: 0.4, evidenceIds: ['ev-code-1'] },
+        makeCause('Queue zoho-sync is backed up', 0.7, ['ev_qs_1']),
+        makeCause('Recent deploy broke auth', 0.4, ['ev-code-1']),
       ],
     });
     const output = renderReport(r);
@@ -246,7 +265,7 @@ describe('renderReport — queue-backed suspected causes', () => {
     const r = makeReport({
       evidence: [backlogEv],
       suspectedCauses: [
-        { statement: 'Code path X is broken', score: 0.5, evidenceIds: ['ev-other'] },
+        makeCause('Code path X is broken', 0.5, ['ev-other']),
       ],
     });
     const output = renderReport(r);
@@ -297,8 +316,8 @@ describe('reportToMarkdown — queue runtime section', () => {
     const r = makeReport({
       evidence: [backlogEv],
       suspectedCauses: [
-        { statement: 'Queue backed up', score: 0.7, evidenceIds: ['ev_qs_1'] },
-        { statement: 'Other cause', score: 0.3, evidenceIds: [] },
+        makeCause('Queue backed up', 0.7, ['ev_qs_1']),
+        makeCause('Other cause', 0.3, []),
       ],
     });
     const output = reportToMarkdown(r);

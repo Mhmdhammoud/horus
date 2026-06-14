@@ -35,3 +35,4 @@ export * from './simulate.js';
 export * from './render-simulate.js';
 export * from './normalize.js';
 export * from './graph.js';
+export * from './score-cause.js';

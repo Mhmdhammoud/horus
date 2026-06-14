@@ -39,7 +39,8 @@ import {
   listQueueEdges,
   eq,
 } from '@horus/db';
-import { buildGraph, maxImplicationScore } from './graph.js';
+import { buildGraph } from './graph.js';
+import { rankCauses, type CauseInput } from './score-cause.js';
 import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
 import { recallSimilar, storeIncidentMemory, deriveTags } from './memory.js';
@@ -48,7 +49,6 @@ import type {
   InvestigationInput,
   InvestigationReport,
   ReportFinding,
-  SuspectedCause,
 } from './types.js';
 import { buildTimeline } from './timeline.js';
 import { correlate } from './correlate.js';
@@ -615,9 +615,9 @@ export async function investigate(
     }
   }
 
-  // f. SUSPECTED CAUSES
-  const suspectedCauses: SuspectedCause[] = [];
-  const impactNorm = clamp01(impact.affected / 20);
+  // f. SUSPECTED CAUSES — build CauseInput list; scoring + ranking via rankCauses (HOR-15).
+  const causeInputs: CauseInput[] = [];
+  const blastRadius = impact.affected;
 
   // Queue runtime causes: backlog and starvation elevate the queue-path hypothesis.
   if (queueRuntimeState !== null) {
@@ -631,41 +631,53 @@ export async function investigate(
         const detail = isStarved
           ? `${q.waiting} waiting, no active workers`
           : `${q.waiting} waiting jobs`;
-        suspectedCauses.push({
-          statement: `Queue "${q.queueName}" is backed up (${detail}) — ${producer} → ${worker} path implicated`,
-          score: clamp01(isStarved ? 0.5 : 0.5 + Math.min(q.waiting / 5_000, 0.2)),
-          evidenceIds: queueRuntimeEvIdsByQueue.get(q.queueName) ?? [],
+        causeInputs.push({
+          id: `cause:queue-backlog:${q.queueName}`,
+          title: `Queue "${q.queueName}" is backed up (${detail}) — ${producer} → ${worker} path implicated`,
+          category: 'queue-backlog',
+          sourceEvidenceIds: queueRuntimeEvIdsByQueue.get(q.queueName) ?? [],
+          baseScore: clamp01(isStarved ? 0.45 : 0.45 + Math.min(q.waiting / 5_000, 0.20)),
+          metadata: { waitingCount: q.waiting, isStarved, blastRadius },
         });
       }
     }
   }
 
-  // Queue-path cause(s) — most specific first.
+  // Queue-path cause(s) — structural; runtime evidence needed to elevate to likely.
   for (const [queueName, evIds] of queueEvByName) {
     const edge = queueHits.find((e) => e.queueName === queueName);
     const producer = edge?.producerSymbol ?? 'unknown-producer';
     const worker = edge?.workerSymbol ?? 'unknown-worker';
-    suspectedCauses.push({
-      statement: `The ${queueName} processing path (${producer} -> ${worker}) is implicated`,
-      score: clamp01(0.3 + impactNorm * 0.4),
-      evidenceIds: [...evIds, impactEv.id],
+    causeInputs.push({
+      id: `cause:queue-path:${queueName}`,
+      title: `The ${queueName} processing path (${producer} -> ${worker}) is implicated`,
+      category: 'queue-path',
+      sourceEvidenceIds: [...evIds, impactEv.id],
+      baseScore: 0.35,
+      metadata: { blastRadius },
     });
   }
 
   if (changes && changeEvId) {
-    suspectedCauses.push({
-      statement: `Recent change to ${top.name} in ${input.since}..HEAD may have introduced the regression`,
-      score: clamp01(0.2 + impactNorm * 0.4 + (queueHits.length > 0 ? 0.1 : 0)),
-      evidenceIds: [changeEvId, seedEv.id],
+    causeInputs.push({
+      id: 'cause:deployment-regression',
+      title: `Recent change to ${top.name} in ${input.since}..HEAD may have introduced the regression`,
+      category: 'deployment-regression',
+      sourceEvidenceIds: [changeEvId, seedEv.id],
+      baseScore: clamp01(0.25 + (queueHits.length > 0 ? 0.05 : 0)),
+      metadata: { blastRadius },
     });
   }
 
-  // Always offer a blast-radius cause if the symbol has any reach.
+  // Blast-radius cause: always offered when the symbol has reach.
   if (impact.affected > 0) {
-    suspectedCauses.push({
-      statement: `${top.name} sits on a high-fan-out path (${impact.affected} affected) and may propagate the fault`,
-      score: clamp01(impactNorm * 0.5 + (queueHits.length > 0 ? 0.1 : 0)),
-      evidenceIds: [impactEv.id, seedEv.id],
+    causeInputs.push({
+      id: 'cause:blast-radius',
+      title: `${top.name} sits on a high-fan-out path (${impact.affected} affected) and may propagate the fault`,
+      category: 'blast-radius',
+      sourceEvidenceIds: [impactEv.id, seedEv.id],
+      baseScore: clamp01(0.15 + (queueHits.length > 0 ? 0.05 : 0)),
+      metadata: { blastRadius },
     });
   }
 
@@ -677,23 +689,19 @@ export async function investigate(
         ? `"${firstQueue.queueName}" (${firstQueue.producerSymbol ?? 'unknown'} -> ${firstQueue.workerSymbol ?? 'unknown'})`
         : 'the queue path';
     const topSig = analysis.signatures[0];
-    suspectedCauses.push({
-      statement: `Runtime errors (${analysis.totalErrors}${topSig ? `, top ${topSig.key}` : ''}) correlate with the implicated queue path ${queueLabel}`,
-      score: clamp01(0.3 + impactNorm * 0.3),
-      evidenceIds: logEvIds.slice(0, 3),
+    causeInputs.push({
+      id: 'cause:error-correlation',
+      title: `Runtime errors (${analysis.totalErrors}${topSig ? `, top ${topSig.key}` : ''}) correlate with the implicated queue path ${queueLabel}`,
+      category: 'error-correlation',
+      sourceEvidenceIds: logEvIds.slice(0, 3),
+      baseScore: 0.30,
+      metadata: { blastRadius },
     });
   }
 
-  // Apply graph implication boost: causes backed by implicated infrastructure
-  // nodes (queue, service, collection) score up to +0.1 higher, breaking ties
-  // in favour of evidence-confirmed paths over purely structural reasoning.
-  for (const cause of suspectedCauses) {
-    const boost = maxImplicationScore(graph, cause.evidenceIds) * 0.1;
-    if (boost > 0) cause.score = clamp01(cause.score + boost);
-  }
-
-  suspectedCauses.sort((a, b) => b.score - a.score);
-  const rankedCauses = suspectedCauses.slice(0, 3);
+  // Score + rank via the Cause Scoring Engine — graph proximity, evidence quality,
+  // source diversity, recency, recurrence, and blast radius applied as factors.
+  const rankedCauses = rankCauses(causeInputs, { evidence, graph });
 
   // g. confidence
   const evidenceConfidence = clamp01(evidence.length / 8);
@@ -704,7 +712,7 @@ export async function investigate(
   const area = ctx.community?.name ?? top.filePath;
   const topCause = rankedCauses[0];
   const summary = topCause
-    ? `Investigation of "${hint}" resolved to ${label} (${area}). Top suspected cause: ${topCause.statement}.`
+    ? `Investigation of "${hint}" resolved to ${label} (${area}). Top suspected cause: ${topCause.title}.`
     : `Investigation of "${hint}" resolved to ${label} (${area}). No dominant suspected cause emerged from the available structural evidence.`;
 
   // i. nextActions
