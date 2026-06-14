@@ -25,9 +25,11 @@ import type { HorusDb, QueueEdge } from '@horus/db';
 import {
   evidence as evidenceTable,
   findings as findingsTable,
+  hypotheses as hypothesesTable,
   investigations as investigationsTable,
   listQueueEdges,
 } from '@horus/db';
+import { generateHypotheses } from './hypotheses.js';
 import type {
   InvestigationInput,
   InvestigationReport,
@@ -147,6 +149,7 @@ export async function investigate(
       correlation: { groups: [], chains: [], missing: correlate([]).missing },
       findings: [],
       suspectedCauses: [],
+      hypotheses: [],
       confidence: 0,
       nextActions: [
         `No symbols matched "${hint}". Try a more specific hint — an exact function, class, or file name.`,
@@ -264,6 +267,13 @@ export async function investigate(
   // e2. CORRELATION (deterministic grouping + cause chains + missing evidence)
   const correlation = correlate(evidence);
 
+  // e3. HYPOTHESES (HOR-24) — deterministic competing set
+  const queueNames = [...queueEvByName.keys()];
+  const hyps = generateHypotheses(evidence, correlation, {
+    seedLabel: label,
+    queues: queueNames,
+  });
+
   // f. FINDINGS (label kept as 'e' externally but shifted to 'f' internally)
   const findings: ReportFinding[] = [];
 
@@ -379,6 +389,7 @@ export async function investigate(
     correlation,
     findings,
     suspectedCauses: rankedCauses,
+    hypotheses: hyps,
     confidence,
     nextActions,
   };
@@ -473,6 +484,18 @@ async function persist(
           detail: f.detail ?? null,
           confidence: f.confidence,
           evidenceIds: f.evidenceIds,
+        })),
+      );
+    }
+
+    if (report.hypotheses.length > 0) {
+      await db.insert(hypothesesTable).values(
+        report.hypotheses.map((hyp, i) => ({
+          investigationId,
+          rank: i + 1,
+          statement: hyp.statement,
+          score: hyp.confidence,
+          supportingEvidence: hyp.supportingEvidenceIds,
         })),
       );
     }

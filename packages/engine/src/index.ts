@@ -9,3 +9,4 @@ export * from './changes.js';
 export * from './render-changes.js';
 export * from './timeline.js';
 export * from './correlate.js';
+export * from './hypotheses.js';

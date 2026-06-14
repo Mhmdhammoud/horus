@@ -117,6 +117,21 @@ export function renderReport(r: InvestigationReport): string {
   }
   lines.push('');
 
+  lines.push('## Hypotheses');
+  if (r.hypotheses.length === 0) {
+    lines.push('(none)');
+  } else {
+    for (const h of r.hypotheses) {
+      lines.push(`  [${h.confidence.toFixed(2)}] ${h.category}: ${h.statement}`);
+      const missingStr =
+        h.missingEvidence.length > 0 ? h.missingEvidence.join('; ') : '(none)';
+      lines.push(
+        `      supporting: ${h.supportingEvidenceIds.length} · missing: ${missingStr}`,
+      );
+    }
+  }
+  lines.push('');
+
   lines.push('## Evidence');
   if (r.evidence.length === 0) {
     lines.push('(none)');
