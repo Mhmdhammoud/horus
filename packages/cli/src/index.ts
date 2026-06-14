@@ -19,6 +19,7 @@ import { runPostmortem } from './commands/postmortem.js';
 import { runScore, runScores } from './commands/score.js';
 import { runAsk } from './commands/ask.js';
 import { runOnboard } from './commands/onboard.js';
+import { runSimulate } from './commands/simulate.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -328,6 +329,20 @@ export function buildProgram(): Command {
         config: opts.config,
         repo: opts.repo,
         json: opts.json,
+      });
+    });
+
+  program
+    .command('simulate [scenario]')
+    .description(
+      'Practice an incident: pick a synthetic scenario and compare your reasoning with Horus',
+    )
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'repository name from config')
+    .action(async (scenario: string | undefined, opts: { config?: string; repo?: string }) => {
+      process.exitCode = await runSimulate(scenario, {
+        config: opts.config,
+        repo: opts.repo,
       });
     });
 
