@@ -23,7 +23,7 @@ export class ElasticsearchClient {
     }
   }
 
-  async request(method: string, path: string, body?: unknown): Promise<unknown> {
+  async request(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> {
     const url = `${this.baseUrl}${path}`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -36,6 +36,9 @@ export class ElasticsearchClient {
     if (body !== undefined) {
       init.body = JSON.stringify(body);
     }
+    if (signal !== undefined) {
+      init.signal = signal;
+    }
 
     const res = await fetch(url, init);
     if (!res.ok) {
@@ -45,20 +48,20 @@ export class ElasticsearchClient {
     return res.json();
   }
 
-  async search(index: string, body: unknown): Promise<unknown> {
-    return this.request('POST', `/${index}/_search`, body);
+  async search(index: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
+    return this.request('POST', `/${index}/_search`, body, signal);
   }
 
-  async count(index: string, body: unknown): Promise<number> {
-    const res = await this.request('POST', `/${index}/_count`, body);
+  async count(index: string, body: unknown, signal?: AbortSignal): Promise<number> {
+    const res = await this.request('POST', `/${index}/_count`, body, signal);
     const typed = res as Record<string, unknown>;
     const count = typed['count'];
     return typeof count === 'number' ? count : 0;
   }
 
-  async health(): Promise<HealthStatus> {
+  async health(signal?: AbortSignal): Promise<HealthStatus> {
     try {
-      const res = await this.request('GET', '/_cluster/health');
+      const res = await this.request('GET', '/_cluster/health', undefined, signal);
       const typed = res as Record<string, unknown>;
       const status = typed['status'];
       const detail = typeof status === 'string' ? status : 'ok';

@@ -44,10 +44,16 @@ const connectorsSchema = z
       .object({
         indexPattern: z.string(),
         serviceName: z.string().optional(),
+        /** Direct URL value (takes priority over urlEnv). */
+        url: z.string().optional(),
         /** Name of the env var holding the ES base URL. Defaults to "ES_URL". */
         urlEnv: z.string().optional(),
+        /** Direct username value (takes priority over usernameEnv). */
+        username: z.string().optional(),
         /** Name of the env var holding the ES username. Defaults to "ES_USERNAME". */
         usernameEnv: z.string().optional(),
+        /** Direct password value (takes priority over passwordEnv). */
+        password: z.string().optional(),
         /** Name of the env var holding the ES password. Defaults to "ES_PASSWORD". */
         passwordEnv: z.string().optional(),
       })
@@ -56,6 +62,8 @@ const connectorsSchema = z
       .object({
         database: z.string(),
         collections: z.array(z.string()).default([]),
+        /** Direct connection string (takes priority over urlEnv). */
+        url: z.string().optional(),
         /** Name of the env var holding the MongoDB URL. Defaults to "MONGODB_URL". */
         urlEnv: z.string().optional(),
       })
@@ -63,16 +71,24 @@ const connectorsSchema = z
     grafana: z
       .object({
         dashboard: z.string().optional(),
+        /** Direct URL value (takes priority over urlEnv). */
+        url: z.string().optional(),
         /** Name of the env var holding the Grafana base URL. Defaults to "GRAFANA_URL". */
         urlEnv: z.string().optional(),
+        /** Direct username value (takes priority over usernameEnv). */
+        username: z.string().optional(),
         /** Name of the env var holding the Grafana username. Defaults to "GRAFANA_USER". */
         usernameEnv: z.string().optional(),
+        /** Direct password value (takes priority over passwordEnv). */
+        password: z.string().optional(),
         /** Name of the env var holding the Grafana password. Defaults to "GRAFANA_PASSWORD". */
         passwordEnv: z.string().optional(),
       })
       .optional(),
     redis: z
       .object({
+        /** Direct URL value (takes priority over urlEnv). */
+        url: z.string().optional(),
         /** Name of the env var holding the Redis URL. Defaults to "REDIS_URL". */
         urlEnv: z.string().optional(),
       })
@@ -261,12 +277,12 @@ export function resolveEnvironment(
 
   if (c.elasticsearch !== undefined) {
     const es = c.elasticsearch;
-    const url = process.env[es.urlEnv ?? 'ES_URL'];
-    // Always include the block (with indexPattern) — callers null-guard the url.
+    // Direct value takes priority over env var name.
+    const url = es.url ?? process.env[es.urlEnv ?? 'ES_URL'] ?? '';
     resolved.elasticsearch = {
-      url: url ?? '',
-      username: process.env[es.usernameEnv ?? 'ES_USERNAME'],
-      password: process.env[es.passwordEnv ?? 'ES_PASSWORD'],
+      url,
+      username: es.username ?? process.env[es.usernameEnv ?? 'ES_USERNAME'],
+      password: es.password ?? process.env[es.passwordEnv ?? 'ES_PASSWORD'],
       indexPattern: es.indexPattern,
       serviceName: es.serviceName,
     };
@@ -275,7 +291,7 @@ export function resolveEnvironment(
   if (c.mongodb !== undefined) {
     const m = c.mongodb;
     resolved.mongodb = {
-      url: process.env[m.urlEnv ?? 'MONGODB_URL'],
+      url: m.url ?? process.env[m.urlEnv ?? 'MONGODB_URL'],
       database: m.database,
       collections: m.collections,
     };
@@ -284,9 +300,9 @@ export function resolveEnvironment(
   if (c.grafana !== undefined) {
     const g = c.grafana;
     resolved.grafana = {
-      url: process.env[g.urlEnv ?? 'GRAFANA_URL'],
-      username: process.env[g.usernameEnv ?? 'GRAFANA_USER'],
-      password: process.env[g.passwordEnv ?? 'GRAFANA_PASSWORD'],
+      url: g.url ?? process.env[g.urlEnv ?? 'GRAFANA_URL'],
+      username: g.username ?? process.env[g.usernameEnv ?? 'GRAFANA_USER'],
+      password: g.password ?? process.env[g.passwordEnv ?? 'GRAFANA_PASSWORD'],
       dashboard: g.dashboard,
     };
   }
@@ -294,7 +310,7 @@ export function resolveEnvironment(
   if (c.redis !== undefined) {
     const r = c.redis;
     resolved.redis = {
-      url: process.env[r.urlEnv ?? 'REDIS_URL'],
+      url: r.url ?? process.env[r.urlEnv ?? 'REDIS_URL'],
     };
   }
 

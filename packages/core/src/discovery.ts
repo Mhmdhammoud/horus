@@ -6,7 +6,7 @@
  * `~/.horus/registry.json` lets `--name` resolve a project from anywhere.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -101,10 +101,63 @@ export function writeLocalConfig(root: string, file: LocalConfigFile): string {
   const dir = join(root, HORUS_DIR);
   mkdirSync(dir, { recursive: true });
   const p = join(dir, LOCAL_CONFIG_FILE);
-  writeFileSync(p, JSON.stringify(file, null, 2) + '\n');
+  writeFileSync(p, JSON.stringify(file, null, 2) + '\n', { mode: 0o600 });
+  // chmod after write enforces 0600 on pre-existing files too — writeFileSync's
+  // mode flag is ignored when the file already exists on most platforms.
+  chmodSync(p, 0o600);
   return p;
+}
+
+/**
+ * Ensure `.horus/config.json` is listed in `.horus/.gitignore`.
+ * Called by `horus connect` when literal credential values (url/password) are
+ * written into the config, so that secrets are not accidentally committed.
+ */
+export function ensureCredentialGitignore(root: string): void {
+  const dir = join(root, HORUS_DIR);
+  mkdirSync(dir, { recursive: true });
+  const gitignorePath = join(dir, '.gitignore');
+  const entry = 'config.json';
+  if (existsSync(gitignorePath)) {
+    const existing = readFileSync(gitignorePath, 'utf8');
+    if (existing.split('\n').some((l) => l.trim() === entry)) return;
+    writeFileSync(gitignorePath, existing.trimEnd() + '\n' + entry + '\n');
+  } else {
+    writeFileSync(gitignorePath, entry + '\n');
+  }
 }
 
 export function readLocalConfig(path: string): LocalConfigFile {
   return JSON.parse(readFileSync(path, 'utf8')) as LocalConfigFile;
+}
+
+/**
+ * Patch a single connector's config in an existing `.horus/config.json`.
+ * If `envName` is omitted, targets the first environment in the project.
+ * Merges `patch` into any existing connector config (so partial updates work).
+ */
+export function patchLocalConnector(
+  configPath: string,
+  connectorType: string,
+  patch: Record<string, unknown>,
+  envName?: string,
+): void {
+  const file = readLocalConfig(configPath);
+  const project = file.project as Record<string, unknown>;
+  const envs = project['environments'] as Array<Record<string, unknown>> | undefined;
+  if (!envs || envs.length === 0) throw new Error('No environments found in config.');
+
+  const env = envName
+    ? envs.find((e) => e['name'] === envName)
+    : envs[0];
+  if (!env) throw new Error(`Environment "${envName ?? envs[0]?.['name']}" not found in config.`);
+
+  if (!env['connectors'] || typeof env['connectors'] !== 'object') {
+    env['connectors'] = {};
+  }
+  const connectors = env['connectors'] as Record<string, unknown>;
+  connectors[connectorType] = { ...(connectors[connectorType] as Record<string, unknown> ?? {}), ...patch };
+
+  const root = configPath.replace(`/${HORUS_DIR}/${LOCAL_CONFIG_FILE}`, '');
+  writeLocalConfig(root, file);
 }

@@ -30,6 +30,7 @@ import {
   findFreePort,
   startHost,
   waitForHost,
+  removeSpawnedHostRecord,
 } from '@horus/connectors';
 import { createDb } from '@horus/db';
 import { stitch } from '@horus/stitcher';
@@ -151,6 +152,9 @@ export async function runIndex(opts: {
       console.log(pc.dim(`  starting Axon host on port ${port}…`));
       startHost(root, port);
       if (!(await waitForHost(hostUrl))) {
+        // Remove the ownership record — the host never became healthy, so the
+        // record would cause `horus stop` to try to signal a dead process.
+        removeSpawnedHostRecord(root);
         console.error(
           pc.red(`  Axon host did not become healthy — see ${root}/.horus/axon-host.log`),
         );

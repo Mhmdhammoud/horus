@@ -8,7 +8,7 @@
 
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, openSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, openSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 
@@ -81,9 +81,30 @@ export async function findFreePort(start = 8420, end = 8520): Promise<number> {
   throw new Error(`No free port available in ${start}-${end}`);
 }
 
+export interface SpawnedHostRecord {
+  pid: number;
+  port: number;
+  root: string;
+  startedAt: string;
+}
+
+const SPAWNED_HOST_FILE = 'spawned-host.json';
+
+/** Read the PID record Horus wrote when it spawned an Axon host for `root`. */
+export function readSpawnedHost(root: string): SpawnedHostRecord | null {
+  const p = join(root, '.horus', SPAWNED_HOST_FILE);
+  if (!existsSync(p)) return null;
+  try {
+    return JSON.parse(readFileSync(p, 'utf8')) as SpawnedHostRecord;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Spawn `axon host --port <port>` as a detached background process in `root`,
- * logging to `.horus/axon-host.log`. Returns immediately — poll `waitForHost`.
+ * logging to `.horus/axon-host.log`. Records the PID in `.horus/spawned-host.json`
+ * for safe teardown. Returns immediately — poll `waitForHost`.
  */
 export function startHost(root: string, port: number): void {
   mkdirSync(join(root, '.horus'), { recursive: true });
@@ -94,7 +115,26 @@ export function startHost(root: string, port: number): void {
     detached: true,
     stdio: ['ignore', fd, fd],
   });
+  if (child.pid !== undefined) {
+    const record: SpawnedHostRecord = {
+      pid: child.pid,
+      port,
+      root,
+      startedAt: new Date().toISOString(),
+    };
+    writeFileSync(join(root, '.horus', SPAWNED_HOST_FILE), JSON.stringify(record, null, 2) + '\n');
+  }
   child.unref();
+}
+
+/** Remove the spawned-host record for `root`, if it exists. */
+export function removeSpawnedHostRecord(root: string): void {
+  const p = join(root, '.horus', SPAWNED_HOST_FILE);
+  try {
+    unlinkSync(p);
+  } catch {
+    // Not present — nothing to clean up.
+  }
 }
 
 /** Poll a host's health until it responds or the timeout elapses. */

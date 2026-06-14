@@ -26,6 +26,9 @@ import { runState } from './commands/state.js';
 import { runInit } from './commands/init.js';
 import { runProjects } from './commands/projects.js';
 import { runSetup } from './commands/setup.js';
+import { runConnect } from './commands/connect.js';
+import { runStop } from './commands/stop.js';
+import { runHosts } from './commands/hosts.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -66,6 +69,67 @@ export function buildProgram(): Command {
     .description('List projects registered in the global registry (~/.horus/registry.json)')
     .action(async () => {
       process.exitCode = await runProjects();
+    });
+
+  program
+    .command('connect <type>')
+    .description(
+      'Add or update a runtime connector (elasticsearch / mongodb / grafana / redis) in .horus/config.json',
+    )
+    .option('--env <name>', 'target environment (default: first environment in config)')
+    .option('--url <url>', 'connector URL or connection string')
+    .option('--username <user>', 'username (elasticsearch / grafana)')
+    .option('--password <pass>', 'password (elasticsearch / grafana)')
+    .option('--index-pattern <pattern>', 'Elasticsearch index pattern (required for elasticsearch)')
+    .option('--service <name>', 'service name scope for log queries')
+    .option('--database <name>', 'database name (required for mongodb)')
+    .option('--collections <list>', 'comma-separated collection allowlist (mongodb)')
+    .option('--dashboard <uid>', 'default dashboard uid (grafana)')
+    .option('--no-test', 'skip live connection probe')
+    .action(
+      async (
+        type: string,
+        opts: {
+          env?: string;
+          url?: string;
+          username?: string;
+          password?: string;
+          indexPattern?: string;
+          service?: string;
+          database?: string;
+          collections?: string;
+          dashboard?: string;
+          test?: boolean;
+        },
+      ) => {
+        process.exitCode = await runConnect(type, {
+          env: opts.env,
+          url: opts.url,
+          username: opts.username,
+          password: opts.password,
+          indexPattern: opts.indexPattern,
+          service: opts.service,
+          database: opts.database,
+          collections: opts.collections,
+          dashboard: opts.dashboard,
+          noTest: opts.test === false,
+        });
+      },
+    );
+
+  program
+    .command('stop')
+    .description('Stop the Axon host for the current repo (or --all to stop every host)')
+    .option('--all', 'stop all registered Axon hosts')
+    .action(async (opts: { all?: boolean }) => {
+      process.exitCode = await runStop(opts);
+    });
+
+  program
+    .command('hosts')
+    .description('List registered Axon hosts and their live status (port, repo, running/stopped)')
+    .action(async () => {
+      process.exitCode = await runHosts();
     });
 
   program
