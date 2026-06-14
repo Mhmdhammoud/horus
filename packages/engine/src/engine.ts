@@ -378,6 +378,10 @@ export async function investigate(
           s.lastSeen || undefined,
           s.isNew ? 0.95 : s.ratio !== undefined && s.ratio >= 1.5 ? 0.9 : 0.8,
         );
+        // Normalize recurrence signals to top-level Evidence fields so the
+        // Cause Scoring Engine can read them without inspecting the payload.
+        if (s.isNew) ev.isNew = s.isNew;
+        if (typeof s.ratio === 'number' && Number.isFinite(s.ratio)) ev.ratio = s.ratio;
         logEvIds.push(ev.id);
       }
     } catch {
@@ -700,8 +704,9 @@ export async function investigate(
   }
 
   // Score + rank via the Cause Scoring Engine — graph proximity, evidence quality,
-  // source diversity, recency, recurrence, and blast radius applied as factors.
-  const rankedCauses = rankCauses(causeInputs, { evidence, graph });
+  // source diversity, recency, recurrence, blast radius, and finding
+  // corroboration applied as factors.
+  const rankedCauses = rankCauses(causeInputs, { evidence, graph, findings });
 
   // g. confidence
   const evidenceConfidence = clamp01(evidence.length / 8);

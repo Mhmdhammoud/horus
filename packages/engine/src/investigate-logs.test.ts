@@ -294,6 +294,28 @@ describe('investigate() WITH logs provider (HOR-13)', () => {
     expect(anomalyFinding?.title).toContain('NEW');
   });
 
+  it('NEW error signature has isNew=true on the top-level Evidence field', async () => {
+    const report = await investigate(
+      { hint: 'zoho', service: 'leadcall-api-prod' },
+      { code: fakeCode, db: fakeDb, logs: fakeLogs },
+    );
+    const newSigEv = report.evidence.find((e) => e.kind === 'log' && e.relevance === 0.95);
+    expect(newSigEv).toBeDefined();
+    expect(newSigEv?.isNew).toBe(true);
+  });
+
+  it('spiking (non-new) error signature has ratio set on the top-level Evidence field', async () => {
+    const report = await investigate(
+      { hint: 'zoho', service: 'leadcall-api-prod' },
+      { code: fakeCode, db: fakeDb, logs: fakeLogs },
+    );
+    // DBPOOL02 is non-new with ratio 2.5
+    const spikeEv = report.evidence.find((e) => e.kind === 'log' && e.relevance === 0.9);
+    expect(spikeEv).toBeDefined();
+    expect(typeof spikeEv?.ratio).toBe('number');
+    expect(spikeEv?.ratio).toBeCloseTo(2.5, 1);
+  });
+
   it('confidence ceiling is not reduced by the logs gap (since logs are present)', async () => {
     // Run without logs to get the baseline ceiling reduction caused by the logs gap.
     const reportNoLogs = await investigate(
