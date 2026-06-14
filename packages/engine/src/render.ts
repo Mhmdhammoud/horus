@@ -2,11 +2,78 @@
  * Human-facing renderers for an InvestigationReport. Pure, deterministic, no I/O.
  */
 
+import type { Evidence } from '@horus/core';
 import type { InvestigationReport } from './types.js';
 
 /** Short, citable evidence id (first 8 chars). */
 function shortId(id: string): string {
   return id.slice(0, 8);
+}
+
+// ── Queue runtime rendering helpers (HOR-13) ─────────────────────────────────
+
+type QueuePayload = {
+  waiting?: number;
+  active?: number;
+  failed?: number;
+  delayed?: number;
+  isPaused?: boolean;
+};
+
+/** True for queue-state evidence that represents a "summary" signal (raw counts). */
+function isQueueSummary(e: Evidence): boolean {
+  const p = (e.payload ?? {}) as QueuePayload;
+  return 'isPaused' in p;
+}
+
+/** Format summary counts as a compact inline string. */
+function fmtQueueCounts(p: QueuePayload): string {
+  return [
+    `${p.waiting ?? 0} waiting`,
+    `${p.active ?? 0} active`,
+    `${p.failed ?? 0} failed`,
+    `${p.delayed ?? 0} delayed`,
+  ].join(' · ');
+}
+
+/** Remove the "{queueName}: " prefix from a signal title for grouped display. */
+function stripQueueName(title: string, name: string): string {
+  const pfx = `${name}: `;
+  return title.startsWith(pfx) ? title.slice(pfx.length) : title;
+}
+
+/**
+ * Group queue-state evidence by queue name, with anomaly signals first and
+ * the summary signal last within each group.
+ */
+export function groupQueueEvidence(evidence: Evidence[]): Map<string, Evidence[]> {
+  const map = new Map<string, Evidence[]>();
+  for (const e of evidence) {
+    if (e.source !== 'queue' || e.kind !== 'queue-state') continue;
+    const name = (e.links as { queueName?: string } | undefined)?.queueName ?? 'unknown';
+    const group = map.get(name) ?? [];
+    group.push(e);
+    map.set(name, group);
+  }
+  for (const [, evs] of map) {
+    evs.sort((a, b) => {
+      const as_ = isQueueSummary(a);
+      const bs_ = isQueueSummary(b);
+      if (as_ && !bs_) return 1;
+      if (!as_ && bs_) return -1;
+      return b.relevance - a.relevance;
+    });
+  }
+  return map;
+}
+
+/** Set of IDs for all queue-state evidence in the report. */
+function queueEvidenceIds(evidence: Evidence[]): Set<string> {
+  const ids = new Set<string>();
+  for (const e of evidence) {
+    if (e.source === 'queue' && e.kind === 'queue-state') ids.add(e.id);
+  }
+  return ids;
 }
 
 /** A clean, sectioned text report suitable for a terminal or a log. */
@@ -124,12 +191,15 @@ export function renderReport(r: InvestigationReport): string {
   }
   lines.push('');
 
+  const queueIds = queueEvidenceIds(r.evidence);
+
   lines.push('## Suspected causes (ranked)');
   if (r.suspectedCauses.length === 0) {
     lines.push('(none)');
   } else {
     r.suspectedCauses.forEach((c, i) => {
-      lines.push(`${i + 1}. [${c.score.toFixed(2)}] ${c.statement}`);
+      const queueTag = c.evidenceIds.some((id) => queueIds.has(id)) ? ' [↑ queue]' : '';
+      lines.push(`${i + 1}. [${c.score.toFixed(2)}] ${c.statement}${queueTag}`);
       if (c.evidenceIds.length > 0) {
         lines.push(`    evidence: ${c.evidenceIds.map(shortId).join(', ')}`);
       }
@@ -183,6 +253,26 @@ export function renderReport(r: InvestigationReport): string {
     }
   }
   lines.push('');
+
+  const queueGroups = groupQueueEvidence(r.evidence);
+  const hasQueueGap = r.gapAnalysis.gaps.some((g) => g.dimension === 'queue runtime state');
+  if (queueGroups.size > 0 || hasQueueGap) {
+    lines.push('## Queue runtime');
+    if (queueGroups.size === 0) {
+      lines.push('  (unavailable — Redis unreachable or no queues discovered)');
+    } else {
+      for (const [name, evs] of queueGroups) {
+        lines.push(`  ${name}`);
+        for (const e of evs) {
+          const detail = isQueueSummary(e)
+            ? fmtQueueCounts(e.payload as QueuePayload)
+            : stripQueueName(e.title, name);
+          lines.push(`    [${e.relevance.toFixed(2)}] ${detail}`);
+        }
+      }
+    }
+    lines.push('');
+  }
 
   lines.push('## Next actions');
   if (r.nextActions.length === 0) {
@@ -240,12 +330,15 @@ export function reportToMarkdown(r: InvestigationReport): string {
   }
   out.push('');
 
+  const mdQueueIds = queueEvidenceIds(r.evidence);
+
   out.push('## Suspected causes');
   if (r.suspectedCauses.length === 0) {
     out.push('_none_');
   } else {
     r.suspectedCauses.forEach((c, i) => {
-      out.push(`${i + 1}. **(${c.score.toFixed(2)})** ${c.statement}`);
+      const queueTag = c.evidenceIds.some((id) => mdQueueIds.has(id)) ? ' `[↑ queue]`' : '';
+      out.push(`${i + 1}. **(${c.score.toFixed(2)})**${queueTag} ${c.statement}`);
     });
   }
   out.push('');
@@ -302,6 +395,26 @@ export function reportToMarkdown(r: InvestigationReport): string {
     }
   }
   out.push('');
+
+  const mdQueueGroups = groupQueueEvidence(r.evidence);
+  const mdHasQueueGap = r.gapAnalysis.gaps.some((g) => g.dimension === 'queue runtime state');
+  if (mdQueueGroups.size > 0 || mdHasQueueGap) {
+    out.push('## Queue runtime');
+    if (mdQueueGroups.size === 0) {
+      out.push('_unavailable — Redis unreachable or no queues discovered_');
+    } else {
+      for (const [name, evs] of mdQueueGroups) {
+        out.push(`**${name}**`);
+        for (const e of evs) {
+          const detail = isQueueSummary(e)
+            ? fmtQueueCounts(e.payload as QueuePayload)
+            : stripQueueName(e.title, name);
+          out.push(`- \`${e.relevance.toFixed(2)}\` ${detail}`);
+        }
+      }
+    }
+    out.push('');
+  }
 
   out.push('## Next actions');
   if (r.nextActions.length === 0) {
