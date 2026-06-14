@@ -18,6 +18,7 @@ import { runOwner } from './commands/owner.js';
 import { runPostmortem } from './commands/postmortem.js';
 import { runScore, runScores } from './commands/score.js';
 import { runAsk } from './commands/ask.js';
+import { runOnboard } from './commands/onboard.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -312,6 +313,22 @@ export function buildProgram(): Command {
     .option('-n, --limit <n>', 'max rows', (v) => parseInt(v, 10))
     .action(async (opts: { config?: string; limit?: number }) => {
       process.exitCode = await runScores({ config: opts.config, limit: opts.limit });
+    });
+
+  program
+    .command('onboard [area]')
+    .description(
+      'Understand a system fast: architecture, critical paths, what breaks, ownership, past incidents',
+    )
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'repository name from config')
+    .option('--json', 'output JSON')
+    .action(async (area: string | undefined, opts: { config?: string; repo?: string; json?: boolean }) => {
+      process.exitCode = await runOnboard(area, {
+        config: opts.config,
+        repo: opts.repo,
+        json: opts.json,
+      });
     });
 
   return program;
