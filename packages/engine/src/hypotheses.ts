@@ -36,6 +36,10 @@ export interface HypothesisContext {
   seedLabel: string;
   /** Distinct queue names that appear in the implicated queue-edge evidence. */
   queues: string[];
+  /** Metric evidence IDs with latency-spike or error-rate-change anomalies (HOR-40). */
+  latencyMetricEvIds?: string[];
+  /** Metric evidence IDs with queue-growth anomalies (HOR-40). */
+  queueMetricEvIds?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -99,6 +103,7 @@ export function generateHypotheses(
 
   // c. worker-slowdown — only when queue evidence exists
   if (queueEvs.length > 0) {
+    const queueMetricEvIds = ctx.queueMetricEvIds ?? [];
     hyps.push({
       id: globalThis.crypto.randomUUID(),
       category: 'worker-slowdown',
@@ -106,27 +111,28 @@ export function generateHypotheses(
         'The worker(s) consuming ' +
         queues.join(', ') +
         ' are processing slowly or stalling.',
-      confidence: 0.3,
-      supportingEvidenceIds: queueEvs.map((e) => e.id),
+      confidence: queueMetricEvIds.length > 0 ? 0.55 : 0.3,
+      supportingEvidenceIds: [...queueEvs.map((e) => e.id), ...queueMetricEvIds],
       contradictingEvidenceIds: [],
-      missingEvidence: [
-        'Worker latency/throughput metrics (Grafana — `horus metrics`)',
-      ],
+      missingEvidence: queueMetricEvIds.length > 0
+        ? []
+        : ['Worker latency/throughput metrics (Grafana — `horus metrics`)'],
     });
   }
 
   // d. external-api-latency — always emitted
+  const latencyMetricEvIds = ctx.latencyMetricEvIds ?? [];
   hyps.push({
     id: globalThis.crypto.randomUUID(),
     category: 'external-api-latency',
     statement:
       'An upstream/external API the implicated code calls is slow or returning errors.',
-    confidence: 0.2,
-    supportingEvidenceIds: [],
+    confidence: latencyMetricEvIds.length > 0 ? 0.55 : 0.2,
+    supportingEvidenceIds: latencyMetricEvIds,
     contradictingEvidenceIds: [],
-    missingEvidence: [
-      'Request latency metrics (Grafana) + error logs (Elasticsearch)',
-    ],
+    missingEvidence: latencyMetricEvIds.length > 0
+      ? []
+      : ['Request latency metrics (Grafana) + error logs (Elasticsearch)'],
   });
 
   // e. retry-storm — always emitted

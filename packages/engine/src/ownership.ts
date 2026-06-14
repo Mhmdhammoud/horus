@@ -24,13 +24,16 @@ export interface OwnershipEstimate {
 /**
  * Estimate who likely owns a component by searching for the closest symbol and
  * examining its file's git commit history.
+ *
+ * Pass `deps.symbol` to reuse an already-resolved seed and skip the Axon search.
  */
 export async function estimateOwnership(
   query: string,
-  deps: { code: CodeProvider; repoPath: string },
+  deps: { code: CodeProvider; repoPath: string; symbol?: Symbol | null },
 ): Promise<OwnershipEstimate> {
-  const seeds = await deps.code.searchSymbols(query, 5);
-  const top = seeds[0] ?? null;
+  // Reuse the caller's resolved symbol when provided — avoids a duplicate Axon
+  // search and prevents a different duplicate-name match from diverging ownership.
+  const top: Symbol | null = deps.symbol ?? (await deps.code.searchSymbols(query, 5))[0] ?? null;
   const file = top?.filePath ?? null;
 
   if (file === null) {

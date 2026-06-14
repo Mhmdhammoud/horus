@@ -1,6 +1,6 @@
 import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
-import { codeForEnv, logsForEnv, mongoForEnv, queueForEnv } from '@horus/connectors';
+import { codeForEnv, logsForEnv, mongoForEnv, queueForEnv, metricsForEnv } from '@horus/connectors';
 import { createDb } from '@horus/db';
 import { investigate, renderReport, reportToJSON, reportToMarkdown } from '@horus/engine';
 
@@ -58,6 +58,7 @@ export async function runInvestigate(
     const logs = logsForEnv(renv);
     const mongo = mongoForEnv(renv);
     const queue = queueForEnv(renv);
+    const metrics = metricsForEnv(renv);
 
     // Resolve service name: CLI flag > connector default > undefined
     const service = opts.service ?? renv.connectors.elasticsearch?.serviceName;
@@ -72,6 +73,8 @@ export async function runInvestigate(
           logs,
           mongo,
           queue,
+          metrics,
+          repoPath: renv.path,
           connectors: {
             elasticsearch: !!renv.connectors.elasticsearch?.url,
             grafana: !!renv.connectors.grafana?.url,

@@ -11,6 +11,7 @@ import type { SimilarIncident } from './memory.js';
 import type { GapAnalysis } from './gaps.js';
 import type { InvestigationGraph } from './graph.js';
 import type { CauseCandidate } from './score-cause.js';
+import type { OwnershipEstimate } from './ownership.js';
 
 export type { CauseCandidate };
 
@@ -64,6 +65,8 @@ export interface InvestigationReport {
   /** 0–1 overall confidence in the investigation. */
   confidence: number;
   nextActions: string[];
+  /** Ownership estimate for the implicated component (HOR-40). Null when repoPath is not supplied. */
+  ownership?: OwnershipEstimate | null;
 }
 
 /** Re-exported for convenience so callers can type flow steps without @horus/core. */

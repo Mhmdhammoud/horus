@@ -28,8 +28,11 @@ import type {
   StateAnalysis,
   QueueRuntimeProvider,
   QueueRuntimeState,
+  MetricsProvider,
 } from '@horus/connectors';
 import { shortTs, selectStateSignals, tokenize, analyzeQueueRuntime } from '@horus/connectors';
+import { estimateOwnership } from './ownership.js';
+import type { OwnershipEstimate } from './ownership.js';
 import type { HorusDb, QueueEdge } from '@horus/db';
 import {
   evidence as evidenceTable,
@@ -65,6 +68,10 @@ export interface EngineDeps {
   mongo?: StateProvider | null;
   /** Optional BullMQ queue runtime provider — folds queue depth/failure evidence. */
   queue?: QueueRuntimeProvider | null;
+  /** Optional Grafana metrics provider — folds anomaly evidence + clears metrics gap (HOR-40). */
+  metrics?: MetricsProvider | null;
+  /** Absolute path to the local git repository — enables ownership estimation (HOR-40). */
+  repoPath?: string;
   /** Which connectors are configured for the env — drives honest gap text. */
   connectors?: ConnectorFlags;
 }
@@ -439,12 +446,112 @@ export async function investigate(
     }
   }
 
-  // e0d. NORMALIZE — fill in cross-provider priority + category before any
+  // e0d. METRIC EVIDENCE (HOR-11 / HOR-40) — Grafana anomaly findings scoped by hint.
+  // Optional; never breaks the investigation on failure.
+  // Hard timeout keeps a slow/large Grafana from stalling the report.
+  const METRICS_TIMEOUT_MS = 10_000;
+  const metricEvIds: string[] = [];
+  const latencyMetricEvIds: string[] = [];
+  const queueMetricEvIds: string[] = [];
+  let metricsCollected = false;
+
+  if (deps.metrics) {
+    let metricsTimerId: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const fromMs = new Date(logWindowFrom(input.since)).getTime();
+      const toMs = Date.now();
+      const mFindings = await Promise.race([
+        deps.metrics.analyze({
+          hint: input.hint,
+          from: Math.floor(fromMs / 1000),
+          to: Math.floor(toMs / 1000),
+        }),
+        new Promise<never>((_, reject) => {
+          metricsTimerId = setTimeout(() => reject(new Error('metrics timeout')), METRICS_TIMEOUT_MS);
+          // unref() prevents the timer from keeping the Node process alive if
+          // metrics.analyze() resolves first.
+          (metricsTimerId as { unref?: () => void }).unref?.();
+        }),
+      ]);
+
+      const mEvidence = deps.metrics.toEvidence(mFindings);
+      const anomalous = mFindings.filter((f) => f.anomaly !== 'none');
+      // findingsToEvidence produces sequential ev_metric_N ids; replace with UUIDs
+      // so they are unique across investigations in the DB.
+      // Correlate each anomaly to the implicated path before wiring to hypotheses:
+      // queue-growth must reference a known queue name; latency/error-rate must match
+      // the investigated service when one is given — without a service scope the
+      // correlation is too loose to be causal evidence.
+      const queueNamesSet = new Set(queueHits.map((e) => e.queueName.toLowerCase()));
+      const serviceFilter = (input.service ?? '').toLowerCase();
+      const collectedAt = new Date().toISOString();
+
+      for (let i = 0; i < mEvidence.length; i++) {
+        const ev = mEvidence[i];
+        if (ev === undefined) continue;
+        ev.id = globalThis.crypto.randomUUID();
+        // Override sequential provenance with the actual investigation hint.
+        ev.provenance = { query: hint, collectedAt };
+        evidence.push(ev);
+        metricEvIds.push(ev.id);
+
+        const f = anomalous[i];
+        if (f === undefined) continue;
+
+        const panelLower = f.panelTitle.toLowerCase();
+        const labelVals = Object.values(f.labels).map((v) => v.toLowerCase());
+
+        if (f.anomaly === 'latency-spike' || f.anomaly === 'error-rate-change') {
+          // Without a service scope, retain as evidence but don't boost hypotheses.
+          const relevant =
+            serviceFilter.length > 0 &&
+            (panelLower.includes(serviceFilter) || labelVals.some((v) => v.includes(serviceFilter)));
+          if (relevant) latencyMetricEvIds.push(ev.id);
+        } else if (f.anomaly === 'queue-growth') {
+          // Only boost worker-slowdown when a queue name from the implicated edges
+          // appears in the panel title or labels.
+          const relevant =
+            queueNamesSet.size > 0 &&
+            [...queueNamesSet].some(
+              (q) => panelLower.includes(q) || labelVals.some((v) => v.includes(q)),
+            );
+          if (relevant) queueMetricEvIds.push(ev.id);
+        }
+      }
+      // Set only after the full collection + conversion loop completes without error.
+      metricsCollected = true;
+    } catch {
+      // Metrics failure (including timeout) must never break the investigation.
+      // metricsCollected stays false — gap detector will report the failure.
+    } finally {
+      // Always clear the timer to prevent it from firing after a fast response
+      // and to release the reference regardless of the outcome.
+      if (metricsTimerId !== undefined) clearTimeout(metricsTimerId);
+    }
+  }
+
+  // e0e. OWNERSHIP (HOR-20 / HOR-40) — estimate likely maintainer from git history.
+  // Reuses the already-resolved seed symbol to skip a duplicate Axon search.
+  // Optional; only runs when repoPath is configured. Never breaks on failure.
+  let ownershipEstimate: OwnershipEstimate | null = null;
+  if (deps.repoPath) {
+    try {
+      ownershipEstimate = await estimateOwnership(top.name, {
+        code: deps.code,
+        repoPath: deps.repoPath,
+        symbol: top,
+      });
+    } catch {
+      ownershipEstimate = null;
+    }
+  }
+
+  // e0f. NORMALIZE — fill in cross-provider priority + category before any
   // downstream step reads them. Idempotent; safe to call even if a provider
   // failed and contributed zero items.
   normalizeEvidence(evidence);
 
-  // e0e. GRAPH — derive infrastructure topology from normalized evidence. Built
+  // e0g. GRAPH — derive infrastructure topology from normalized evidence. Built
   // here so implication scores are available when scoring suspected causes below.
   const graph = buildGraph(evidence);
 
@@ -459,6 +566,8 @@ export async function investigate(
   const hyps = generateHypotheses(evidence, correlation, {
     seedLabel: label,
     queues: queueNames,
+    latencyMetricEvIds,
+    queueMetricEvIds,
   });
 
   // e4. HYPOTHESIS VALIDATION (HOR-25) — adjust confidence + assign verdicts
@@ -619,6 +728,20 @@ export async function investigate(
     }
   }
 
+  // Metric findings (HOR-40)
+  if (metricEvIds.length > 0) {
+    const anomalyLabels: string[] = [];
+    if (latencyMetricEvIds.length > 0) anomalyLabels.push('latency/error-rate');
+    if (queueMetricEvIds.length > 0) anomalyLabels.push('queue-growth');
+    const desc = anomalyLabels.join(', ') || 'metric';
+    findings.push({
+      kind: 'anomaly',
+      title: `Metric anomalies: ${metricEvIds.length} signal(s) — ${desc}`,
+      confidence: 0.7,
+      evidenceIds: metricEvIds,
+    });
+  }
+
   // f. SUSPECTED CAUSES — build CauseInput list; scoring + ranking via rankCauses (HOR-15).
   const causeInputs: CauseInput[] = [];
   const blastRadius = impact.affected;
@@ -703,14 +826,40 @@ export async function investigate(
     });
   }
 
+  // Metric-driven causes (HOR-40): latency/error-rate anomalies → external-api-latency cause.
+  if (latencyMetricEvIds.length > 0) {
+    causeInputs.push({
+      id: 'cause:metric-latency',
+      title: `Metric anomalies (${latencyMetricEvIds.length} latency/error-rate signal(s)) — upstream dependency or component under load`,
+      category: 'external-api-latency',
+      sourceEvidenceIds: latencyMetricEvIds,
+      baseScore: 0.45,
+      metadata: { blastRadius },
+    });
+  }
+
+  // Metric-driven causes (HOR-40): queue-growth anomaly → queue-backlog cause.
+  if (queueMetricEvIds.length > 0) {
+    causeInputs.push({
+      id: 'cause:metric-queue-growth',
+      title: `Queue-growth metric anomalies (${queueMetricEvIds.length} signal(s)) — worker throughput may be insufficient`,
+      category: 'queue-backlog',
+      sourceEvidenceIds: queueMetricEvIds,
+      baseScore: 0.40,
+      metadata: { blastRadius },
+    });
+  }
+
   // Score + rank via the Cause Scoring Engine — graph proximity, evidence quality,
   // source diversity, recency, recurrence, blast radius, and finding
   // corroboration applied as factors.
+  // Keys must match Evidence.source values (not provider .id) — see factorProviderReliability.
   const providerReliability: Record<string, number> = {
-    [deps.code.id]: 0.80,
-    ...(deps.logs != null ? { [deps.logs.id]: 0.70 } : {}),
-    ...(deps.mongo != null ? { [deps.mongo.id]: 0.85 } : {}),
-    ...(deps.queue != null ? { [deps.queue.id]: 0.90 } : {}),
+    code: 0.80,
+    ...(deps.logs != null ? { logs: 0.70 } : {}),
+    ...(deps.mongo != null ? { state: 0.85 } : {}),
+    ...(deps.queue != null ? { queue: 0.90 } : {}),
+    ...(deps.metrics != null ? { metrics: 0.75 } : {}),
   };
   const rankedCauses = rankCauses(causeInputs, {
     evidence,
@@ -735,6 +884,13 @@ export async function investigate(
   // i. nextActions
   const nextActions = buildNextActions(top, ctx, impact, queueHits, changes, input);
 
+  // Prepend owner routing when ownership is known (HOR-40).
+  if (ownershipEstimate?.likelyMaintainer) {
+    nextActions.unshift(
+      `Route to likely maintainer: ${ownershipEstimate.likelyMaintainer} (${Math.round(ownershipEstimate.maintainerShare * 100)}% of commits to ${ownershipEstimate.file ?? top.filePath})`,
+    );
+  }
+
   const report: InvestigationReport = {
     id: globalThis.crypto.randomUUID(),
     input,
@@ -751,14 +907,19 @@ export async function investigate(
     graph,
     confidence,
     nextActions,
+    ownership: ownershipEstimate,
   };
 
   // HOR-19 — compute gap analysis and cap confidence BEFORE persisting so the
   // persisted record reflects the capped value.
-  const connectorFlags: ConnectorFlags = deps.connectors ?? {
-    elasticsearch: deps.logs != null,
-    mongodb: deps.mongo != null,
-  };
+  const connectorFlags: ConnectorFlags = deps.connectors
+    ? { ...deps.connectors, metricsCollected }
+    : {
+        elasticsearch: deps.logs != null,
+        mongodb: deps.mongo != null,
+        grafana: deps.metrics != null,
+        metricsCollected,
+      };
   const gapAnalysis = detectMissingEvidence(report, connectorFlags);
   report.gapAnalysis = gapAnalysis;
   report.confidence = Math.min(report.confidence, gapAnalysis.confidenceCeiling);

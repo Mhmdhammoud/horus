@@ -14,6 +14,12 @@ export interface ConnectorFlags {
   grafana?: boolean;
   mongodb?: boolean;
   redis?: boolean;
+  /**
+   * True when metrics collection ran to completion (even with zero anomalies).
+   * False/absent + grafana:true means collection was attempted but failed.
+   * Lets the gap detector distinguish "no anomalies" from "collection failed".
+   */
+  metricsCollected?: boolean;
 }
 
 /** A single dimension of missing evidence and its investigation impact. */
@@ -55,7 +61,7 @@ export function detectMissingEvidence(
   const hasCommit = r.evidence.some((e) => e.kind === 'commit');
   const hasTrace = r.evidence.some((e) => e.links != null && e.links.traceId != null);
   const hasQueueTopology = r.timeline.boundaryCrossings.length > 0;
-  const ownershipKnown = false;
+  const ownershipKnown = r.ownership != null && r.ownership.likelyMaintainer != null;
 
   const gaps: EvidenceGap[] = [];
   const blindSpots: string[] = [];
@@ -76,15 +82,19 @@ export function detectMissingEvidence(
     blindSpots.push('Cannot see the real error.');
   }
 
-  if (!hasMetric) {
+  // Only add a metrics gap when metrics are genuinely missing.
+  // Successful collection with no anomalies is negative evidence — not a gap.
+  if (!hasMetric && !(connectors.grafana && connectors.metricsCollected)) {
+    const metricsWhy = !connectors.grafana
+      ? 'No Grafana connector configured — cannot see latency/error-rate trends.'
+      : 'Grafana metrics collection failed or timed out — metric trends unavailable for this investigation.';
+    const metricsNextSource = !connectors.grafana
+      ? 'Add a `grafana` connector to the environment'
+      : 'Check Grafana connectivity, then run `horus metrics "<hint>"` manually';
     gaps.push({
       dimension: 'metrics',
-      why: connectors.grafana
-        ? 'Metrics are not folded into the investigation yet — latency/error-rate trends not collected here.'
-        : 'No Grafana connector configured — cannot see latency/error-rate trends.',
-      nextSource: connectors.grafana
-        ? 'Run `horus metrics "<hint>"` for latency spikes / throughput drops / queue growth'
-        : 'Add a `grafana` connector to the environment',
+      why: metricsWhy,
+      nextSource: metricsNextSource,
       confidenceImpact: 0.1,
     });
     blindSpots.push('Cannot validate latency-based hypotheses.');
