@@ -1,0 +1,219 @@
+/**
+ * Pure helpers for converting raw BullMQ queue state into typed Evidence (HOR-12).
+ *
+ * No network, no side effects. Thresholds are intentionally generous — the goal
+ * is to surface anything an engineer would care about during an incident, not to
+ * flag every non-zero count.
+ */
+
+import type { Evidence } from '@horus/core';
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+/** Raw counts for a single queue, collected from Redis. */
+export interface QueueCounts {
+  queueName: string;
+  waiting: number;
+  active: number;
+  failed: number;
+  delayed: number;
+  completed: number;
+  /** Non-zero only when the queue is paused (jobs accumulate in the paused list). */
+  paused: number;
+  isPaused: boolean;
+  /** Age of the oldest waiting job in milliseconds; undefined when the queue is empty. */
+  oldestWaitingMs?: number;
+  /** Top failed-reason buckets, sorted by count descending. */
+  failedBreakdown?: Array<{ reason: string; count: number }>;
+}
+
+export interface QueueRuntimeState {
+  prefix: string;
+  collectedAt: string;
+  queues: QueueCounts[];
+}
+
+export type QueueSignalKind =
+  | 'backlog'
+  | 'failed-spike'
+  | 'delayed-accumulation'
+  | 'worker-starvation'
+  | 'failed-breakdown'
+  | 'oldest-job'
+  | 'summary';
+
+export interface QueueSignal {
+  queueName: string;
+  kind: QueueSignalKind;
+  title: string;
+  relevance: number;
+  payload: Record<string, unknown>;
+  timestamp?: string;
+}
+
+// ── Thresholds ────────────────────────────────────────────────────────────────
+
+const BACKLOG_WARN = 100;
+const BACKLOG_HIGH = 1_000;
+const FAILED_WARN = 20;
+const DELAYED_WARN = 50;
+/** Starvation: queue has jobs waiting but no workers are processing. */
+const STARVATION_MIN = 10;
+const OLD_JOB_WARN_MS = 5 * 60_000;
+const OLD_JOB_HIGH_MS = 60 * 60_000;
+/** Only emit a failed-breakdown signal when the top reason owns at least this share. */
+const BREAKDOWN_PCT_THRESHOLD = 30;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+export function fmtMs(ms: number): string {
+  if (ms >= 86_400_000) return `${Math.floor(ms / 86_400_000)}d`;
+  if (ms >= 3_600_000) return `${Math.floor(ms / 3_600_000)}h`;
+  if (ms >= 60_000) return `${Math.floor(ms / 60_000)}m`;
+  return `${Math.floor(ms / 1_000)}s`;
+}
+
+// ── Signal extraction ─────────────────────────────────────────────────────────
+
+/**
+ * Derive all notable signals for a single queue.
+ * Always includes a `summary` signal so the AI sees raw counts even when
+ * nothing is alarming.
+ */
+export function analyzeQueueSignals(q: QueueCounts): QueueSignal[] {
+  const signals: QueueSignal[] = [];
+
+  // Starvation takes highest priority (waiting but no workers processing)
+  if (q.waiting >= STARVATION_MIN && q.active === 0) {
+    signals.push({
+      queueName: q.queueName,
+      kind: 'worker-starvation',
+      title: `${q.queueName}: ${q.waiting} waiting jobs, 0 active workers (starvation)`,
+      relevance: 0.9,
+      payload: { queueName: q.queueName, waiting: q.waiting, active: 0 },
+    });
+  } else if (q.waiting > BACKLOG_HIGH) {
+    signals.push({
+      queueName: q.queueName,
+      kind: 'backlog',
+      title: `${q.queueName}: ${q.waiting.toLocaleString()} jobs waiting (severe backlog)`,
+      relevance: 0.88,
+      payload: { queueName: q.queueName, waiting: q.waiting, active: q.active },
+    });
+  } else if (q.waiting > BACKLOG_WARN) {
+    signals.push({
+      queueName: q.queueName,
+      kind: 'backlog',
+      title: `${q.queueName}: ${q.waiting} jobs waiting (backlog)`,
+      relevance: 0.8,
+      payload: { queueName: q.queueName, waiting: q.waiting, active: q.active },
+    });
+  }
+
+  if (q.oldestWaitingMs !== undefined && q.oldestWaitingMs > OLD_JOB_WARN_MS) {
+    const severe = q.oldestWaitingMs > OLD_JOB_HIGH_MS;
+    signals.push({
+      queueName: q.queueName,
+      kind: 'oldest-job',
+      title: `${q.queueName}: oldest waiting job is ${fmtMs(q.oldestWaitingMs)} old${severe ? ' (severe)' : ''}`,
+      relevance: severe ? 0.85 : 0.75,
+      payload: { queueName: q.queueName, oldestWaitingMs: q.oldestWaitingMs },
+    });
+  }
+
+  if (q.failed > FAILED_WARN) {
+    const severe = q.failed > 100;
+    signals.push({
+      queueName: q.queueName,
+      kind: 'failed-spike',
+      title: `${q.queueName}: ${q.failed} failed jobs${severe ? ' (severe)' : ''}`,
+      relevance: severe ? 0.85 : 0.75,
+      payload: { queueName: q.queueName, failed: q.failed },
+    });
+  }
+
+  if (q.delayed > DELAYED_WARN) {
+    signals.push({
+      queueName: q.queueName,
+      kind: 'delayed-accumulation',
+      title: `${q.queueName}: ${q.delayed} delayed jobs accumulated`,
+      relevance: 0.7,
+      payload: { queueName: q.queueName, delayed: q.delayed },
+    });
+  }
+
+  // Failed breakdown: only when a single reason dominates (>= BREAKDOWN_PCT_THRESHOLD%)
+  if (q.failedBreakdown && q.failedBreakdown.length > 0 && q.failed > 0) {
+    const top = q.failedBreakdown[0]!;
+    const pct = Math.round((top.count / Math.max(q.failed, 1)) * 100);
+    if (pct >= BREAKDOWN_PCT_THRESHOLD) {
+      signals.push({
+        queueName: q.queueName,
+        kind: 'failed-breakdown',
+        title: `${q.queueName}: ${pct}% of failed jobs are "${top.reason}"`,
+        relevance: 0.82,
+        payload: {
+          queueName: q.queueName,
+          topReason: top.reason,
+          topCount: top.count,
+          topPct: pct,
+          totalFailed: q.failed,
+          breakdown: q.failedBreakdown.slice(0, 3),
+        },
+      });
+    }
+  }
+
+  // Always emit a summary (low relevance) for raw counts
+  signals.push({
+    queueName: q.queueName,
+    kind: 'summary',
+    title: `${q.queueName}: ${q.waiting} waiting, ${q.active} active, ${q.failed} failed, ${q.delayed} delayed`,
+    relevance: 0.4,
+    payload: {
+      queueName: q.queueName,
+      waiting: q.waiting,
+      active: q.active,
+      failed: q.failed,
+      delayed: q.delayed,
+      completed: q.completed,
+      isPaused: q.isPaused,
+    },
+  });
+
+  return signals;
+}
+
+/** All signals across all queues in a runtime state snapshot. */
+export function analyzeQueueRuntime(state: QueueRuntimeState): QueueSignal[] {
+  return state.queues.flatMap(analyzeQueueSignals);
+}
+
+/**
+ * Convert queue runtime state into Evidence records.
+ * Used by `QueueRuntimeProvider.toEvidence()` and in tests.
+ */
+export function queueStateToEvidence(
+  state: QueueRuntimeState,
+  query: string,
+  collectedAt: string,
+): Evidence[] {
+  const evs: Evidence[] = [];
+  let i = 0;
+  for (const q of state.queues) {
+    for (const s of analyzeQueueSignals(q)) {
+      evs.push({
+        id: `ev_qs_${i++}`,
+        source: 'queue',
+        kind: 'queue-state',
+        title: s.title,
+        relevance: s.relevance,
+        payload: s.payload,
+        links: { queueName: q.queueName },
+        provenance: { query, collectedAt },
+        ...(s.timestamp ? { timestamp: s.timestamp } : {}),
+      });
+    }
+  }
+  return evs;
+}
