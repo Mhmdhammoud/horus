@@ -34,6 +34,7 @@ import type {
   ReportFinding,
   SuspectedCause,
 } from './types.js';
+import { buildTimeline } from './timeline.js';
 
 /** Dependencies the engine needs: a code provider and a database handle. */
 export interface EngineDeps {
@@ -141,6 +142,7 @@ export async function investigate(
       summary: 'No source symbols matched the hint',
       seeds: [],
       evidence: [],
+      timeline: { events: [], boundaryCrossings: [] },
       findings: [],
       suspectedCauses: [],
       confidence: 0,
@@ -254,7 +256,10 @@ export async function investigate(
     changeEvId = ev.id;
   }
 
-  // e. FINDINGS
+  // e. TIMELINE (deterministic; built after all evidence is accumulated)
+  const timeline = buildTimeline(evidence);
+
+  // f. FINDINGS (label kept as 'e' externally but shifted to 'f' internally)
   const findings: ReportFinding[] = [];
 
   // The top seed is search rank 0 — highest confidence in the resolution.
@@ -365,6 +370,7 @@ export async function investigate(
     summary,
     seeds,
     evidence,
+    timeline,
     findings,
     suspectedCauses: rankedCauses,
     confidence,

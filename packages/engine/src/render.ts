@@ -51,6 +51,29 @@ export function renderReport(r: InvestigationReport): string {
   }
   lines.push('');
 
+  lines.push('## Timeline');
+  if (r.timeline.events.length === 0) {
+    lines.push('(none)');
+  } else {
+    for (const ev of r.timeline.events) {
+      const at = ev.at ?? 'structural';
+      lines.push(`  ${ev.order}. [${at}] ${ev.title}`);
+    }
+  }
+  lines.push('');
+
+  lines.push('## Boundary crossings');
+  if (r.timeline.boundaryCrossings.length === 0) {
+    lines.push('(none)');
+  } else {
+    for (const bc of r.timeline.boundaryCrossings) {
+      const producer = bc.producer ?? '?';
+      const worker = bc.worker ?? '?';
+      lines.push(`  ${bc.queueName}: ${producer} -> ${worker}`);
+    }
+  }
+  lines.push('');
+
   lines.push('## Suspected causes (ranked)');
   if (r.suspectedCauses.length === 0) {
     lines.push('(none)');

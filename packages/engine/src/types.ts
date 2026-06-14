@@ -4,6 +4,7 @@
  */
 
 import type { Evidence, Symbol, Flow } from '@horus/core';
+import type { Timeline } from './timeline.js';
 
 /** The user-supplied incident hint plus optional scoping. */
 export interface InvestigationInput {
@@ -45,6 +46,7 @@ export interface InvestigationReport {
   /** Symbols that the hint resolved to. */
   seeds: Symbol[];
   evidence: Evidence[];
+  timeline: Timeline;
   findings: ReportFinding[];
   suspectedCauses: SuspectedCause[];
   /** 0–1 overall confidence in the investigation. */
