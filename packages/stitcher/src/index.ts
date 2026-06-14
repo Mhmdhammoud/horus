@@ -9,5 +9,5 @@
  * Implemented in the STITCH ticket. See architecture.md §2.3.
  */
 
-/** Placeholder until the STITCH ticket lands the extractor. */
-export const STITCHER_PLACEHOLDER = true;
+export * from './extract.js';
+export * from './stitch.js';

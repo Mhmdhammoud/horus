@@ -89,6 +89,9 @@ importers:
       '@horus/db':
         specifier: workspace:*
         version: link:../db
+      '@horus/stitcher':
+        specifier: workspace:*
+        version: link:../stitcher
       commander:
         specifier: ^12.1.0
         version: 12.1.0
@@ -129,9 +132,15 @@ importers:
 
   packages/stitcher:
     dependencies:
+      '@horus/connectors':
+        specifier: workspace:*
+        version: link:../connectors
       '@horus/core':
         specifier: workspace:*
         version: link:../core
+      '@horus/db':
+        specifier: workspace:*
+        version: link:../db
 
 packages:
 

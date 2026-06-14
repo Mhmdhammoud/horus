@@ -2,6 +2,8 @@ import { Command } from 'commander';
 import { HORUS_VERSION } from '@horus/core';
 import { runStatus } from './commands/status.js';
 import { runExplain } from './commands/explain.js';
+import { runIndex } from './commands/index-repo.js';
+import { runQueues } from './commands/queues.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -39,6 +41,22 @@ export function buildProgram(): Command {
         depth: opts.depth,
         json: opts.json,
       });
+    });
+
+  program
+    .command('index')
+    .description('Build the queue map (run the stitcher against the Axon host)')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .action(async (opts: { config?: string }) => {
+      process.exitCode = await runIndex({ config: opts.config });
+    });
+
+  program
+    .command('queues [name]')
+    .description('Show producer -> queue -> worker edges')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .action(async (name: string | undefined, opts: { config?: string }) => {
+      process.exitCode = await runQueues(name, { config: opts.config });
     });
 
   return program;

@@ -27,5 +27,6 @@ export type {
   ProviderCacheRow,
 } from './schema.js';
 export { createDb, type HorusDb, type DbHandle } from './client.js';
+export { replaceQueueEdges, listQueueEdges } from './queue.js';
 export { runMigrations } from './migrate.js';
 export { checkDatabase, EXPECTED_TABLES, type DbHealth } from './health.js';
