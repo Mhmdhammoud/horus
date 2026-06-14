@@ -74,6 +74,36 @@ export function renderReport(r: InvestigationReport): string {
   }
   lines.push('');
 
+  lines.push('## Correlation');
+
+  lines.push('### Cause chains');
+  if (r.correlation.chains.length === 0) {
+    lines.push('  (none)');
+  } else {
+    for (const chain of r.correlation.chains) {
+      lines.push(`  [${chain.strength.toFixed(2)}] ${chain.title} — ${chain.rationale}`);
+    }
+  }
+
+  lines.push('### Related evidence groups');
+  if (r.correlation.groups.length === 0) {
+    lines.push('  (none)');
+  } else {
+    for (const group of r.correlation.groups) {
+      lines.push(`  ${group.reason} (${group.evidenceIds.length} items)`);
+    }
+  }
+
+  lines.push('### Missing evidence');
+  if (r.correlation.missing.length === 0) {
+    lines.push('  none');
+  } else {
+    for (const m of r.correlation.missing) {
+      lines.push(`  - ${m.note}`);
+    }
+  }
+  lines.push('');
+
   lines.push('## Suspected causes (ranked)');
   if (r.suspectedCauses.length === 0) {
     lines.push('(none)');

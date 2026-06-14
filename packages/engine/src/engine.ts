@@ -35,6 +35,7 @@ import type {
   SuspectedCause,
 } from './types.js';
 import { buildTimeline } from './timeline.js';
+import { correlate } from './correlate.js';
 
 /** Dependencies the engine needs: a code provider and a database handle. */
 export interface EngineDeps {
@@ -143,6 +144,7 @@ export async function investigate(
       seeds: [],
       evidence: [],
       timeline: { events: [], boundaryCrossings: [] },
+      correlation: { groups: [], chains: [], missing: correlate([]).missing },
       findings: [],
       suspectedCauses: [],
       confidence: 0,
@@ -259,6 +261,9 @@ export async function investigate(
   // e. TIMELINE (deterministic; built after all evidence is accumulated)
   const timeline = buildTimeline(evidence);
 
+  // e2. CORRELATION (deterministic grouping + cause chains + missing evidence)
+  const correlation = correlate(evidence);
+
   // f. FINDINGS (label kept as 'e' externally but shifted to 'f' internally)
   const findings: ReportFinding[] = [];
 
@@ -371,6 +376,7 @@ export async function investigate(
     seeds,
     evidence,
     timeline,
+    correlation,
     findings,
     suspectedCauses: rankedCauses,
     confidence,

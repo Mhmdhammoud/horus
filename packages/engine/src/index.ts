@@ -8,3 +8,4 @@ export * from './render.js';
 export * from './changes.js';
 export * from './render-changes.js';
 export * from './timeline.js';
+export * from './correlate.js';
