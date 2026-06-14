@@ -16,6 +16,7 @@ import { runInvestigations } from './commands/investigations.js';
 import { runReplay } from './commands/replay.js';
 import { runOwner } from './commands/owner.js';
 import { runPostmortem } from './commands/postmortem.js';
+import { runScore, runScores } from './commands/score.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -278,6 +279,26 @@ export function buildProgram(): Command {
         });
       },
     );
+
+  program
+    .command('score <id>')
+    .description(
+      'Score a saved investigation\'s quality (a feedback loop for Horus, not engineers)',
+    )
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--json', 'output JSON')
+    .action(async (id: string, opts: { config?: string; json?: boolean }) => {
+      process.exitCode = await runScore(id, { config: opts.config, json: opts.json });
+    });
+
+  program
+    .command('scores')
+    .description('List recent investigation quality scores + the average (trend)')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('-n, --limit <n>', 'max rows', (v) => parseInt(v, 10))
+    .action(async (opts: { config?: string; limit?: number }) => {
+      process.exitCode = await runScores({ config: opts.config, limit: opts.limit });
+    });
 
   return program;
 }

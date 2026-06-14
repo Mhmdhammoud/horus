@@ -29,6 +29,10 @@ export type {
 export { createDb, type HorusDb, type DbHandle } from './client.js';
 export { eq, desc, sql, and, or } from 'drizzle-orm';
 export { replaceQueueEdges, listQueueEdges } from './queue.js';
-export { getInvestigation, listInvestigations } from './investigations.js';
+export {
+  getInvestigation,
+  listInvestigations,
+  listInvestigationsWithReports,
+} from './investigations.js';
 export { runMigrations } from './migrate.js';
 export { checkDatabase, EXPECTED_TABLES, type DbHealth } from './health.js';

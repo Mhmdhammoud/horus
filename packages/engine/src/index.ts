@@ -25,3 +25,5 @@ export * from './multi-repo.js';
 export * from './ownership.js';
 export * from './render-ownership.js';
 export * from './postmortem.js';
+export * from './score.js';
+export * from './render-score.js';

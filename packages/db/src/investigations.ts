@@ -24,3 +24,16 @@ export async function listInvestigations(db: HorusDb, limit = 20) {
     .orderBy(desc(investigations.createdAt))
     .limit(limit);
 }
+
+export async function listInvestigationsWithReports(db: HorusDb, limit = 20) {
+  return db
+    .select({
+      id: investigations.id,
+      title: investigations.title,
+      createdAt: investigations.createdAt,
+      report: investigations.report,
+    })
+    .from(investigations)
+    .orderBy(desc(investigations.createdAt))
+    .limit(limit);
+}
