@@ -27,6 +27,7 @@ export type EvidenceSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type EvidenceCategory =
   | 'queue'      // BullMQ backlog, starvation, failures
   | 'database'   // MongoDB state anomalies
+  | 'cache'      // Redis, Memcached — in-memory key/value state
   | 'logs'       // Elasticsearch error patterns
   | 'code'       // Axon symbols, flows, impact blast-radius
   | 'deployment' // Git commits

@@ -126,12 +126,17 @@ treats `payload` as opaque; renderers and the LLM consume it directly.
 
 ## Category mapping
 
-| `source` | `category` |
-|----------|------------|
-| `queue` | `queue` |
-| `logs` | `logs` |
-| `metrics` | `metrics` |
-| `state` | `database` |
-| `history` | `deployment` |
-| `code` | `code` |
-| anything else | `other` |
+| `source` | `kind` | `category` |
+|----------|--------|------------|
+| `queue` | any | `queue` |
+| `logs` | any | `logs` |
+| `metrics` | any | `metrics` |
+| `state` | `redis-key` | `cache` |
+| `state` | other | `database` |
+| `history` | any | `deployment` |
+| `code` | any | `code` |
+| anything else | any | `other` |
+
+`'state'` is a shared `ProviderKind` for both MongoDB and Redis. The normalization layer
+uses `kind` to distinguish them — `redis-key` evidence maps to `'cache'` so it is never
+grouped with database anomalies.

@@ -18,6 +18,9 @@ import type { Evidence, EvidenceCategory, EvidenceSeverity } from '@horus/core';
 // ── Category mapping ──────────────────────────────────────────────────────────
 
 function categoryFor(e: Evidence): EvidenceCategory {
+  // ProviderKind 'state' covers both MongoDB and Redis. Distinguish by kind
+  // so redis-key evidence is not misclassified as database.
+  if (e.kind === 'redis-key') return 'cache';
   switch (e.source) {
     case 'queue':
       return 'queue';

@@ -157,6 +157,25 @@ describe('normalizeEvidence — deployment (git) provider', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Cache (Redis) — source: 'state', kind: 'redis-key'
+// ---------------------------------------------------------------------------
+
+describe('normalizeEvidence — cache (Redis) provider', () => {
+  it('redis-key → category cache, not database', () => {
+    const ev = makeEv({ id: 'ev-redis-1', source: 'state', kind: 'redis-key', relevance: 0.5 });
+    normalizeEvidence([ev]);
+    expect(ev.category).toBe('cache');
+  });
+
+  it('redis-key (high relevance) → severity still derived from relevance', () => {
+    const ev = makeEv({ id: 'ev-redis-2', source: 'state', kind: 'redis-key', relevance: 0.85 });
+    normalizeEvidence([ev]);
+    expect(ev.category).toBe('cache');
+    expect(ev.severity).toBe('high');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Normalization contract
 // ---------------------------------------------------------------------------
 
