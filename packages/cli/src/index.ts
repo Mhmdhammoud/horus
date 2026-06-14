@@ -6,6 +6,7 @@ import { runIndex } from './commands/index-repo.js';
 import { runQueues } from './commands/queues.js';
 import { runInvestigate } from './commands/investigate.js';
 import { runChanges } from './commands/changes.js';
+import { runTimeline } from './commands/timeline.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -92,6 +93,37 @@ export function buildProgram(): Command {
     .action(async (base: string, compare: string | undefined, opts: { config?: string; json?: boolean }) => {
       process.exitCode = await runChanges(base, compare, { config: opts.config, json: opts.json });
     });
+
+  program
+    .command('timeline [service]')
+    .description(
+      'Reconstruct what changed in a time window (git + change-impact) — evidence, not conclusions',
+    )
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'repository name from config')
+    .option('--since <when>', 'git --since (e.g. "7 days ago", a date)')
+    .option('--until <when>', 'git --until')
+    .option('--json', 'output JSON')
+    .action(
+      async (
+        service: string | undefined,
+        opts: {
+          config?: string;
+          repo?: string;
+          since?: string;
+          until?: string;
+          json?: boolean;
+        },
+      ) => {
+        process.exitCode = await runTimeline(service, {
+          config: opts.config,
+          repo: opts.repo,
+          since: opts.since,
+          until: opts.until,
+          json: opts.json,
+        });
+      },
+    );
 
   return program;
 }

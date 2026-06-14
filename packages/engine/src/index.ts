@@ -11,3 +11,5 @@ export * from './timeline.js';
 export * from './correlate.js';
 export * from './hypotheses.js';
 export * from './validate.js';
+export * from './deploy-timeline.js';
+export * from './render-timeline.js';
