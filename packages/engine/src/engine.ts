@@ -397,6 +397,8 @@ export async function investigate(
   // relevant to this investigation. Optional; never breaks on failure.
   let queueRuntimeState: QueueRuntimeState | null = null;
   const queueRuntimeEvIds: string[] = [];
+  // Per-queue evidence IDs so each suspected cause cites only its own queue's data.
+  const queueRuntimeEvIdsByQueue = new Map<string, string[]>();
 
   if (deps.queue && queueHits.length > 0) {
     try {
@@ -405,6 +407,9 @@ export async function investigate(
       for (const s of analyzeQueueRuntime(queueRuntimeState)) {
         const ev = mkEv('queue-state', s.title, s.payload, { queueName: s.queueName }, s.timestamp, s.relevance);
         queueRuntimeEvIds.push(ev.id);
+        const perQueue = queueRuntimeEvIdsByQueue.get(s.queueName) ?? [];
+        perQueue.push(ev.id);
+        queueRuntimeEvIdsByQueue.set(s.queueName, perQueue);
       }
     } catch {
       queueRuntimeState = null;
@@ -545,7 +550,9 @@ export async function investigate(
     if (backlogged.length > 0 || starved.length > 0 || failing.length > 0) {
       const parts: string[] = [];
       if (starved.length > 0)
-        parts.push(`starvation: ${starved.map((q) => q.queueName).join(', ')}`);
+        parts.push(
+          `possible starvation: ${starved.map((q) => q.queueName).join(', ')} (0 active workers in snapshot)`,
+        );
       if (backlogged.length > 0)
         parts.push(
           `backlog: ${backlogged.map((q) => `${q.queueName} (${q.waiting})`).join(', ')}`,
@@ -555,7 +562,7 @@ export async function investigate(
       findings.push({
         kind: 'anomaly',
         title: `Queue runtime anomalies — ${parts.join('; ')}`,
-        confidence: 0.85,
+        confidence: starved.length > 0 && backlogged.length === 0 ? 0.65 : 0.85,
         evidenceIds: queueRuntimeEvIds,
       });
     } else {
@@ -590,7 +597,7 @@ export async function investigate(
         suspectedCauses.push({
           statement: `Queue "${q.queueName}" is backed up (${detail}) — ${producer} → ${worker} path implicated`,
           score: clamp01(isStarved ? 0.5 : 0.5 + Math.min(q.waiting / 5_000, 0.2)),
-          evidenceIds: queueRuntimeEvIds,
+          evidenceIds: queueRuntimeEvIdsByQueue.get(q.queueName) ?? [],
         });
       }
     }
