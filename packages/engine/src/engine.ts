@@ -39,6 +39,7 @@ import {
   listQueueEdges,
   eq,
 } from '@horus/db';
+import { buildGraph, maxImplicationScore } from './graph.js';
 import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
 import { recallSimilar, storeIncidentMemory, deriveTags } from './memory.js';
@@ -224,6 +225,7 @@ export async function investigate(
       hypotheses: [],
       similarIncidents: [],
       gapAnalysis: { gaps: [], blindSpots: [], confidenceCeiling: 0 },
+      graph: { nodes: [], edges: [] },
       confidence: 0,
       nextActions: [
         `No symbols matched "${hint}". Try a more specific hint — an exact function, class, or file name.`,
@@ -437,6 +439,10 @@ export async function investigate(
   // downstream step reads them. Idempotent; safe to call even if a provider
   // failed and contributed zero items.
   normalizeEvidence(evidence);
+
+  // e0e. GRAPH — derive infrastructure topology from normalized evidence. Built
+  // here so implication scores are available when scoring suspected causes below.
+  const graph = buildGraph(evidence);
 
   // e. TIMELINE (deterministic; built after all evidence is accumulated)
   const timeline = buildTimeline(evidence);
@@ -678,6 +684,14 @@ export async function investigate(
     });
   }
 
+  // Apply graph implication boost: causes backed by implicated infrastructure
+  // nodes (queue, service, collection) score up to +0.1 higher, breaking ties
+  // in favour of evidence-confirmed paths over purely structural reasoning.
+  for (const cause of suspectedCauses) {
+    const boost = maxImplicationScore(graph, cause.evidenceIds) * 0.1;
+    if (boost > 0) cause.score = clamp01(cause.score + boost);
+  }
+
   suspectedCauses.sort((a, b) => b.score - a.score);
   const rankedCauses = suspectedCauses.slice(0, 3);
 
@@ -709,6 +723,7 @@ export async function investigate(
     hypotheses: validated,
     similarIncidents: [],
     gapAnalysis: { gaps: [], blindSpots: [], confidenceCeiling: 1 },
+    graph,
     confidence,
     nextActions,
   };

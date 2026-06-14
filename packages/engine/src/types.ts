@@ -9,6 +9,7 @@ import type { CorrelationResult } from './correlate.js';
 import type { ValidatedHypothesis } from './validate.js';
 import type { SimilarIncident } from './memory.js';
 import type { GapAnalysis } from './gaps.js';
+import type { InvestigationGraph } from './graph.js';
 
 /** The user-supplied incident hint plus optional scoping. */
 export interface InvestigationInput {
@@ -59,6 +60,11 @@ export interface InvestigationReport {
   similarIncidents: SimilarIncident[];
   /** Structured analysis of what evidence is absent and its confidence impact (HOR-19). */
   gapAnalysis: GapAnalysis;
+  /**
+   * Infrastructure topology derived from evidence: queues, services, workers,
+   * collections, deployments, and the relationships between them (HOR-14).
+   */
+  graph: InvestigationGraph;
   /** 0–1 overall confidence in the investigation. */
   confidence: number;
   nextActions: string[];

@@ -91,6 +91,7 @@ const REPORT: InvestigationReport = {
   ],
   similarIncidents: [],
   gapAnalysis: { gaps: [], blindSpots: [], confidenceCeiling: 0.9 },
+  graph: { nodes: [], edges: [] },
   confidence: 0.45,
   nextActions: [],
 };

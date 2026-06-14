@@ -83,6 +83,7 @@ function makeFullReport(): InvestigationReport {
     hypotheses,
     similarIncidents: [],
     gapAnalysis: { gaps, blindSpots: ['Cannot see latency.'], confidenceCeiling: 0.9 },
+    graph: { nodes: [], edges: [] },
     confidence: 0.5,
     nextActions: ['Check BullMQ queue depth.'],
   };
@@ -103,6 +104,7 @@ function makeEmptyReport(): InvestigationReport {
     hypotheses: [],
     similarIncidents: [],
     gapAnalysis: { gaps: [], blindSpots: [], confidenceCeiling: 1 },
+    graph: { nodes: [], edges: [] },
     confidence: 0.1,
     nextActions: [],
   };

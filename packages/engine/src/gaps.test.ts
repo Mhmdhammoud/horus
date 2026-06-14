@@ -50,6 +50,7 @@ function makeMinimalReport(overrides: Partial<InvestigationReport> = {}): Invest
     hypotheses: [],
     similarIncidents: [],
     gapAnalysis: { gaps: [], blindSpots: [], confidenceCeiling: 1 },
+    graph: { nodes: [], edges: [] },
     confidence: 0.5,
     nextActions: [],
     ...overrides,

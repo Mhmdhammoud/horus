@@ -25,6 +25,7 @@ function makeReport(overrides?: Partial<InvestigationReport>): InvestigationRepo
     hypotheses: [],
     similarIncidents: [],
     gapAnalysis: { gaps: [], blindSpots: [], confidenceCeiling: 1 },
+    graph: { nodes: [], edges: [] },
     confidence: 0.5,
     nextActions: [],
   };

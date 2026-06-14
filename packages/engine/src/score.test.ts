@@ -84,6 +84,7 @@ function makeReport(overrides: Partial<InvestigationReport>): InvestigationRepor
     hypotheses: [],
     similarIncidents: [],
     gapAnalysis: makeGapAnalysis(0),
+    graph: { nodes: [], edges: [] },
     confidence: 0.5,
     nextActions: [],
     ...overrides,

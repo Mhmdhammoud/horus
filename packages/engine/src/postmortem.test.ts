@@ -90,6 +90,7 @@ const syntheticReport: InvestigationReport = {
     blindSpots: ['Cannot validate latency-based hypotheses.'],
     confidenceCeiling: 0.9,
   },
+  graph: { nodes: [], edges: [] },
   confidence: 0.65,
   nextActions: [
     'Verify connection pool settings against load test results',
