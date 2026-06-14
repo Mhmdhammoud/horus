@@ -13,6 +13,11 @@ const repoSchema = z.object({
   name: z.string().min(1),
   /** Absolute or config-relative path to the repository root. */
   path: z.string().min(1),
+  /**
+   * Per-repo Axon host URL. When set, overrides `axon.hostUrl` for this repo so
+   * each repository can point at its own running `axon host` instance (HOR-28).
+   */
+  axonHostUrl: z.string().url().optional(),
 });
 
 const axonSchema = z.object({

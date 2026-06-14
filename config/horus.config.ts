@@ -12,10 +12,12 @@ export default defineConfig({
     {
       name: 'leadcall-api',
       path: '/Users/mhmdh/Documents/projects/meritt-dev/leadcall-api',
+      axonHostUrl: 'http://127.0.0.1:8420',
     },
     {
       name: 'maison-safqa',
       path: '/Users/mhmdh/Documents/projects/meritt-dev/maison-safqa',
+      axonHostUrl: 'http://127.0.0.1:8421',
     },
   ],
 

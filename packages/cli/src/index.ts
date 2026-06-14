@@ -10,6 +10,8 @@ import { runTimeline } from './commands/timeline.js';
 import { runWhatChanged } from './commands/what-changed.js';
 import { runArchitecture } from './commands/architecture.js';
 import { runBlastRadius } from './commands/blast-radius.js';
+import { runRepos } from './commands/repos.js';
+import { runSearch } from './commands/search.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -40,14 +42,21 @@ export function buildProgram(): Command {
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('-d, --depth <n>', 'impact depth', (v) => parseInt(v, 10))
+    .option('--repo <name>', 'repository name to scope the Axon lookup to')
     .option('--json', 'output JSON')
-    .action(async (query: string, opts: { config?: string; depth?: number; json?: boolean }) => {
-      process.exitCode = await runExplain(query, {
-        config: opts.config,
-        depth: opts.depth,
-        json: opts.json,
-      });
-    });
+    .action(
+      async (
+        query: string,
+        opts: { config?: string; depth?: number; repo?: string; json?: boolean },
+      ) => {
+        process.exitCode = await runExplain(query, {
+          config: opts.config,
+          depth: opts.depth,
+          repo: opts.repo,
+          json: opts.json,
+        });
+      },
+    );
 
   program
     .command('index')
@@ -191,6 +200,32 @@ export function buildProgram(): Command {
         process.exitCode = await runBlastRadius(query, {
           config: opts.config,
           depth: opts.depth,
+          json: opts.json,
+        });
+      },
+    );
+
+  program
+    .command('repos')
+    .description('List configured repositories and their Axon host health')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .action(async (opts: { config?: string }) => {
+      process.exitCode = await runRepos({ config: opts.config });
+    });
+
+  program
+    .command('search <query>')
+    .description(
+      'Search symbols across ALL configured repositories (you need not know which repo holds the answer)',
+    )
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('-n, --limit <n>', 'results per repo', (v) => parseInt(v, 10))
+    .option('--json', 'output JSON')
+    .action(
+      async (query: string, opts: { config?: string; limit?: number; json?: boolean }) => {
+        process.exitCode = await runSearch(query, {
+          config: opts.config,
+          limit: opts.limit,
           json: opts.json,
         });
       },

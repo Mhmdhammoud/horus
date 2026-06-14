@@ -1,14 +1,14 @@
 import pc from 'picocolors';
 import { loadConfig } from '@horus/core';
 import type { Symbol, SymbolContext, ImpactResult, Flow } from '@horus/core';
-import { createConnectors } from '@horus/connectors';
+import { codeForRepo } from '@horus/connectors';
 
 export async function runExplain(
   query: string,
-  opts: { config?: string; depth?: number; json?: boolean },
+  opts: { config?: string; depth?: number; json?: boolean; repo?: string },
 ): Promise<number> {
   const config = await loadConfig(opts.config);
-  const { code } = createConnectors(config);
+  const code = codeForRepo(config, opts.repo);
 
   const health = await code.health();
   if (!health.ok) {

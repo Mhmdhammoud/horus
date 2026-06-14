@@ -21,3 +21,4 @@ export * from './blast-radius.js';
 export * from './render-blast-radius.js';
 export * from './memory.js';
 export * from './gaps.js';
+export * from './multi-repo.js';
