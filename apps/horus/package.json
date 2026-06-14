@@ -1,0 +1,29 @@
+{
+  "name": "@horus/app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "horus": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@horus/ai": "workspace:*",
+    "@horus/cli": "workspace:*",
+    "@horus/connectors": "workspace:*",
+    "@horus/core": "workspace:*",
+    "@horus/db": "workspace:*",
+    "@horus/stitcher": "workspace:*",
+    "commander": "^12.1.0",
+    "drizzle-orm": "^0.38.3",
+    "jiti": "^2.4.2",
+    "picocolors": "^1.1.1",
+    "postgres": "^3.4.5",
+    "zod": "^3.24.1"
+  }
+}

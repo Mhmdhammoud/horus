@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+
+      # The Axon HTTP contract tests (packages/connectors/src/axon/contract.test.ts)
+      # auto-skip when no host is reachable at AXON_HOST_URL, so CI passes without a
+      # live Axon; to exercise them, run with an Axon host and AXON_HOST_URL set.
+      - run: pnpm test
+
+      - run: pnpm build
