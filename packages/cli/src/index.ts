@@ -7,6 +7,7 @@ import { runQueues } from './commands/queues.js';
 import { runInvestigate } from './commands/investigate.js';
 import { runChanges } from './commands/changes.js';
 import { runTimeline } from './commands/timeline.js';
+import { runWhatChanged } from './commands/what-changed.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -116,6 +117,37 @@ export function buildProgram(): Command {
         },
       ) => {
         process.exitCode = await runTimeline(service, {
+          config: opts.config,
+          repo: opts.repo,
+          since: opts.since,
+          until: opts.until,
+          json: opts.json,
+        });
+      },
+    );
+
+  program
+    .command('what-changed [service]')
+    .description(
+      'Concise, evidence-backed summary of what changed for a service in a time window',
+    )
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'repository name from config')
+    .option('--since <when>', 'git --since (default "7 days ago")')
+    .option('--until <when>', 'git --until')
+    .option('--json', 'output JSON')
+    .action(
+      async (
+        service: string | undefined,
+        opts: {
+          config?: string;
+          repo?: string;
+          since?: string;
+          until?: string;
+          json?: boolean;
+        },
+      ) => {
+        process.exitCode = await runWhatChanged(service, {
           config: opts.config,
           repo: opts.repo,
           since: opts.since,

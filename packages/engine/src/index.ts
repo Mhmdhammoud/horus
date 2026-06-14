@@ -13,3 +13,5 @@ export * from './hypotheses.js';
 export * from './validate.js';
 export * from './deploy-timeline.js';
 export * from './render-timeline.js';
+export * from './what-changed.js';
+export * from './render-what-changed.js';
