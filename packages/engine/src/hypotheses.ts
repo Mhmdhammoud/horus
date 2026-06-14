@@ -40,6 +40,10 @@ export interface HypothesisContext {
   latencyMetricEvIds?: string[];
   /** Metric evidence IDs with queue-growth anomalies (HOR-40). */
   queueMetricEvIds?: string[];
+  /** queue-state evidence IDs with 'backlog' signal — high waiting-job counts (HOR-45). */
+  queueBacklogEvIds?: string[];
+  /** queue-state evidence IDs with 'worker-starvation' signal — 0 active workers (HOR-45). */
+  queueStarvationEvIds?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -84,10 +88,11 @@ export function generateHypotheses(
   });
 
   // b. queue-backlog — only when queue evidence exists.
-  // supportingEvidenceIds is intentionally empty: queue-edge evidence is
-  // structural (the code has a queue call) and does not confirm a live backlog.
-  // Runtime queue-state evidence would confirm it but isn't always available.
+  // supportingEvidenceIds uses BullMQ queue-state 'backlog' signals only.
+  // queue-edge evidence is structural (the code has a queue call) and does not
+  // confirm a live backlog; runtime depth counts do.
   if (queueEvs.length > 0) {
+    const queueBacklogEvIds = ctx.queueBacklogEvIds ?? [];
     hyps.push({
       id: globalThis.crypto.randomUUID(),
       category: 'queue-backlog',
@@ -95,20 +100,23 @@ export function generateHypotheses(
         'A backlog on ' +
         queues.join(', ') +
         ' — producers enqueue faster than the worker drains.',
-      confidence: 0.35,
-      supportingEvidenceIds: [],
+      confidence: queueBacklogEvIds.length > 0 ? 0.7 : 0.35,
+      supportingEvidenceIds: [...queueBacklogEvIds],
       contradictingEvidenceIds: [],
-      missingEvidence: [
-        'Live queue depth + failed/delayed counts (Redis/BullMQ — `horus queues`)',
-      ],
+      missingEvidence: queueBacklogEvIds.length > 0
+        ? []
+        : ['Live queue depth + failed/delayed counts (Redis/BullMQ — `horus queues`)'],
     });
   }
 
   // c. worker-slowdown — only when queue evidence exists.
-  // Only metric evidence (queue-growth anomaly) confirms slowdown; structural
-  // queue-edge evidence only shows the queue exists, not that workers are slow.
+  // Confirmed by: Grafana queue-growth metric anomalies OR BullMQ starvation
+  // (waiting jobs, zero active workers). Structural queue-edge evidence only
+  // shows the queue exists and cannot confirm worker slowness.
   if (queueEvs.length > 0) {
     const queueMetricEvIds = ctx.queueMetricEvIds ?? [];
+    const queueStarvationEvIds = ctx.queueStarvationEvIds ?? [];
+    const slowdownEvIds = [...queueMetricEvIds, ...queueStarvationEvIds];
     hyps.push({
       id: globalThis.crypto.randomUUID(),
       category: 'worker-slowdown',
@@ -116,10 +124,10 @@ export function generateHypotheses(
         'The worker(s) consuming ' +
         queues.join(', ') +
         ' are processing slowly or stalling.',
-      confidence: queueMetricEvIds.length > 0 ? 0.55 : 0.3,
-      supportingEvidenceIds: [...queueMetricEvIds],
+      confidence: slowdownEvIds.length > 0 ? 0.55 : 0.3,
+      supportingEvidenceIds: slowdownEvIds,
       contradictingEvidenceIds: [],
-      missingEvidence: queueMetricEvIds.length > 0
+      missingEvidence: slowdownEvIds.length > 0
         ? []
         : ['Worker latency/throughput metrics (Grafana — `horus metrics`)'],
     });

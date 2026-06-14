@@ -429,6 +429,9 @@ export async function investigate(
   const queueRuntimeEvIds: string[] = [];
   // Per-queue evidence IDs so each suspected cause cites only its own queue's data.
   const queueRuntimeEvIdsByQueue = new Map<string, string[]>();
+  // Typed by signal kind so hypotheses can cite only the relevant runtime signals.
+  const queueBacklogEvIds: string[] = [];
+  const queueStarvationEvIds: string[] = [];
 
   if (deps.queue && queueHits.length > 0) {
     try {
@@ -437,6 +440,8 @@ export async function investigate(
       for (const s of analyzeQueueRuntime(queueRuntimeState)) {
         const ev = mkEv('queue-state', s.title, s.payload, { queueName: s.queueName }, s.timestamp, s.relevance);
         queueRuntimeEvIds.push(ev.id);
+        if (s.kind === 'backlog') queueBacklogEvIds.push(ev.id);
+        else if (s.kind === 'worker-starvation') queueStarvationEvIds.push(ev.id);
         const perQueue = queueRuntimeEvIdsByQueue.get(s.queueName) ?? [];
         perQueue.push(ev.id);
         queueRuntimeEvIdsByQueue.set(s.queueName, perQueue);
@@ -565,6 +570,8 @@ export async function investigate(
     queues: queueNames,
     latencyMetricEvIds,
     queueMetricEvIds,
+    queueBacklogEvIds,
+    queueStarvationEvIds,
   });
 
   // e4. HYPOTHESIS VALIDATION (HOR-25) — adjust confidence + assign verdicts
@@ -866,8 +873,23 @@ export async function investigate(
     request: { hint: input.hint, service: input.service },
   });
 
-  // g. confidence
-  const evidenceConfidence = clamp01(evidence.length / 8);
+  // g. confidence — runtime evidence (observational) weighted 3× vs structural
+  // (code graph) so that 8 symbol/flow items can't produce the same confidence
+  // as 8 log/metric/queue-state anomalies.
+  const weightedEvidenceSum = evidence.reduce((sum, e) => {
+    // Observational (runtime) evidence is weighted higher than structural
+    // (code-graph) evidence. 'redis-key' and 'state' are also runtime
+    // observations captured from live system state.
+    const isRuntime =
+      e.kind === 'log' ||
+      e.kind === 'metric' ||
+      e.kind === 'commit' ||
+      e.kind === 'queue-state' ||
+      e.kind === 'redis-key' ||
+      e.kind === 'state';
+    return sum + (isRuntime ? 1.5 : 0.5);
+  }, 0);
+  const evidenceConfidence = clamp01(weightedEvidenceSum / 8);
   const seedResolved = seeds.length > 0 ? 1 : 0;
   const confidence = clamp01(0.5 * evidenceConfidence + 0.5 * seedResolved);
 
