@@ -60,6 +60,14 @@ const providerCredsSchema = z
       })
       .partial()
       .optional(),
+    grafana: z
+      .object({
+        url: z.string().url(),
+        username: z.string(),
+        password: z.string(),
+      })
+      .partial()
+      .optional(),
     redis: z.object({ url: z.string() }).partial().optional(),
   })
   .default({});

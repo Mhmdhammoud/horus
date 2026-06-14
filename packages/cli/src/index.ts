@@ -380,25 +380,29 @@ export function buildProgram(): Command {
     );
 
   program
-    .command('metrics [query]')
-    .description('Query Prometheus metrics as evidence (via Grafana datasource proxy)')
+    .command('metrics [hint]')
+    .description(
+      'Grafana metrics evidence: find dashboards/panels for a hint and detect latency spikes, error-rate changes, throughput drops, queue growth',
+    )
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .option('--since <when>', 'range window, e.g. 1h, 30m, 2d (range mode)')
-    .option('--step <secs>', 'range step seconds (default 60)')
-    .option('--baseline', 'compare the --since window vs the preceding window')
-    .option('--spikes', 'flag z-score spikes within the --since window')
+    .option('--since <when>', 'window, e.g. 1h, 6h, 24h')
+    .option('--step <secs>', 'range step seconds')
+    .option('--dashboard <uid>', 'restrict to a dashboard uid')
+    .option('--query <promql>', 'raw datasource query escape hatch')
+    .option('--json', 'JSON output')
     .action(
       async (
-        query: string | undefined,
+        hint: string | undefined,
         opts: {
           config?: string;
           since?: string;
           step?: string;
-          baseline?: boolean;
-          spikes?: boolean;
+          dashboard?: string;
+          query?: string;
+          json?: boolean;
         },
       ) => {
-        process.exitCode = await runMetrics(query, opts);
+        process.exitCode = await runMetrics(hint, opts);
       },
     );
 

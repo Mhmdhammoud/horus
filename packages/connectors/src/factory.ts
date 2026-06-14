@@ -15,9 +15,9 @@ import type { CodeProvider } from './contract.js';
 import { ElasticsearchClient } from './elasticsearch/client.js';
 import { ElasticsearchLogsProvider } from './elasticsearch/provider.js';
 import type { LogsProvider } from './elasticsearch/provider.js';
-import { PrometheusClient } from './prometheus/client.js';
-import { PrometheusMetricsProvider } from './prometheus/provider.js';
-import type { MetricsProvider } from './prometheus/provider.js';
+import { GrafanaClient } from './grafana/client.js';
+import { GrafanaMetricsProvider } from './grafana/provider.js';
+import type { MetricsProvider } from './grafana/provider.js';
 
 export interface Connectors {
   code: CodeProvider;
@@ -81,32 +81,20 @@ export function logsProviderFromConfig(config: HorusConfig): LogsProvider | null
 }
 
 /**
- * Build a `MetricsProvider` wired to Prometheus, resolving credentials from config
- * then env vars. Supports direct Prometheus URL or a Grafana datasource proxy.
- * Returns null when neither PROM_URL nor GRAFANA_URL is available.
+ * Build a `MetricsProvider` backed by Grafana (datasource proxy for Prometheus).
+ * Resolves credentials from config then env vars.
+ * Returns null when GRAFANA_URL is not available.
  */
 export function metricsProviderFromConfig(config: HorusConfig): MetricsProvider | null {
-  const promCfg = config.providers.prometheus;
-  const direct = promCfg?.url ?? process.env['PROM_URL'];
+  const grafanaCfg = config.providers.grafana;
+  const url = grafanaCfg?.url ?? process.env['GRAFANA_URL'];
+  if (!url) return null;
 
-  let baseUrl: string;
-  let username: string | undefined;
-  let password: string | undefined;
+  const username = grafanaCfg?.username ?? process.env['GRAFANA_USER'];
+  const password = grafanaCfg?.password ?? process.env['GRAFANA_PASSWORD'];
 
-  if (direct !== undefined && direct !== '') {
-    baseUrl = direct;
-    username = promCfg?.username ?? process.env['PROM_USERNAME'];
-    password = promCfg?.password ?? process.env['PROM_PASSWORD'];
-  } else {
-    const grafanaUrl = process.env['GRAFANA_URL'];
-    if (grafanaUrl === undefined || grafanaUrl === '') return null;
-    baseUrl = `${grafanaUrl}/api/datasources/proxy/uid/Prometheus`;
-    username = process.env['GRAFANA_USER'];
-    password = process.env['GRAFANA_PASSWORD'];
-  }
-
-  return new PrometheusMetricsProvider(
-    new PrometheusClient({ baseUrl, username, password }),
+  return new GrafanaMetricsProvider(
+    new GrafanaClient({ baseUrl: url, username, password }),
     { defaultStep: 60 },
   );
 }

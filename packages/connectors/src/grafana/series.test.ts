@@ -1,5 +1,6 @@
 /**
- * Pure unit tests for prometheus/normalize.ts (HOR-11). No network — no I/O.
+ * Pure unit tests for grafana/series.ts (HOR-11 reframe).
+ * No network — no I/O. Relocated from prometheus/normalize.test.ts.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -10,10 +11,8 @@ import {
   summarize,
   compareWindows,
   detectSpikes,
-  metricsToEvidence,
-  comparisonsToEvidence,
-} from './normalize.js';
-import type { MetricSeries } from './normalize.js';
+} from './series.js';
+import type { MetricSeries } from './series.js';
 
 // ---------------------------------------------------------------------------
 // parseValue
@@ -347,163 +346,5 @@ describe('detectSpikes', () => {
     expect(spike).toHaveProperty('mean');
     expect(spike).toHaveProperty('std');
     expect(spike).toHaveProperty('z');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// metricsToEvidence
-// ---------------------------------------------------------------------------
-
-describe('metricsToEvidence', () => {
-  it('produces Evidence items with source "metrics" and kind "metric"', () => {
-    const summaries = [
-      {
-        labels: { __name__: 'node_load1', job: 'node', instance: 'node1:9100' },
-        min: 0.1,
-        max: 1.5,
-        avg: 0.8,
-        last: 0.9,
-        count: 60,
-      },
-    ];
-    const evidence = metricsToEvidence(summaries, 'node_load1', '2026-06-14T00:00:00Z');
-    expect(evidence).toHaveLength(1);
-    const ev = evidence[0]!;
-    expect(ev.source).toBe('metrics');
-    expect(ev.kind).toBe('metric');
-    expect(ev.relevance).toBe(0.6);
-    expect(ev.provenance.query).toBe('node_load1');
-    expect(ev.provenance.collectedAt).toBe('2026-06-14T00:00:00Z');
-  });
-
-  it('includes __name__ and job in the title', () => {
-    const summaries = [
-      {
-        labels: { __name__: 'cpu_usage', job: 'cadvisor' },
-        min: 0,
-        max: 1,
-        avg: 0.5,
-        last: 0.6,
-        count: 10,
-      },
-    ];
-    const evidence = metricsToEvidence(summaries, 'q', '2026-06-14T00:00:00Z');
-    const ev = evidence[0]!;
-    expect(ev.title).toContain('cpu_usage');
-    expect(ev.title).toContain('cadvisor');
-  });
-
-  it('sets title length <= 160', () => {
-    const summaries = [
-      {
-        labels: { __name__: 'a'.repeat(200) },
-        min: 0,
-        max: 0,
-        avg: 0,
-        last: 0,
-        count: 0,
-      },
-    ];
-    const evidence = metricsToEvidence(summaries, 'q', '2026-06-14T00:00:00Z');
-    expect(evidence[0]?.title.length).toBeLessThanOrEqual(160);
-  });
-
-  it('assigns sequential ids ev_metric_0, ev_metric_1, etc.', () => {
-    const summaries = [
-      { labels: {}, min: 0, max: 1, avg: 0.5, last: 0.5, count: 2 },
-      { labels: {}, min: 0, max: 2, avg: 1, last: 1, count: 2 },
-    ];
-    const evidence = metricsToEvidence(summaries, 'q', '2026-06-14T00:00:00Z');
-    expect(evidence[0]?.id).toBe('ev_metric_0');
-    expect(evidence[1]?.id).toBe('ev_metric_1');
-  });
-
-  it('sets links to an empty object', () => {
-    const summaries = [{ labels: {}, min: 0, max: 1, avg: 0.5, last: 0.5, count: 1 }];
-    const evidence = metricsToEvidence(summaries, 'q', '2026-06-14T00:00:00Z');
-    expect(evidence[0]?.links).toEqual({});
-  });
-});
-
-// ---------------------------------------------------------------------------
-// comparisonsToEvidence
-// ---------------------------------------------------------------------------
-
-describe('comparisonsToEvidence', () => {
-  it('sets relevance 0.85 when isSpike is true', () => {
-    const cmps = [
-      {
-        labels: { __name__: 'errors', job: 'api' },
-        baselineAvg: 2,
-        currentAvg: 10,
-        delta: 8,
-        ratio: 5,
-        isSpike: true,
-      },
-    ];
-    const evidence = comparisonsToEvidence(cmps, 'errors', '2026-06-14T00:00:00Z');
-    expect(evidence[0]?.relevance).toBe(0.85);
-  });
-
-  it('sets relevance 0.5 when isSpike is false', () => {
-    const cmps = [
-      {
-        labels: { __name__: 'cpu', job: 'node' },
-        baselineAvg: 0.4,
-        currentAvg: 0.5,
-        delta: 0.1,
-        ratio: 1.25,
-        isSpike: false,
-      },
-    ];
-    const evidence = comparisonsToEvidence(cmps, 'cpu', '2026-06-14T00:00:00Z');
-    expect(evidence[0]?.relevance).toBe(0.5);
-  });
-
-  it('sets source "metrics" and kind "metric"', () => {
-    const cmps = [
-      {
-        labels: {},
-        baselineAvg: 1,
-        currentAvg: 2,
-        delta: 1,
-        ratio: 2,
-        isSpike: false,
-      },
-    ];
-    const evidence = comparisonsToEvidence(cmps, 'q', '2026-06-14T00:00:00Z');
-    expect(evidence[0]?.source).toBe('metrics');
-    expect(evidence[0]?.kind).toBe('metric');
-  });
-
-  it('renders Infinity ratio as "inf" in the title', () => {
-    const cmps = [
-      {
-        labels: { __name__: 'm' },
-        baselineAvg: 0,
-        currentAvg: 5,
-        delta: 5,
-        ratio: Infinity,
-        isSpike: true,
-      },
-    ];
-    const evidence = comparisonsToEvidence(cmps, 'q', '2026-06-14T00:00:00Z');
-    expect(evidence[0]?.title).toContain('xinf');
-  });
-
-  it('includes provenance', () => {
-    const cmps = [
-      {
-        labels: {},
-        baselineAvg: 0,
-        currentAvg: 0,
-        delta: 0,
-        ratio: 0,
-        isSpike: false,
-      },
-    ];
-    const evidence = comparisonsToEvidence(cmps, 'my-query', '2026-06-14T00:00:00Z');
-    expect(evidence[0]?.provenance.query).toBe('my-query');
-    expect(evidence[0]?.provenance.collectedAt).toBe('2026-06-14T00:00:00Z');
   });
 });

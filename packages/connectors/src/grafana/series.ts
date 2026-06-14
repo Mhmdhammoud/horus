@@ -1,9 +1,8 @@
 /**
- * Pure normalization helpers for Prometheus metrics (HOR-11).
+ * Pure normalization helpers for metric series data (HOR-11 reframe).
  * No I/O — all functions are exhaustively unit-testable.
+ * Relocated from prometheus/normalize.ts.
  */
-
-import type { Evidence } from '@horus/core';
 
 // ---------------------------------------------------------------------------
 // Core types
@@ -45,13 +44,6 @@ export interface SpikePoint {
   mean: number;
   std: number;
   z: number;
-}
-
-export interface MetricQuery {
-  query: string;
-  from?: number;
-  to?: number;
-  step?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,79 +225,4 @@ export function detectSpikes(series: MetricSeries, k = 3): SpikePoint[] {
     }
   }
   return spikes;
-}
-
-// ---------------------------------------------------------------------------
-// Label-line formatting
-// ---------------------------------------------------------------------------
-
-function formatLabelLine(labels: Record<string, string>): string {
-  const name = labels['__name__'] ?? '';
-  const parts: string[] = [];
-  if (name) parts.push(name);
-  for (const key of ['job', 'instance', 'service']) {
-    const val = labels[key];
-    if (val !== undefined && val !== '') {
-      parts.push(`${key}="${val}"`);
-    }
-  }
-  return parts.join(' ') || JSON.stringify(labels).slice(0, 80);
-}
-
-// ---------------------------------------------------------------------------
-// Evidence conversion
-// ---------------------------------------------------------------------------
-
-/** Convert a list of SeriesSummary items into Evidence[] (source: "metrics", kind: "metric"). */
-export function metricsToEvidence(
-  summaries: SeriesSummary[],
-  query: string,
-  collectedAt: string,
-): Evidence[] {
-  return summaries.map((summary, i): Evidence => {
-    const labelLine = formatLabelLine(summary.labels);
-    const last = Number.isFinite(summary.last) ? summary.last.toFixed(4) : String(summary.last);
-    const title = `${labelLine}: last ${last} (avg ${summary.avg.toFixed(2)})`.slice(0, 160);
-
-    return {
-      id: `ev_metric_${i}`,
-      source: 'metrics',
-      kind: 'metric',
-      title,
-      timestamp: undefined,
-      relevance: 0.6,
-      payload: summary,
-      links: {},
-      provenance: { query, collectedAt },
-    };
-  });
-}
-
-/** Convert baseline comparisons into Evidence[], marking spikes with relevance 0.85. */
-export function comparisonsToEvidence(
-  cmps: BaselineComparison[],
-  query: string,
-  collectedAt: string,
-): Evidence[] {
-  return cmps.map((cmp, i): Evidence => {
-    const labelLine = formatLabelLine(cmp.labels);
-    const ratioStr = Number.isFinite(cmp.ratio) ? cmp.ratio.toFixed(2) : 'inf';
-    const title =
-      `${labelLine}: ${cmp.baselineAvg.toFixed(2)} -> ${cmp.currentAvg.toFixed(2)} (x${ratioStr})`.slice(
-        0,
-        160,
-      );
-
-    return {
-      id: `ev_metric_cmp_${i}`,
-      source: 'metrics',
-      kind: 'metric',
-      title,
-      timestamp: undefined,
-      relevance: cmp.isSpike ? 0.85 : 0.5,
-      payload: cmp,
-      links: {},
-      provenance: { query, collectedAt },
-    };
-  });
 }
