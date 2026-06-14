@@ -192,6 +192,19 @@ describe('resolveEnvironment', () => {
     expect(renv.repositories[0]?.axonHostUrl).toBe('http://127.0.0.1:8421');
   });
 
+  it('infers the project from the cwd repository when multiple projects + no --project', () => {
+    // TWO_PROJECT_CONFIG has api-b at /repos/api-b
+    expect(resolveEnvironment(TWO_PROJECT_CONFIG, { cwd: '/repos/api-b' }).project).toBe(
+      'api-b',
+    );
+  });
+
+  it('still throws when cwd matches no configured repository', () => {
+    expect(() =>
+      resolveEnvironment(TWO_PROJECT_CONFIG, { cwd: '/somewhere/unrelated' }),
+    ).toThrow(/Multiple projects configured/);
+  });
+
   it('defaults to the "production" env when multiple envs and no --env', () => {
     const renv = resolveEnvironment(MULTI_ENV_CONFIG);
     expect(renv.env).toBe('production');

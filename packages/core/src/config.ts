@@ -3,6 +3,7 @@ import { createJiti } from 'jiti';
 import { resolve } from 'node:path';
 import {
   discoverLocalConfig,
+  findRepoRoot,
   lookupProject,
   readLocalConfig,
 } from './discovery.js';
@@ -175,12 +176,14 @@ export function listEnvironments(config: HorusConfig): { project: string; env: s
  * `process.env`. Throws a descriptive Error if resolution is ambiguous.
  *
  * Selection rules:
- * - project: use `opts.project` if given; else the single configured project; else throw.
+ * - project: use `opts.project` if given; else the single configured project; else
+ *   infer from the current repo (a project whose repository path contains `opts.cwd`);
+ *   else throw.
  * - env: use `opts.env` if given; else the single env; else the one named "production"; else throw.
  */
 export function resolveEnvironment(
   config: HorusConfig,
-  opts?: { project?: string; env?: string },
+  opts?: { project?: string; env?: string; cwd?: string },
 ): ResolvedEnvironment {
   // --- pick project ---
   let project: ProjectConfig;
@@ -198,10 +201,23 @@ export function resolveEnvironment(
     if (p === undefined) throw new Error('No projects configured.');
     project = p;
   } else {
-    const names = config.projects.map((p) => p.name).join(', ');
-    throw new Error(
-      `Multiple projects configured; pass --project <name> (one of: ${names})`,
+    // No --project and multiple projects: infer from the current repo by matching
+    // its root against a project's repository paths (so `cd repo && horus …` works).
+    const cwd = opts?.cwd ?? process.cwd();
+    const root = findRepoRoot(cwd) ?? resolve(cwd);
+    const matches = config.projects.filter((p) =>
+      p.repositories.some((r) => resolve(r.path) === root),
     );
+    const inferred = matches[0];
+    if (matches.length === 1 && inferred !== undefined) {
+      project = inferred;
+    } else {
+      const names = config.projects.map((p) => p.name).join(', ');
+      throw new Error(
+        `Multiple projects configured; pass --project <name> (one of: ${names}) ` +
+          `— or run from inside a project's repository.`,
+      );
+    }
   }
 
   // --- pick environment ---
