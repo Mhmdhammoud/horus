@@ -141,6 +141,29 @@ horus investigate --project leadcall-api --env production "Zoho sync delays"
 evidence + MongoDB state evidence + timeline + correlation + ranked/validated hypotheses
 + honest gap analysis + next actions. Deterministic, no AI required.
 
+## Local project workflow (git-style)
+
+Instead of the central `config/horus.config.ts`, you can drive Horus per-repo. A
+repo carries a `.horus/config.json` (discovered by walking up from the working
+directory, like `.git`), and a global registry (`~/.horus/registry.json`) lets
+`--name` resolve a project from anywhere.
+
+```bash
+horus setup                       # verify Axon CLI + Postgres are ready
+
+cd /repos/my-service
+horus index                       # auto-detect the repo → axon analyze → start an
+                                  # axon host → stitch queues → write .horus/ + register
+
+horus investigate "orders are slow"   # no flags — discovers .horus in the current repo
+horus investigate --name my-service "orders are slow"   # by name, from anywhere
+horus projects                    # list registered projects
+```
+
+`horus index` reuses an already-running Axon host when one is healthy, and only
+analyzes/hosts when needed. Runtime connectors (Elasticsearch/MongoDB/Grafana) are
+added to the env block of `.horus/config.json` afterwards.
+
 ## Layout
 
 ```

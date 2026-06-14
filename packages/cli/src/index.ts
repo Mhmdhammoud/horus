@@ -25,6 +25,7 @@ import { runMetrics } from './commands/metrics.js';
 import { runState } from './commands/state.js';
 import { runInit } from './commands/init.js';
 import { runProjects } from './commands/projects.js';
+import { runSetup } from './commands/setup.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -38,6 +39,14 @@ export function buildProgram(): Command {
     .name('horus')
     .description('Local-first, source-aware production-incident investigation engine')
     .version(HORUS_VERSION);
+
+  program
+    .command('setup')
+    .description('Verify prerequisites (Axon CLI + Postgres) and guide any fixes')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .action(async (opts: { config?: string }) => {
+      process.exitCode = await runSetup(opts);
+    });
 
   program
     .command('init')
