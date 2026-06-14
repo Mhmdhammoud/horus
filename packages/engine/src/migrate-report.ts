@@ -37,14 +37,16 @@ export function migrateReport(raw: unknown): InvestigationReport {
   const r = raw as Record<string, unknown>;
 
   if (Array.isArray(r['suspectedCauses'])) {
-    r['suspectedCauses'] = (r['suspectedCauses'] as unknown[]).map(
+    r['suspectedCauses'] = (r['suspectedCauses'] as unknown[]).flatMap(
       (c: unknown, i: number) => {
-        if (c === null || typeof c !== 'object') return c;
+        // Null or non-object entries cannot be migrated and would crash renderers;
+        // drop them rather than propagating a shape that typed consumers can't handle.
+        if (c === null || typeof c !== 'object') return [];
         const cause = c as Record<string, unknown>;
 
         // Already in the new CauseCandidate shape — pass through.
         if (typeof cause['title'] === 'string' && typeof cause['finalScore'] === 'number') {
-          return cause;
+          return [cause];
         }
 
         // Legacy SuspectedCause shape: { statement, score, evidenceIds }.
@@ -52,7 +54,7 @@ export function migrateReport(raw: unknown): InvestigationReport {
         const score = typeof cause['score'] === 'number' ? cause['score'] : 0;
         const evidenceIds = Array.isArray(cause['evidenceIds']) ? cause['evidenceIds'] : [];
 
-        return {
+        return [{
           id: `cause:legacy:${i}`,
           title: statement,
           category: 'unknown',
@@ -64,7 +66,7 @@ export function migrateReport(raw: unknown): InvestigationReport {
           band: getBand(score),
           explanations: [],
           ...(cause['metadata'] !== undefined ? { metadata: cause['metadata'] } : {}),
-        };
+        }];
       },
     );
   }

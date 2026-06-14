@@ -178,8 +178,11 @@ describe('migrateReport — malformed input', () => {
     expect(() => migrateReport(raw)).not.toThrow();
   });
 
-  it('handles null entries inside suspectedCauses without crashing', () => {
-    const raw = makeReport([null]);
-    expect(() => migrateReport(raw)).not.toThrow();
+  it('filters null entries from suspectedCauses so renderers cannot fail on them', () => {
+    const raw = makeReport([null, legacyCause('Valid cause', 0.60, [])]);
+    const report = migrateReport(raw);
+    // null was dropped; only the valid cause survives
+    expect(report.suspectedCauses).toHaveLength(1);
+    expect(report.suspectedCauses[0]?.title).toBe('Valid cause');
   });
 });
