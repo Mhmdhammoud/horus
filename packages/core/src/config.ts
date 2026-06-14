@@ -12,16 +12,26 @@ import { resolve } from 'node:path';
  */
 
 // ---------------------------------------------------------------------------
-// Connector-level schemas (per environment)
+// Repository schema (CODE — belongs to the PROJECT, served by Axon)
+// ---------------------------------------------------------------------------
+
+const repositorySchema = z.object({
+  name: z.string().min(1),
+  path: z.string().min(1),
+  /**
+   * Axon is the default source-intelligence backend. Each repository points at
+   * the `axon host` indexing it. When absent/unreachable, source context, impact,
+   * change analysis, and queue stitching degrade — runtime evidence still works.
+   */
+  axon: z.object({ hostUrl: z.string().url() }).optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Connector-level schemas (RUNTIME — belong to the ENVIRONMENT)
 // ---------------------------------------------------------------------------
 
 const connectorsSchema = z
   .object({
-    axon: z
-      .object({
-        hostUrl: z.string().url(),
-      })
-      .optional(),
     elasticsearch: z
       .object({
         indexPattern: z.string(),
@@ -70,7 +80,9 @@ const environmentSchema = z.object({
 
 const projectSchema = z.object({
   name: z.string().min(1),
-  path: z.string().min(1),
+  /** Code repositories (with their Axon hosts) — code belongs to the project. */
+  repositories: z.array(repositorySchema).min(1),
+  /** Runtime environments — runtime systems belong to the environment. */
   environments: z.array(environmentSchema).min(1),
 });
 
@@ -98,6 +110,7 @@ export const horusConfigSchema = z.object({
 
 export type HorusConfig = z.infer<typeof horusConfigSchema>;
 export type ProjectConfig = z.infer<typeof projectSchema>;
+export type RepositoryConfig = z.infer<typeof repositorySchema>;
 export type EnvironmentConfig = z.infer<typeof environmentSchema>;
 export type ConnectorsConfig = z.infer<typeof connectorsSchema>;
 
@@ -105,8 +118,13 @@ export type ConnectorsConfig = z.infer<typeof connectorsSchema>;
 // Resolved environment types (runtime, with secrets read from process.env)
 // ---------------------------------------------------------------------------
 
+export interface ResolvedRepository {
+  name: string;
+  path: string;
+  axonHostUrl?: string;
+}
+
 export interface ResolvedConnectors {
-  axon?: { hostUrl: string };
   elasticsearch?: {
     url: string;
     username?: string;
@@ -123,6 +141,9 @@ export interface ResolvedEnvironment {
   project: string;
   env: string;
   readOnly: boolean;
+  /** Code repositories for the project (with their Axon hosts). */
+  repositories: ResolvedRepository[];
+  /** Primary repository path (first repo) — convenience for git-based commands. */
   path: string;
   connectors: ResolvedConnectors;
 }
@@ -203,13 +224,17 @@ export function resolveEnvironment(
     }
   }
 
-  // --- resolve connectors ---
+  // --- resolve repositories (code/Axon belong to the project) ---
+  const repositories: ResolvedRepository[] = project.repositories.map((r) => ({
+    name: r.name,
+    path: r.path,
+    ...(r.axon ? { axonHostUrl: r.axon.hostUrl } : {}),
+  }));
+  const primary = repositories[0];
+
+  // --- resolve connectors (runtime belongs to the environment) ---
   const c = environment.connectors;
   const resolved: ResolvedConnectors = {};
-
-  if (c.axon !== undefined) {
-    resolved.axon = { hostUrl: c.axon.hostUrl };
-  }
 
   if (c.elasticsearch !== undefined) {
     const es = c.elasticsearch;
@@ -254,7 +279,8 @@ export function resolveEnvironment(
     project: project.name,
     env: environment.name,
     readOnly: environment.readOnly,
-    path: project.path,
+    repositories,
+    path: primary?.path ?? '',
     connectors: resolved,
   };
 }

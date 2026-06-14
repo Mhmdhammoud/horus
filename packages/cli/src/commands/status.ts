@@ -39,9 +39,18 @@ async function checkEnv(renv: ResolvedEnvironment): Promise<boolean> {
 
   let allOk = true;
 
-  // Axon
-  const axonHostUrl = renv.connectors.axon?.hostUrl;
-  if (axonHostUrl) {
+  // Axon — code intelligence, belongs to the project's repositories.
+  if (renv.repositories.length === 0) {
+    console.log(`    ${mark('pending')} ${pc.bold('Axon')}            ${pc.dim('no repositories configured')}`);
+  }
+  for (const repo of renv.repositories) {
+    const axonHostUrl = repo.axonHostUrl;
+    if (!axonHostUrl) {
+      console.log(
+        `    ${mark('pending')} ${pc.bold('Axon')}            ${pc.dim(`${repo.name}: not configured`)}`,
+      );
+      continue;
+    }
     const axon = new AxonHttpClient({ baseUrl: axonHostUrl });
     const [health, compat] = await Promise.all([
       axon.health(),
@@ -58,12 +67,10 @@ async function checkEnv(renv: ResolvedEnvironment): Promise<boolean> {
     }
 
     const axonDetail = health.ok
-      ? `responded ${health.status} · ${versionPart} at ${axonHostUrl}`
-      : `unreachable at ${axonHostUrl}`;
+      ? `${repo.name} · responded ${health.status} · ${versionPart} at ${axonHostUrl}`
+      : `${repo.name} · unreachable at ${axonHostUrl}`;
     console.log(`    ${mark(health.ok)} ${pc.bold('Axon')}            ${pc.dim(axonDetail)}`);
     if (!health.ok) allOk = false;
-  } else {
-    console.log(`    ${mark('pending')} ${pc.bold('Axon')}            ${pc.dim('not configured')}`);
   }
 
   // Elasticsearch

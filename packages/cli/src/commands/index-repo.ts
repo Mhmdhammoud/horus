@@ -23,10 +23,10 @@ export async function runIndex(opts: {
       return 1;
     }
 
-    const hostUrl = renv.connectors.axon?.hostUrl;
+    const hostUrl = renv.repositories[0]?.axonHostUrl;
     if (!hostUrl) {
       console.error(
-        pc.red(`No Axon connector configured for ${renv.project}/${renv.env}.`),
+        pc.red(`No Axon repository configured for project ${renv.project}.`),
       );
       return 1;
     }

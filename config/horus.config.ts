@@ -3,33 +3,43 @@ import { defineConfig } from '@horus/core';
 /**
  * Horus configuration. See `horusConfigSchema` in @horus/core for the full shape.
  *
- * HOR-34: config is now project/environment scoped. All connector secrets are read
- * from environment variables at runtime (never committed here).
+ * Project/environment scoped. The model separates code from runtime:
+ *   - CODE belongs to the PROJECT: `repositories[]`, each served by Axon (the
+ *     default source-intelligence backend).
+ *   - RUNTIME belongs to the ENVIRONMENT: `environments[].connectors` (Elasticsearch,
+ *     MongoDB, Grafana, Redis/BullMQ).
  *
- * Default env-var names used when *Env overrides are absent:
+ * All connector secrets are read from environment variables at runtime (never
+ * committed here). Default env-var names (overridable via *Env fields):
  *   ES_URL / ES_USERNAME / ES_PASSWORD
  *   GRAFANA_URL / GRAFANA_USER / GRAFANA_PASSWORD
  *   MONGODB_URL
  *
  * Transport note: Horus talks to Axon over HTTP/MCP only. Start a host with
  *   `axon host --port <N>`  (run inside, or pointed at, each indexed repo)
- * and set connectors.axon.hostUrl to it. No CLI shell-outs for queries.
+ * and set the repository's `axon.hostUrl` to it. No CLI shell-outs for queries.
  */
 export default defineConfig({
   projects: [
     {
       name: 'leadcall-api',
-      path: '/Users/mhmdh/Documents/projects/meritt-dev/leadcall-api',
+      // Code belongs to the project — Axon serves each repository.
+      repositories: [
+        {
+          name: 'leadcall-api',
+          path: '/Users/mhmdh/Documents/projects/meritt-dev/leadcall-api',
+          axon: { hostUrl: 'http://127.0.0.1:8420' },
+        },
+      ],
+      // Runtime belongs to the environment.
       environments: [
         {
           name: 'production',
           readOnly: true,
           connectors: {
-            axon: { hostUrl: 'http://127.0.0.1:8420' },
             elasticsearch: {
               indexPattern: 'leadcall-api-prod-*',
               serviceName: 'leadcall-api-prod',
-              // urlEnv / usernameEnv / passwordEnv default to ES_URL / ES_USERNAME / ES_PASSWORD
             },
             mongodb: {
               // leadcall has its OWN Mongo cluster — a separate URL from maison's.
@@ -38,22 +48,25 @@ export default defineConfig({
               database: 'leadcall_prod',
               collections: ['calls', 'tenants', 'devices', 'integrations'],
             },
-            grafana: {
-              // urlEnv / usernameEnv / passwordEnv default to GRAFANA_URL / GRAFANA_USER / GRAFANA_PASSWORD
-            },
+            grafana: {},
           },
         },
       ],
     },
     {
       name: 'maison-safqa',
-      path: '/Users/mhmdh/Documents/projects/meritt-dev/maison-safqa',
+      repositories: [
+        {
+          name: 'maison-safqa',
+          path: '/Users/mhmdh/Documents/projects/meritt-dev/maison-safqa',
+          axon: { hostUrl: 'http://127.0.0.1:8421' },
+        },
+      ],
       environments: [
         {
           name: 'production',
           readOnly: true,
           connectors: {
-            axon: { hostUrl: 'http://127.0.0.1:8421' },
             elasticsearch: {
               indexPattern: 'maison-safqa-*',
               serviceName: 'maison-safqa-prod',
@@ -82,6 +95,7 @@ export default defineConfig({
     },
   ],
 
+  // Global version pin only (not a host) — Axon hosts live per repository.
   axon: {
     pinnedVersion: '1.0.1',
   },

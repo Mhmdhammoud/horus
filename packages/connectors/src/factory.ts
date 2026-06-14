@@ -33,7 +33,8 @@ import type { StateProvider } from './mongodb/provider.js';
  * no Axon connector is configured.
  */
 export function codeForEnv(renv: ResolvedEnvironment): CodeProvider | null {
-  const hostUrl = renv.connectors.axon?.hostUrl;
+  // Axon belongs to the project's repositories; use the primary (first) repo.
+  const hostUrl = renv.repositories[0]?.axonHostUrl;
   if (!hostUrl) return null;
   return new AxonCodeProvider(new AxonHttpClient({ baseUrl: hostUrl }));
 }
@@ -118,7 +119,7 @@ export function codeForRepo(config: HorusConfig, repoName?: string): CodeProvide
  */
 export function axonHostUrlForRepo(config: HorusConfig, repoName?: string): string {
   const renv = resolveEnvironment(config, { project: repoName });
-  return renv.connectors.axon?.hostUrl ?? '';
+  return renv.repositories[0]?.axonHostUrl ?? '';
 }
 
 /**
@@ -142,20 +143,21 @@ export interface RepoProvider {
  * at the project's resolved Axon host.
  */
 export function repoProviders(config: HorusConfig): RepoProvider[] {
-  return config.projects.map((p) => {
+  const out: RepoProvider[] = [];
+  for (const p of config.projects) {
     const renv = resolveEnvironment(config, { project: p.name });
-    const hostUrl = renv.connectors.axon?.hostUrl ?? '';
-    const code = codeForEnv(renv);
-    return {
-      name: p.name,
-      path: p.path,
-      hostUrl,
-      // repoProviders callers (repos.ts / reposHealth) always have Axon configured;
-      // supply a no-op stub when missing so compilation is safe — health check will
-      // return unreachable.
-      code: code ?? new AxonCodeProvider(new AxonHttpClient({ baseUrl: '' })),
-    };
-  });
+    for (const r of renv.repositories) {
+      const hostUrl = r.axonHostUrl ?? '';
+      out.push({
+        name: r.name,
+        path: r.path,
+        hostUrl,
+        // A missing Axon host yields a stub that reports unreachable on health().
+        code: new AxonCodeProvider(new AxonHttpClient({ baseUrl: hostUrl })),
+      });
+    }
+  }
+  return out;
 }
 
 /**

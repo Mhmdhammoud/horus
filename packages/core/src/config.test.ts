@@ -3,7 +3,8 @@ import { horusConfigSchema, resolveEnvironment, listEnvironments } from './confi
 import { PINNED_AXON_VERSION } from './version.js';
 
 // ---------------------------------------------------------------------------
-// Fixtures
+// Fixtures — code (Axon) belongs to the project's repositories; runtime
+// connectors belong to the environment.
 // ---------------------------------------------------------------------------
 
 const DB = { url: 'postgresql://horus:horus@localhost:5433/horus' };
@@ -13,12 +14,13 @@ const SINGLE_PROJECT_CONFIG = horusConfigSchema.parse({
   projects: [
     {
       name: 'my-api',
-      path: '/repos/my-api',
+      repositories: [
+        { name: 'my-api', path: '/repos/my-api', axon: { hostUrl: 'http://127.0.0.1:8420' } },
+      ],
       environments: [
         {
           name: 'production',
           connectors: {
-            axon: { hostUrl: 'http://127.0.0.1:8420' },
             elasticsearch: { indexPattern: 'my-api-prod-*', serviceName: 'my-api-prod' },
             grafana: {},
           },
@@ -33,23 +35,17 @@ const TWO_PROJECT_CONFIG = horusConfigSchema.parse({
   projects: [
     {
       name: 'api-a',
-      path: '/repos/api-a',
-      environments: [
-        {
-          name: 'production',
-          connectors: { axon: { hostUrl: 'http://127.0.0.1:8420' } },
-        },
+      repositories: [
+        { name: 'api-a', path: '/repos/api-a', axon: { hostUrl: 'http://127.0.0.1:8420' } },
       ],
+      environments: [{ name: 'production', connectors: {} }],
     },
     {
       name: 'api-b',
-      path: '/repos/api-b',
-      environments: [
-        {
-          name: 'production',
-          connectors: { axon: { hostUrl: 'http://127.0.0.1:8421' } },
-        },
+      repositories: [
+        { name: 'api-b', path: '/repos/api-b', axon: { hostUrl: 'http://127.0.0.1:8421' } },
       ],
+      environments: [{ name: 'production', connectors: {} }],
     },
   ],
 });
@@ -59,16 +55,12 @@ const MULTI_ENV_CONFIG = horusConfigSchema.parse({
   projects: [
     {
       name: 'my-svc',
-      path: '/repos/my-svc',
+      repositories: [
+        { name: 'my-svc', path: '/repos/my-svc', axon: { hostUrl: 'http://127.0.0.1:8420' } },
+      ],
       environments: [
-        {
-          name: 'staging',
-          connectors: { axon: { hostUrl: 'http://127.0.0.1:8419' } },
-        },
-        {
-          name: 'production',
-          connectors: { axon: { hostUrl: 'http://127.0.0.1:8420' } },
-        },
+        { name: 'staging', connectors: {} },
+        { name: 'production', connectors: {} },
       ],
     },
   ],
@@ -90,18 +82,27 @@ describe('horusConfigSchema', () => {
     expect(() => horusConfigSchema.parse({})).toThrow();
   });
 
-  it('rejects an environment with a non-url axon hostUrl', () => {
+  it('rejects a repository with a non-url axon hostUrl', () => {
     expect(() =>
       horusConfigSchema.parse({
         database: DB,
         projects: [
           {
             name: 'x',
-            path: '/x',
-            environments: [
-              { name: 'prod', connectors: { axon: { hostUrl: 'not-a-url' } } },
-            ],
+            repositories: [{ name: 'x', path: '/x', axon: { hostUrl: 'not-a-url' } }],
+            environments: [{ name: 'prod', connectors: {} }],
           },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('rejects a project with no repositories', () => {
+    expect(() =>
+      horusConfigSchema.parse({
+        database: DB,
+        projects: [
+          { name: 'x', repositories: [], environments: [{ name: 'prod', connectors: {} }] },
         ],
       }),
     ).toThrow();
@@ -111,7 +112,9 @@ describe('horusConfigSchema', () => {
     expect(() =>
       horusConfigSchema.parse({
         database: DB,
-        projects: [{ name: 'x', path: '/x', environments: [] }],
+        projects: [
+          { name: 'x', repositories: [{ name: 'x', path: '/x' }], environments: [] },
+        ],
       }),
     ).toThrow();
   });
@@ -122,7 +125,7 @@ describe('horusConfigSchema', () => {
       projects: [
         {
           name: 'x',
-          path: '/x',
+          repositories: [{ name: 'x', path: '/x' }],
           environments: [{ name: 'prod', connectors: {} }],
         },
       ],
@@ -160,13 +163,15 @@ describe('resolveEnvironment', () => {
     const renv = resolveEnvironment(SINGLE_PROJECT_CONFIG);
     expect(renv.project).toBe('my-api');
     expect(renv.env).toBe('production');
-    expect(renv.path).toBe('/repos/my-api');
+    expect(renv.path).toBe('/repos/my-api'); // primary repo path
     expect(renv.readOnly).toBe(true);
   });
 
-  it('resolves axon hostUrl directly from connectors config', () => {
+  it('resolves the project repositories with their Axon hosts', () => {
     const renv = resolveEnvironment(SINGLE_PROJECT_CONFIG);
-    expect(renv.connectors.axon?.hostUrl).toBe('http://127.0.0.1:8420');
+    expect(renv.repositories).toHaveLength(1);
+    expect(renv.repositories[0]?.name).toBe('my-api');
+    expect(renv.repositories[0]?.axonHostUrl).toBe('http://127.0.0.1:8420');
   });
 
   it('throws when project is unknown', () => {
@@ -184,7 +189,7 @@ describe('resolveEnvironment', () => {
   it('selects the named project when --project is given', () => {
     const renv = resolveEnvironment(TWO_PROJECT_CONFIG, { project: 'api-b' });
     expect(renv.project).toBe('api-b');
-    expect(renv.connectors.axon?.hostUrl).toBe('http://127.0.0.1:8421');
+    expect(renv.repositories[0]?.axonHostUrl).toBe('http://127.0.0.1:8421');
   });
 
   it('defaults to the "production" env when multiple envs and no --env', () => {
@@ -192,10 +197,13 @@ describe('resolveEnvironment', () => {
     expect(renv.env).toBe('production');
   });
 
-  it('selects the named env when --env is given', () => {
-    const renv = resolveEnvironment(MULTI_ENV_CONFIG, { env: 'staging' });
-    expect(renv.env).toBe('staging');
-    expect(renv.connectors.axon?.hostUrl).toBe('http://127.0.0.1:8419');
+  it('keeps the same project-scoped Axon across environments', () => {
+    // Code belongs to the project, so the repository's Axon is the same in any env.
+    const staging = resolveEnvironment(MULTI_ENV_CONFIG, { env: 'staging' });
+    const prod = resolveEnvironment(MULTI_ENV_CONFIG, { env: 'production' });
+    expect(staging.env).toBe('staging');
+    expect(staging.repositories[0]?.axonHostUrl).toBe('http://127.0.0.1:8420');
+    expect(prod.repositories[0]?.axonHostUrl).toBe('http://127.0.0.1:8420');
   });
 
   it('throws when env is unknown', () => {
@@ -217,7 +225,6 @@ describe('resolveEnvironment', () => {
     });
 
     afterEach(() => {
-      // Restore env
       for (const key of Object.keys(process.env)) {
         if (!(key in ORIG_ENV)) delete process.env[key];
         else process.env[key] = ORIG_ENV[key];

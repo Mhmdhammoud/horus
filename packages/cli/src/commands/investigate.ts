@@ -44,12 +44,11 @@ export async function runInvestigate(
 
     const health = await code.health();
     if (!health.ok) {
+      const axonUrl = renv.repositories[0]?.axonHostUrl;
       console.error(
         pc.red(
           `Axon host unreachable for ${renv.project}/${renv.env}` +
-            (renv.connectors.axon?.hostUrl
-              ? ` — start it with: axon host (${renv.connectors.axon.hostUrl})`
-              : ''),
+            (axonUrl ? ` — start it with: axon host (${axonUrl})` : ''),
         ),
       );
       return 1;
