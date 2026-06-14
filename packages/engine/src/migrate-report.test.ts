@@ -185,4 +185,62 @@ describe('migrateReport — malformed input', () => {
     expect(report.suspectedCauses).toHaveLength(1);
     expect(report.suspectedCauses[0]?.title).toBe('Valid cause');
   });
+
+  it('filters {} — no statement means no diagnostic value', () => {
+    const raw = makeReport([{}, legacyCause('Real cause', 0.55, [])]);
+    const report = migrateReport(raw);
+    expect(report.suspectedCauses).toHaveLength(1);
+    expect(report.suspectedCauses[0]?.title).toBe('Real cause');
+  });
+});
+
+describe('migrateReport — partial current-shape causes (field defaults)', () => {
+  it('fills sourceEvidenceIds with [] when missing', () => {
+    const raw = makeReport([{ title: 'Partial', finalScore: 0.70 }]);
+    const report = migrateReport(raw);
+    expect(report.suspectedCauses[0]?.sourceEvidenceIds).toEqual([]);
+  });
+
+  it('fills affectedNodeIds with [] when missing', () => {
+    const raw = makeReport([{ title: 'Partial', finalScore: 0.70 }]);
+    const report = migrateReport(raw);
+    expect(report.suspectedCauses[0]?.affectedNodeIds).toEqual([]);
+  });
+
+  it('fills explanations with [] when missing', () => {
+    const raw = makeReport([{ title: 'Partial', finalScore: 0.70 }]);
+    const report = migrateReport(raw);
+    expect(report.suspectedCauses[0]?.explanations).toEqual([]);
+  });
+
+  it('fills id with cause:partial:N when missing', () => {
+    const raw = makeReport([{ title: 'Partial', finalScore: 0.70 }]);
+    const report = migrateReport(raw);
+    expect(report.suspectedCauses[0]?.id).toBe('cause:partial:0');
+  });
+
+  it('fills band from finalScore when missing', () => {
+    const raw = makeReport([{ title: 'Partial', finalScore: 0.70 }]);
+    const report = migrateReport(raw);
+    expect(report.suspectedCauses[0]?.band).toBe('likely');
+  });
+
+  it('fills category with "unknown" when missing', () => {
+    const raw = makeReport([{ title: 'Partial', finalScore: 0.70 }]);
+    const report = migrateReport(raw);
+    expect(report.suspectedCauses[0]?.category).toBe('unknown');
+  });
+
+  it('preserves fields that are already present', () => {
+    const raw = makeReport([{
+      id: 'cause:abc',
+      title: 'Partial',
+      finalScore: 0.70,
+      sourceEvidenceIds: ['ev-1'],
+    }]);
+    const report = migrateReport(raw);
+    const c = report.suspectedCauses[0]!;
+    expect(c.id).toBe('cause:abc');
+    expect(c.sourceEvidenceIds).toEqual(['ev-1']);
+  });
 });

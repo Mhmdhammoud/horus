@@ -44,13 +44,31 @@ export function migrateReport(raw: unknown): InvestigationReport {
         if (c === null || typeof c !== 'object') return [];
         const cause = c as Record<string, unknown>;
 
-        // Already in the new CauseCandidate shape — pass through.
+        // Current CauseCandidate shape (has title + finalScore).
+        // Fill safe defaults for any missing required fields so renderers cannot
+        // crash dereferencing undefined arrays (e.g. sourceEvidenceIds.some(...)).
         if (typeof cause['title'] === 'string' && typeof cause['finalScore'] === 'number') {
-          return [cause];
+          const fs = cause['finalScore'] as number;
+          return [{
+            id: typeof cause['id'] === 'string' ? cause['id'] : `cause:partial:${i}`,
+            title: cause['title'],
+            category: typeof cause['category'] === 'string' ? cause['category'] : 'unknown',
+            sourceEvidenceIds: Array.isArray(cause['sourceEvidenceIds']) ? cause['sourceEvidenceIds'] : [],
+            affectedNodeIds: Array.isArray(cause['affectedNodeIds']) ? cause['affectedNodeIds'] : [],
+            baseScore: typeof cause['baseScore'] === 'number' ? cause['baseScore'] : fs,
+            finalScore: fs,
+            confidence: typeof cause['confidence'] === 'number' ? cause['confidence'] : fs,
+            band: typeof cause['band'] === 'string' ? cause['band'] : getBand(fs),
+            explanations: Array.isArray(cause['explanations']) ? cause['explanations'] : [],
+            ...(cause['metadata'] !== undefined ? { metadata: cause['metadata'] } : {}),
+          }];
         }
 
         // Legacy SuspectedCause shape: { statement, score, evidenceIds }.
+        // Drop entries with no statement — they carry no diagnostic value.
         const statement = typeof cause['statement'] === 'string' ? cause['statement'] : '';
+        if (!statement) return [];
+
         const score = typeof cause['score'] === 'number' ? cause['score'] : 0;
         const evidenceIds = Array.isArray(cause['evidenceIds']) ? cause['evidenceIds'] : [];
 
