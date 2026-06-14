@@ -27,7 +27,7 @@ import type {
   StateProvider,
   StateAnalysis,
 } from '@horus/connectors';
-import { shortTs } from '@horus/connectors';
+import { shortTs, selectStateSignals, tokenize } from '@horus/connectors';
 import type { HorusDb, QueueEdge } from '@horus/db';
 import {
   evidence as evidenceTable,
@@ -361,38 +361,21 @@ export async function investigate(
   // never breaks the investigation on failure. Counts/state only — no raw documents.
   let stateAnalysis: StateAnalysis | null = null;
   const stateEvIds: string[] = [];
+  const stateCollections = new Set<string>();
 
   if (deps.mongo) {
     try {
       stateAnalysis = await deps.mongo.analyzeState();
-      for (const c of stateAnalysis.collections) {
-        for (const a of c.anomalies) {
-          const ev = mkEv(
-            'state',
-            `${c.collection}: ${a.count} doc(s) in state "${a.value}"`,
-            { collection: c.collection, status: a.value, count: a.count, totalDocs: c.count },
-            {},
-            undefined,
-            0.85,
-          );
-          stateEvIds.push(ev.id);
-        }
-        if (c.isStale === true && c.lastActivity) {
-          const ev = mkEv(
-            'state',
-            `${c.collection}: stale — last ${c.dateField} at ${shortTs(c.lastActivity)}`,
-            {
-              collection: c.collection,
-              dateField: c.dateField,
-              lastActivity: c.lastActivity,
-              ageHours: c.ageHours,
-            },
-            {},
-            c.lastActivity,
-            0.8,
-          );
-          stateEvIds.push(ev.id);
-        }
+      // Relevance terms: the hint + the resolved seed's name and file basename, so
+      // unrelated stale/legacy collections don't dominate (HOR-39).
+      const seedBase = top.filePath.split('/').pop() ?? '';
+      const terms = [
+        ...new Set([...tokenize(hint), ...tokenize(top.name), ...tokenize(seedBase)]),
+      ];
+      for (const s of selectStateSignals(stateAnalysis, terms)) {
+        const ev = mkEv('state', s.title, s.payload, {}, s.timestamp, s.relevance);
+        stateEvIds.push(ev.id);
+        stateCollections.add(s.collection);
       }
     } catch {
       stateAnalysis = null;
@@ -501,13 +484,10 @@ export async function investigate(
 
   // Application-state findings (MongoDB, HOR-33)
   if (stateAnalysis !== null && stateEvIds.length > 0) {
-    const collsWithSignals = stateAnalysis.collections.filter(
-      (c) => c.anomalies.length > 0 || c.isStale === true,
-    ).length;
     findings.push({
       kind: 'anomaly',
-      title: `Application state: ${stateEvIds.length} anomaly/stale signal(s) across ${collsWithSignals} collection(s) in ${stateAnalysis.database}`,
-      confidence: 0.65,
+      title: `Application state: ${stateEvIds.length} relevant signal(s) across ${stateCollections.size} collection(s) in ${stateAnalysis.database}`,
+      confidence: 0.6,
       evidenceIds: stateEvIds,
     });
   }

@@ -43,6 +43,18 @@ export interface StatusCount {
   count: number;
 }
 
+/**
+ * Operational classification of a collection by last-activity age:
+ *  - active:  recent activity (< staleHours)
+ *  - stale:   no recent activity but within the legacy horizon
+ *  - legacy:  not touched in a very long time — likely an old/abandoned artifact
+ *  - unknown: no usable date field
+ */
+export type Classification = 'active' | 'stale' | 'legacy' | 'unknown';
+
+/** Default legacy horizon: ~90 days. Beyond this, treat state as a legacy artifact. */
+export const DEFAULT_LEGACY_HOURS = 90 * 24;
+
 export interface CollectionState {
   collection: string;
   count: number;
@@ -50,6 +62,7 @@ export interface CollectionState {
   lastActivity?: string;
   ageHours?: number;
   isStale?: boolean;
+  classification: Classification;
   statusField?: string;
   statusCounts?: StatusCount[];
   /** Status buckets whose value matches ANOMALOUS_STATUS. */
@@ -59,7 +72,19 @@ export interface CollectionState {
 export interface StateAnalysis {
   database: string;
   staleHours: number;
+  legacyHours: number;
   collections: CollectionState[];
+}
+
+export function classifyAge(
+  ageHours: number | undefined,
+  staleHours: number,
+  legacyHours: number,
+): Classification {
+  if (ageHours === undefined) return 'unknown';
+  if (ageHours >= legacyHours) return 'legacy';
+  if (ageHours >= staleHours) return 'stale';
+  return 'active';
 }
 
 /** First candidate present in `fields`. */
@@ -84,57 +109,120 @@ function fmtAge(hours: number): string {
   return `${Math.round(hours * 60)}m`;
 }
 
+/** Split a string into lowercased word/identifier tokens of length >= 4. */
+export function tokenize(s: string): string[] {
+  return s
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2') // split camelCase
+    .split(/[^A-Za-z0-9]+/)
+    .map((t) => t.toLowerCase())
+    .filter((t) => t.length >= 4);
+}
+
+/** Does a collection name relate to any of the hint/seed terms? */
+export function collectionMatchesTerms(collection: string, terms: string[]): boolean {
+  if (terms.length === 0) return true; // no hint context => everything is "relevant"
+  const cl = collection.toLowerCase();
+  const singular = cl.endsWith('s') ? cl.slice(0, -1) : cl;
+  return terms.some((t) => t.length >= 4 && (cl.includes(t) || t.includes(singular)));
+}
+
+export interface StateSignal {
+  collection: string;
+  kind: 'anomaly' | 'stale';
+  classification: Classification;
+  relevant: boolean;
+  relevance: number;
+  title: string;
+  timestamp?: string;
+  payload: Record<string, unknown>;
+}
+
 /**
- * Convert a state analysis into Evidence: one record per anomalous status
- * bucket and per stale collection. Counts + state only — never raw documents.
+ * Select the notable state signals, filtered + weighted by relevance to the hint
+ * terms and by classification. Relevance discipline:
+ *  - a stale/legacy collection unrelated to the hint is dropped (it's just noise);
+ *  - an ACTIVE anomaly is always surfaced (a currently-failing collection matters),
+ *    but down-weighted when it isn't hint-relevant;
+ *  - legacy artifacts are heavily down-weighted and only shown when hint-relevant.
  */
-export function stateToEvidence(
+export function selectStateSignals(
   analysis: StateAnalysis,
-  query: string,
-  collectedAt: string,
-): Evidence[] {
-  const out: Evidence[] = [];
-  let i = 0;
+  terms: string[] = [],
+): StateSignal[] {
+  const signals: StateSignal[] = [];
 
   for (const c of analysis.collections) {
+    const relevant = collectionMatchesTerms(c.collection, terms);
+    const legacy = c.classification === 'legacy';
+
     for (const a of c.anomalies) {
-      out.push({
-        id: `ev_state_${i++}`,
-        source: 'state',
-        kind: 'state',
-        title: `${c.collection}: ${a.count} doc(s) in state "${a.value}"`,
-        relevance: 0.85,
+      // Drop legacy/irrelevant anomalies; keep active ones (even if not relevant).
+      if (!relevant && (legacy || c.classification !== 'active')) continue;
+      const relevance = legacy ? 0.25 : relevant ? 0.85 : 0.5;
+      const tag = legacy ? ' (legacy)' : c.classification === 'stale' ? ' (stale)' : '';
+      signals.push({
+        collection: c.collection,
+        kind: 'anomaly',
+        classification: c.classification,
+        relevant,
+        relevance,
+        title: `${c.collection}: ${a.count} doc(s) in state "${a.value}"${tag}`,
         payload: {
           collection: c.collection,
           statusField: c.statusField,
           status: a.value,
           count: a.count,
           totalDocs: c.count,
+          classification: c.classification,
         },
-        links: {},
-        provenance: { query, collectedAt },
       });
     }
 
-    if (c.isStale === true && c.lastActivity) {
-      out.push({
-        id: `ev_state_${i++}`,
-        source: 'state',
-        kind: 'state',
-        title: `${c.collection}: stale — last ${c.dateField} ${fmtAge(c.ageHours ?? 0)} ago (> ${analysis.staleHours}h)`,
-        relevance: 0.8,
+    // Stale/legacy "no recent activity" is only worth surfacing when hint-relevant.
+    if (c.isStale === true && c.lastActivity && relevant) {
+      signals.push({
+        collection: c.collection,
+        kind: 'stale',
+        classification: c.classification,
+        relevant,
+        relevance: legacy ? 0.25 : 0.6,
+        title: `${c.collection}: ${legacy ? 'legacy' : 'stale'} — last ${c.dateField} ${fmtAge(c.ageHours ?? 0)} ago`,
         timestamp: c.lastActivity,
         payload: {
           collection: c.collection,
           dateField: c.dateField,
           lastActivity: c.lastActivity,
           ageHours: c.ageHours,
+          classification: c.classification,
         },
-        links: {},
-        provenance: { query, collectedAt },
       });
     }
   }
 
-  return out;
+  signals.sort((x, y) => y.relevance - x.relevance);
+  return signals;
+}
+
+/**
+ * Convert a state analysis into Evidence. With no hint terms this surfaces all
+ * notable signals (classification-weighted); pass hint terms to apply relevance
+ * filtering. Counts + state only — never raw documents.
+ */
+export function stateToEvidence(
+  analysis: StateAnalysis,
+  query: string,
+  collectedAt: string,
+  terms: string[] = [],
+): Evidence[] {
+  return selectStateSignals(analysis, terms).map((s, i) => ({
+    id: `ev_state_${i}`,
+    source: 'state' as const,
+    kind: 'state' as const,
+    title: s.title,
+    relevance: s.relevance,
+    payload: s.payload,
+    links: {},
+    provenance: { query, collectedAt },
+    ...(s.timestamp ? { timestamp: s.timestamp } : {}),
+  }));
 }

@@ -12,9 +12,11 @@ import {
   type CollectionState,
   DATE_FIELDS,
   STATUS_FIELDS,
+  DEFAULT_LEGACY_HOURS,
   pickField,
   isAnomalousStatus,
   ageHoursOf,
+  classifyAge,
   stateToEvidence,
 } from './analyze.js';
 
@@ -38,8 +40,11 @@ export class MongoStateProvider implements StateProvider {
     },
   ) {}
 
-  async analyzeState(opts: { staleHours?: number } = {}): Promise<StateAnalysis> {
+  async analyzeState(
+    opts: { staleHours?: number; legacyHours?: number } = {},
+  ): Promise<StateAnalysis> {
     const staleHours = opts.staleHours ?? this.opts.staleHours;
+    const legacyHours = opts.legacyHours ?? DEFAULT_LEGACY_HOURS;
     const nowMs = Date.now();
     const collections: CollectionState[] = [];
 
@@ -47,7 +52,12 @@ export class MongoStateProvider implements StateProvider {
       try {
         const count = await this.client.count(coll);
         const fields = await this.client.sampleFields(coll);
-        const cs: CollectionState = { collection: coll, count, anomalies: [] };
+        const cs: CollectionState = {
+          collection: coll,
+          count,
+          classification: 'unknown',
+          anomalies: [],
+        };
 
         const dateField = pickField(fields, DATE_FIELDS);
         if (dateField !== undefined) {
@@ -59,6 +69,7 @@ export class MongoStateProvider implements StateProvider {
             cs.isStale = cs.ageHours > staleHours;
           }
         }
+        cs.classification = classifyAge(cs.ageHours, staleHours, legacyHours);
 
         const statusField = pickField(fields, STATUS_FIELDS);
         if (statusField !== undefined) {
@@ -74,7 +85,7 @@ export class MongoStateProvider implements StateProvider {
       }
     }
 
-    return { database: this.opts.database, staleHours, collections };
+    return { database: this.opts.database, staleHours, legacyHours, collections };
   }
 
   toEvidence(analysis: StateAnalysis): Evidence[] {
