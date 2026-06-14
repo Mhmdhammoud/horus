@@ -73,10 +73,10 @@ describe('normalizeEvidence — queue provider', () => {
     expect(ev.severity).toBe('medium');
   });
 
-  it('summary signal (relevance 0.4) → severity low', () => {
+  it('summary signal (relevance 0.4) → severity info (healthy snapshot, not an anomaly)', () => {
     const ev = makeEv({ id: 'ev7', source: 'queue', kind: 'queue-state', relevance: 0.4 });
     normalizeEvidence([ev]);
-    expect(ev.severity).toBe('low');
+    expect(ev.severity).toBe('info');
   });
 
   it('queue-edge (structural) → category queue, severity info', () => {
@@ -99,10 +99,10 @@ describe('normalizeEvidence — database (MongoDB) provider', () => {
     expect(ev.severity).toBe('high');
   });
 
-  it('relevant stale collection (relevance 0.5, non-legacy hint match) → severity low', () => {
+  it('stale collection (relevance 0.5) → severity info (context, not a broken system)', () => {
     const ev = makeEv({ id: 'ev10', source: 'state', kind: 'state', relevance: 0.5 });
     normalizeEvidence([ev]);
-    expect(ev.severity).toBe('low');
+    expect(ev.severity).toBe('info');
   });
 
   it('legacy/irrelevant collection (relevance 0.25) → severity info', () => {

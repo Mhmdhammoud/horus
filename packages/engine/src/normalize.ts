@@ -53,7 +53,18 @@ function severityFor(e: Evidence): EvidenceSeverity {
   // Commits are structural unless a particularly relevant change is flagged.
   if (e.kind === 'commit') return e.relevance >= 0.8 ? 'medium' : 'info';
 
-  // All other kinds: use the relevance score as a proxy for signal strength.
+  // State snapshots (queue, DB, cache): low-relevance items represent healthy
+  // or legacy state that provides context, not evidence of a broken system.
+  // Skipping 'low' keeps the severity scale meaningful — 'low' should mean
+  // "something is wrong but minor", not "background snapshot".
+  if (e.kind === 'queue-state' || e.kind === 'state' || e.kind === 'redis-key') {
+    if (e.relevance >= 0.9) return 'critical';
+    if (e.relevance >= 0.8) return 'high';
+    if (e.relevance >= 0.6) return 'medium';
+    return 'info';
+  }
+
+  // Operational signals (log, metric, …): use the full relevance scale.
   if (e.relevance >= 0.9) return 'critical';
   if (e.relevance >= 0.8) return 'high';
   if (e.relevance >= 0.6) return 'medium';

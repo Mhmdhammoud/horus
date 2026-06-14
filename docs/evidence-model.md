@@ -122,7 +122,13 @@ treats `payload` as opaque; renderers and the LLM consume it directly.
 |------|------|
 | `symbol`, `flow`, `impact`, `queue-edge` | Always `info` — structural context, not anomalies |
 | `commit` | `medium` if relevance ≥ 0.8; `info` otherwise |
-| everything else | relevance ≥ 0.9 → `critical`; ≥ 0.8 → `high`; ≥ 0.6 → `medium`; ≥ 0.4 → `low`; else `info` |
+| `queue-state`, `state`, `redis-key` | relevance ≥ 0.9 → `critical`; ≥ 0.8 → `high`; ≥ 0.6 → `medium`; else `info` |
+| all other operational signals (`log`, `metric`, …) | relevance ≥ 0.9 → `critical`; ≥ 0.8 → `high`; ≥ 0.6 → `medium`; ≥ 0.4 → `low`; else `info` |
+
+State snapshot kinds (`queue-state`, `state`, `redis-key`) skip the `low` tier. A snapshot
+that isn't anomalous enough to clear `medium` is context — it provides background for the
+investigation rather than signalling a broken component. `low` is reserved for operational
+signals (logs, metrics) where something is definitively wrong, just minor.
 
 ## Category mapping
 
