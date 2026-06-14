@@ -6,11 +6,12 @@ import { stitch } from '@horus/stitcher';
 
 export async function runIndex(opts: {
   config?: string;
+  name?: string;
   project?: string;
   env?: string;
 }): Promise<number> {
   try {
-    const config = await loadConfig(opts.config);
+    const config = await loadConfig(opts.config, { name: opts.name });
 
     // HOR-34: the Axon host is per project/environment. Resolve the chosen
     // project/env (or the single one). The queue map is replaced per run, so

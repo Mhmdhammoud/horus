@@ -1,0 +1,110 @@
+/**
+ * Local-project discovery + registry (HOR-37).
+ *
+ * Horus can be driven git-style: a repo carries a `.horus/config.json`, discovered
+ * by walking up from the working directory; a global registry at
+ * `~/.horus/registry.json` lets `--name` resolve a project from anywhere.
+ */
+
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
+
+export const HORUS_DIR = '.horus';
+export const LOCAL_CONFIG_FILE = 'config.json';
+
+/** Absolute path to a repo's local config file. */
+export function localConfigPath(root: string): string {
+  return join(root, HORUS_DIR, LOCAL_CONFIG_FILE);
+}
+
+/** Walk up from `start` for a `.horus/config.json`; returns its absolute path or null. */
+export function discoverLocalConfig(start: string): string | null {
+  let dir = resolve(start);
+  for (;;) {
+    const candidate = localConfigPath(dir);
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/** Walk up from `start` for a `.git` directory → repo root; else null. */
+export function findRepoRoot(start: string): string | null {
+  let dir = resolve(start);
+  for (;;) {
+    if (existsSync(join(dir, '.git'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Global registry (~/.horus/registry.json)
+// ---------------------------------------------------------------------------
+
+export interface RegistryEntry {
+  root: string;
+  configPath: string;
+}
+export interface Registry {
+  projects: Record<string, RegistryEntry>;
+}
+
+export function registryPath(): string {
+  return join(homedir(), HORUS_DIR, 'registry.json');
+}
+
+export function readRegistry(): Registry {
+  const p = registryPath();
+  if (!existsSync(p)) return { projects: {} };
+  try {
+    const parsed = JSON.parse(readFileSync(p, 'utf8')) as Partial<Registry>;
+    return { projects: parsed.projects ?? {} };
+  } catch {
+    return { projects: {} };
+  }
+}
+
+export function writeRegistry(reg: Registry): void {
+  const p = registryPath();
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, JSON.stringify(reg, null, 2) + '\n');
+}
+
+export function registerProject(name: string, root: string, configPath: string): void {
+  const reg = readRegistry();
+  reg.projects[name] = { root, configPath };
+  writeRegistry(reg);
+}
+
+export function lookupProject(name: string): RegistryEntry | null {
+  return readRegistry().projects[name] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Local config file shape
+// ---------------------------------------------------------------------------
+
+export interface LocalConfigFile {
+  version: number;
+  /** A single ProjectConfig-shaped object (name, repositories[], environments[]). */
+  project: unknown;
+  /** Optional Postgres override; defaults to DATABASE_URL / the local default. */
+  database?: { url: string };
+}
+
+/** Write a `.horus/config.json` under `root` and return its absolute path. */
+export function writeLocalConfig(root: string, file: LocalConfigFile): string {
+  const dir = join(root, HORUS_DIR);
+  mkdirSync(dir, { recursive: true });
+  const p = join(dir, LOCAL_CONFIG_FILE);
+  writeFileSync(p, JSON.stringify(file, null, 2) + '\n');
+  return p;
+}
+
+export function readLocalConfig(path: string): LocalConfigFile {
+  return JSON.parse(readFileSync(path, 'utf8')) as LocalConfigFile;
+}

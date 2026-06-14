@@ -33,6 +33,7 @@ export async function runLogs(
   service: string | undefined,
   opts: {
     config?: string;
+    name?: string;
     project?: string;
     env?: string;
     since?: string;
@@ -44,7 +45,7 @@ export async function runLogs(
   },
 ): Promise<number> {
   try {
-    const config = await loadConfig(opts.config);
+    const config = await loadConfig(opts.config, { name: opts.name });
 
     let renv;
     try {

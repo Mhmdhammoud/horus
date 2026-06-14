@@ -10,12 +10,13 @@ import { mongoForEnv } from '@horus/connectors';
 
 export async function runState(opts: {
   config?: string;
+  name?: string;
   project?: string;
   env?: string;
   staleHours?: string;
 }): Promise<number> {
   try {
-    const config = await loadConfig(opts.config);
+    const config = await loadConfig(opts.config, { name: opts.name });
 
     let renv;
     try {

@@ -1,6 +1,13 @@
 import { z } from 'zod';
 import { createJiti } from 'jiti';
 import { resolve } from 'node:path';
+import {
+  discoverLocalConfig,
+  lookupProject,
+  readLocalConfig,
+} from './discovery.js';
+
+const DEFAULT_DB_URL = 'postgresql://horus:horus@localhost:5433/horus';
 
 /**
  * Horus configuration schema. Loaded from `config/horus.config.ts` (or a path given
@@ -294,14 +301,33 @@ export function defineConfig(config: HorusConfig): HorusConfig {
   return config;
 }
 
-/**
- * Load and validate a Horus config module. `configPath` defaults to
- * `config/horus.config.ts` resolved from the current working directory.
- */
-export async function loadConfig(configPath?: string): Promise<HorusConfig> {
-  const target = resolve(configPath ?? 'config/horus.config.ts');
-  // Load via jiti so a TypeScript config (and its TS workspace imports) works under
-  // any runtime — `tsx` in dev or plain `node` from the bundled binary.
+/** Validate a raw config object, throwing a readable error on failure. */
+function parseConfig(raw: unknown, source: string): HorusConfig {
+  const parsed = horusConfigSchema.safeParse(raw);
+  if (!parsed.success) {
+    const details = parsed.error.issues
+      .map((i) => `  • ${i.path.join('.') || '(root)'}: ${i.message}`)
+      .join('\n');
+    throw new Error(`Invalid Horus config (${source}):\n${details}`);
+  }
+  return parsed.data;
+}
+
+/** Load a config file by absolute path — JSON (`.horus/config.json`) or a TS module. */
+async function loadConfigFile(target: string): Promise<HorusConfig> {
+  if (target.endsWith('.json')) {
+    // A local `.horus/config.json` wraps a single project.
+    const file = readLocalConfig(target);
+    const raw = {
+      projects: file.project ? [file.project] : [],
+      database: file.database ?? {
+        url: process.env['DATABASE_URL'] ?? DEFAULT_DB_URL,
+      },
+    };
+    return parseConfig(raw, target);
+  }
+
+  // A TS config module, loaded via jiti so it works under tsx or the bundled binary.
   const jiti = createJiti(import.meta.url);
   let mod: { default?: unknown };
   try {
@@ -314,12 +340,39 @@ export async function loadConfig(configPath?: string): Promise<HorusConfig> {
   if (!mod.default) {
     throw new Error(`Horus config at ${target} must have a default export.`);
   }
-  const parsed = horusConfigSchema.safeParse(mod.default);
-  if (!parsed.success) {
-    const details = parsed.error.issues
-      .map((i) => `  • ${i.path.join('.') || '(root)'}: ${i.message}`)
-      .join('\n');
-    throw new Error(`Invalid Horus config:\n${details}`);
+  return parseConfig(mod.default, target);
+}
+
+/**
+ * Load and validate the active Horus config. Resolution order:
+ *   1. an explicit `configPath` (e.g. `--config`)
+ *   2. `opts.name` → the global project registry (`~/.horus/registry.json`)
+ *   3. a discovered `.horus/config.json` walking up from `opts.cwd` (git-style)
+ *   4. the `HORUS_CONFIG` environment variable
+ *   5. `config/horus.config.ts` relative to the current working directory
+ */
+export async function loadConfig(
+  configPath?: string,
+  opts?: { name?: string; cwd?: string },
+): Promise<HorusConfig> {
+  const cwd = opts?.cwd ?? process.cwd();
+
+  let target: string;
+  if (configPath) {
+    target = resolve(configPath);
+  } else if (opts?.name) {
+    const entry = lookupProject(opts.name);
+    if (entry === null) {
+      throw new Error(
+        `Unknown project "${opts.name}". Run \`horus index --name ${opts.name}\` in its repo, ` +
+          `or list registered projects with \`horus projects\`.`,
+      );
+    }
+    target = entry.configPath;
+  } else {
+    const discovered = discoverLocalConfig(cwd);
+    target = discovered ?? resolve(process.env['HORUS_CONFIG'] ?? 'config/horus.config.ts');
   }
-  return parsed.data;
+
+  return loadConfigFile(target);
 }

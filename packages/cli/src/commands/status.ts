@@ -134,7 +134,7 @@ async function checkEnv(renv: ResolvedEnvironment): Promise<boolean> {
 
 export async function runStatus(
   configPath?: string,
-  opts?: { project?: string; env?: string },
+  opts?: { name?: string; project?: string; env?: string },
 ): Promise<number> {
   console.log(pc.bold(`\nHorus ${HORUS_VERSION}`));
   console.log(pc.dim(`pinned Axon: ${PINNED_AXON_VERSION} · transport: HTTP/MCP only\n`));
@@ -143,7 +143,7 @@ export async function runStatus(
   const checks: Check[] = [];
 
   try {
-    config = await loadConfig(configPath);
+    config = await loadConfig(configPath, { name: opts?.name });
     checks.push({ label: 'Config', ok: true, detail: 'loaded & valid' });
   } catch (err) {
     checks.push({

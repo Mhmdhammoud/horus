@@ -8,6 +8,7 @@ export async function runInvestigate(
   hint: string,
   opts: {
     config?: string;
+    name?: string;
     project?: string;
     env?: string;
     /** @deprecated use project — kept for back-compat with parked commands */
@@ -19,7 +20,7 @@ export async function runInvestigate(
   },
 ): Promise<number> {
   try {
-    const config = await loadConfig(opts.config);
+    const config = await loadConfig(opts.config, { name: opts.name });
 
     // --repo is the legacy name; --project takes precedence when both are given.
     const projectName = opts.project ?? opts.repo;

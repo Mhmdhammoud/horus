@@ -1,3 +1,4 @@
 export * from './version.js';
 export * from './evidence.js';
 export * from './config.js';
+export * from './discovery.js';

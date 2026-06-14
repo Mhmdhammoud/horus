@@ -23,6 +23,8 @@ import { runSimulate } from './commands/simulate.js';
 import { runLogs } from './commands/logs.js';
 import { runMetrics } from './commands/metrics.js';
 import { runState } from './commands/state.js';
+import { runInit } from './commands/init.js';
+import { runProjects } from './commands/projects.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -38,15 +40,42 @@ export function buildProgram(): Command {
     .version(HORUS_VERSION);
 
   program
+    .command('init')
+    .description('Create a local .horus/config.json for this repo and register it')
+    .option('--name <name>', 'project name (default: repo directory name)')
+    .option('--env <name>', 'environment name (default: production)')
+    .option('--axon <url>', 'Axon host URL for this repo (e.g. http://127.0.0.1:8420)')
+    .option('--path <dir>', 'repository root (default: nearest git root, else cwd)')
+    .action(
+      async (opts: { name?: string; env?: string; axon?: string; path?: string }) => {
+        process.exitCode = await runInit(opts);
+      },
+    );
+
+  program
+    .command('projects')
+    .description('List projects registered in the global registry (~/.horus/registry.json)')
+    .action(async () => {
+      process.exitCode = await runProjects();
+    });
+
+  program
     .command('status')
     .description('Show config, provider health, and project/environment matrix')
     .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--name <name>', 'registered project name (resolves via the registry)')
     .option('--project <name>', 'project name (show only this project)')
     .option('--env <name>', 'environment name (e.g. production)')
-    .action(async (opts: { config?: string; project?: string; env?: string }) => {
-      const code = await runStatus(opts.config, { project: opts.project, env: opts.env });
-      process.exitCode = code;
-    });
+    .action(
+      async (opts: { config?: string; name?: string; project?: string; env?: string }) => {
+        const code = await runStatus(opts.config, {
+          name: opts.name,
+          project: opts.project,
+          env: opts.env,
+        });
+        process.exitCode = code;
+      },
+    );
 
   program
     .command('explain <query>')
@@ -75,11 +104,14 @@ export function buildProgram(): Command {
     .command('index')
     .description('Build the queue map for a project (run the stitcher against its Axon host)')
     .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--name <name>', 'registered project name (resolves via the registry)')
     .option('--project <name>', 'project name')
     .option('--env <name>', 'environment name (e.g. production)')
-    .action(async (opts: { config?: string; project?: string; env?: string }) => {
-      process.exitCode = await runIndex(opts);
-    });
+    .action(
+      async (opts: { config?: string; name?: string; project?: string; env?: string }) => {
+        process.exitCode = await runIndex(opts);
+      },
+    );
 
   program
     .command('queues [name]')
@@ -93,6 +125,7 @@ export function buildProgram(): Command {
     .command('investigate <hint>')
     .description('Run a deterministic investigation for an incident hint')
     .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--name <name>', 'registered project name (resolves via the registry)')
     .option('--project <name>', 'project name to scope to')
     .option('--env <name>', 'environment name (e.g. production)')
     .option('--repo <name>', 'repository/project to scope to (alias for --project)')
@@ -108,6 +141,7 @@ export function buildProgram(): Command {
         hint: string,
         opts: {
           config?: string;
+          name?: string;
           project?: string;
           env?: string;
           repo?: string;
@@ -119,6 +153,7 @@ export function buildProgram(): Command {
       ) => {
         process.exitCode = await runInvestigate(hint, {
           config: opts.config,
+          name: opts.name,
           project: opts.project,
           env: opts.env,
           repo: opts.repo,
@@ -371,6 +406,7 @@ export function buildProgram(): Command {
       'Synthesize error evidence from logs (signatures, first/last, affected services); --raw for lines',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--name <name>', 'registered project name (resolves via the registry)')
     .option('--project <name>', 'project name')
     .option('--env <name>', 'environment name (e.g. production)')
     .option('--since <when>', 'time window, e.g. 24h, 7d, or an ISO date')
@@ -383,6 +419,7 @@ export function buildProgram(): Command {
         service: string | undefined,
         opts: {
           config?: string;
+          name?: string;
           project?: string;
           env?: string;
           since?: string;
@@ -402,12 +439,14 @@ export function buildProgram(): Command {
       'Surface application-state evidence from MongoDB (read-only, allowlisted): counts, staleness, anomalous statuses',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--name <name>', 'registered project name (resolves via the registry)')
     .option('--project <name>', 'project name')
     .option('--env <name>', 'environment name (e.g. production)')
     .option('--stale-hours <n>', 'staleness threshold in hours (default 24)')
     .action(
       async (opts: {
         config?: string;
+        name?: string;
         project?: string;
         env?: string;
         staleHours?: string;
@@ -422,6 +461,7 @@ export function buildProgram(): Command {
       'Grafana metrics evidence: find dashboards/panels for a hint and detect latency spikes, error-rate changes, throughput drops, queue growth',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--name <name>', 'registered project name (resolves via the registry)')
     .option('--since <when>', 'window, e.g. 1h, 6h, 24h')
     .option('--step <secs>', 'range step seconds')
     .option('--dashboard <uid>', 'restrict to a dashboard uid')
@@ -432,6 +472,7 @@ export function buildProgram(): Command {
         hint: string | undefined,
         opts: {
           config?: string;
+          name?: string;
           since?: string;
           step?: string;
           dashboard?: string;

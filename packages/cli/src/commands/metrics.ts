@@ -86,6 +86,7 @@ export async function runMetrics(
   hint: string | undefined,
   opts: {
     config?: string;
+    name?: string;
     since?: string;
     step?: string;
     dashboard?: string;
@@ -94,7 +95,7 @@ export async function runMetrics(
   },
 ): Promise<number> {
   try {
-    const config = await loadConfig(opts.config);
+    const config = await loadConfig(opts.config, { name: opts.name });
     const metrics = metricsProviderFromConfig(config);
 
     if (metrics === null) {
