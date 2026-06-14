@@ -28,6 +28,7 @@ import {
   hypotheses as hypothesesTable,
   investigations as investigationsTable,
   listQueueEdges,
+  eq,
 } from '@horus/db';
 import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
@@ -422,6 +423,19 @@ export async function investigate(
     await storeIncidentMemory(db, persistedId, report);
   }
   // If persist failed (db down / no id), similarIncidents stays [] and we skip store.
+
+  // l. AUDIT BUNDLE (HOR-16) — write the fully-finalized report to the investigations row
+  //    so it can be re-rendered later without re-querying production.
+  if (persistedId !== null) {
+    try {
+      await db
+        .update(investigationsTable)
+        .set({ report: report })
+        .where(eq(investigationsTable.id, persistedId));
+    } catch {
+      // Non-fatal: the investigation row already exists; the audit bundle is best-effort.
+    }
+  }
 
   return report;
 }

@@ -12,6 +12,8 @@ import { runArchitecture } from './commands/architecture.js';
 import { runBlastRadius } from './commands/blast-radius.js';
 import { runRepos } from './commands/repos.js';
 import { runSearch } from './commands/search.js';
+import { runInvestigations } from './commands/investigations.js';
+import { runReplay } from './commands/replay.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -230,6 +232,24 @@ export function buildProgram(): Command {
         });
       },
     );
+
+  program
+    .command('investigations')
+    .description('List recent investigations (ids for replay)')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('-n, --limit <n>', 'max rows', (v) => parseInt(v, 10))
+    .action(async (opts: { config?: string; limit?: number }) => {
+      process.exitCode = await runInvestigations({ config: opts.config, limit: opts.limit });
+    });
+
+  program
+    .command('replay <id>')
+    .description('Re-render a saved investigation from the audit store (no re-query)')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--format <fmt>', 'text | markdown | json', 'text')
+    .action(async (id: string, opts: { config?: string; format?: string }) => {
+      process.exitCode = await runReplay(id, { config: opts.config, format: opts.format });
+    });
 
   return program;
 }
