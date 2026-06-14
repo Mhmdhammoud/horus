@@ -37,9 +37,9 @@ interface CauseCandidate {
   title: string;
   category: string;
   sourceEvidenceIds: string[];
-  affectedNodeIds: string[];     // graph node IDs implicated by this cause
+  affectedNodeIds: string[];     // graph node IDs implicated by this cause (derived from graph)
   baseScore: number;             // heuristic prior before factor adjustments (0–1)
-  finalScore: number;            // clamped 0–1 after all adjustments
+  finalScore: number;            // clamped 0–1 after all adjustments and post-delta constraints
   confidence: number;            // alias for finalScore
   band: CauseBand;
   explanations: ScoreExplanation[];
@@ -51,34 +51,47 @@ interface CauseInput {
   title: string;
   category: string;
   sourceEvidenceIds: string[];
-  affectedNodeIds?: string[];
+  affectedNodeIds?: string[];    // if omitted, derived from the graph automatically
   baseScore: number;             // domain-specific prior (queue depth, blast radius, etc.)
   metadata?: Record<string, unknown>;
+}
+
+// Minimal finding shape accepted by the scorer. Structurally compatible with
+// ReportFinding from types.ts (not imported to avoid a circular dependency).
+interface ScoringFinding {
+  kind: string;
+  confidence: number;
+  evidenceIds: string[];
 }
 
 interface ScoringContext {
   evidence: Evidence[];          // normalized evidence from the investigation
   graph: InvestigationGraph;     // infrastructure topology (HOR-14)
+  findings?: ScoringFinding[];   // engine findings; used by the finding-uncertainty factor
   now?: string;                  // ISO-8601 reference timestamp (for recency; injectable for tests)
 }
 ```
 
-## Scoring factors
-
-The scorer runs all six factors against the attached evidence and the graph. Each factor returns a `ScoreExplanation` or `null` (when the factor has nothing to say). Factors that return `null` are excluded from the `explanations` list.
+## Scoring formula
 
 ```
-finalScore = clamp01(baseScore + Σ(factor deltas))
+rawScore  = clamp01(baseScore + Σ(factor deltas))
+finalScore = apply post-delta constraints(rawScore)
 ```
 
-| Factor | Key | Max delta | When it fires |
-|--------|-----|-----------|---------------|
-| Evidence quality | `evidence-quality` | ±0.50 | Any non-info evidence attached; penalizes all-info |
-| Source diversity | `source-diversity` | +0.10 | 2+ independent provider kinds (logs, queue, state, …) |
-| Graph proximity | `graph-proximity` | +0.10 | `maxImplicationScore` > 0 for evidence IDs in implicated graph nodes |
-| Runtime signals | `runtime-signals` | +0.10 | Evidence from the last hour (+0.05) / 24 h (+0.02), or new/spiking log signatures |
-| Blast radius | `blast-radius` | +0.05 | `metadata.blastRadius` > 0 |
-| Signal strength | `signal-strength` | +0.03 / −0.05 | High-relevance anomaly (+0.03); structural-only (−0.05) |
+Seven factors run against the attached evidence and graph. Each returns a `ScoreExplanation` or `null` (when the factor has nothing to say). Factors that return `null` are excluded from the `explanations` list.
+
+After all factor deltas are summed, post-delta constraints (see below) may clamp the result further before `finalScore` is set.
+
+| # | Factor | Key | Max delta | When it fires |
+|---|--------|-----|-----------|---------------|
+| 1 | Evidence quality | `evidence-quality` | ±0.50 | Any non-info evidence attached; penalizes all-info |
+| 2 | Source diversity | `source-diversity` | +0.10 | 2+ independent provider kinds (logs, queue, state, …) |
+| 3 | Graph proximity | `graph-proximity` | +0.10 | `maxImplicationScore` > 0 for evidence IDs in implicated graph nodes |
+| 4 | Runtime signals | `runtime-signals` | +0.10 | Evidence from the last hour (+0.05) / 24 h (+0.02), or new/spiking log signatures |
+| 5 | Blast radius | `blast-radius` | +0.05 | `metadata.blastRadius` > 0 |
+| 6 | Signal strength | `signal-strength` | +0.03 / −0.05 | High-relevance anomaly (+0.03); structural-only (−0.05) |
+| 7 | Finding uncertainty | `finding-uncertainty` | −0.06 | Relevant findings all have confidence < 0.60 |
 
 ### Factor 1 — Evidence quality (severity × confidence)
 
@@ -107,8 +120,6 @@ Two independent providers corroborating the same cause is more reliable than a s
 
 Delegates to `maxImplicationScore(graph, sourceEvidenceIds)` from the Investigation Graph (HOR-14). Only infrastructure nodes with `implicated: true` (implicationScore ≥ 0.6) contribute. The delta is `implicationScore × 0.10`, capped at +0.10.
 
-This replaces the old per-cause `maxImplicationScore(graph, cause.evidenceIds) * 0.1` boost that was scattered in `engine.ts`.
-
 ### Factor 4 — Runtime signals (recency + recurrence)
 
 Two sub-signals combined into one factor:
@@ -118,7 +129,7 @@ Two sub-signals combined into one factor:
 - ≤ 24 hours: +0.02
 - Older: 0
 
-**Recurrence** — for `log` evidence with `isNew: true` or `ratio ≥ 3.0`:
+**Recurrence** — for `log` evidence, reads the top-level `Evidence` fields `isNew` and `ratio` (normalized from the provider by `engine.ts`, not from `ev.payload`):
 - `isNew: true`: +0.05 (new error signature, never seen before)
 - `ratio ≥ 3.0`: +0.03 (error spike)
 
@@ -142,6 +153,41 @@ Guards against structural-only evidence misleading the score:
 - Any attached evidence has `relevance ≥ 0.85` and is not structural: +0.03
 
 These are mutually exclusive (structural evidence can't also be high-relevance anomaly evidence).
+
+### Factor 7 — Finding uncertainty
+
+Engine findings are deterministic interpretations of the same evidence IDs, not independent observations. This factor therefore **never boosts** a score — doing so would double-count one signal. Instead it penalizes causes whose evidence only appears in low-confidence findings.
+
+The factor looks at `ScoringContext.findings` filtered to those with `kind !== 'observation'` whose `evidenceIds` overlap with the cause's `sourceEvidenceIds`.
+
+- No relevant findings, or max finding confidence ≥ 0.60 → 0 (neutral; investigation is confident)
+- All relevant findings below 0.60 → negative delta proportional to the gap:
+
+```
+delta = −(0.60 − maxConfidence) × 0.10    (max −0.06)
+```
+
+When `ctx.findings` is omitted (e.g. calling the scorer outside the engine), the factor is skipped entirely.
+
+## Post-delta constraints
+
+After all seven factor deltas are summed and added to `baseScore`, the following constraint is applied before `finalScore` is set:
+
+### Single-source ceiling
+
+The `highly-likely` band (≥ 0.85) is documented as requiring strong multi-source confirmation. A single provider can accumulate many factor boosts from different angles of the same signal, so candidates whose attached evidence comes from **≤ 1 distinct `source`** are hard-capped at **0.84** regardless of factor totals.
+
+When the ceiling fires, a `single-source-ceiling` explanation is appended with the capping delta.
+
+```json
+{ "factor": "single-source-ceiling", "delta": -0.055, "reason": "Highly-likely requires multi-source corroboration — capped at 0.84 (single provider)" }
+```
+
+## Affected node derivation
+
+`CauseCandidate.affectedNodeIds` is derived automatically from the investigation graph when the caller omits `affectedNodeIds` from `CauseInput`. The scorer calls `implicatedNodeIds(graph, sourceEvidenceIds)` (from `graph.ts`) which returns IDs of all implicated infrastructure nodes whose `evidenceIds` overlap with the cause's source evidence.
+
+Callers can still supply explicit `affectedNodeIds` to override derivation.
 
 ## Public API
 
@@ -167,7 +213,13 @@ rankCauses(inputs: CauseInput[], ctx: ScoringContext, limit?: number): CauseCand
 | Blast radius fan-out | 0.15–0.20 (queue-correlation bonus) | `blast-radius` |
 | Runtime errors + queue path | 0.30 | `error-correlation` |
 
-After building all inputs, the engine calls `rankCauses(causeInputs, { evidence, graph })` — no manual graph-boost loop, no `suspectedCauses.sort()` call.
+After building all inputs, the engine calls:
+
+```ts
+rankCauses(causeInputs, { evidence, graph, findings })
+```
+
+The `findings` field passes engine findings to Factor 7. No manual graph-boost loop or `suspectedCauses.sort()` call.
 
 ## Replacing SuspectedCause
 
@@ -181,6 +233,8 @@ After building all inputs, the engine calls `rankCauses(causeInputs, { evidence,
 
 New fields added: `id`, `category`, `affectedNodeIds`, `baseScore`, `confidence`, `band`, `explanations`, `metadata`.
 
+Persisted reports written before HOR-15 are normalized by `migrateReport()` (exported from `@horus/engine`). The migration is idempotent and handles both legacy and partial current-shape entries.
+
 ## Determinism guarantee
 
 - `baseScore` is computed from deterministic inputs (queue depth, impact count, queue-hit count)
@@ -190,17 +244,32 @@ New fields added: `id`, `category`, `affectedNodeIds`, `baseScore`, `confidence`
 
 ## Example explanation list
 
-A queue-backlog cause backed by high-relevance queue-state evidence, log evidence, and a large blast radius:
+A queue-backlog cause backed by high-relevance queue-state evidence, log evidence from two providers, and a large blast radius:
 
 ```json
 [
-  { "factor": "evidence-quality", "delta": 0.225, "reason": "2 anomaly evidence item(s); priority-weighted quality 0.73 (+0.22 vs 0.50 baseline)" },
-  { "factor": "source-diversity",  "delta": 0.05,  "reason": "Evidence from 2 independent providers (logs, queue) — multi-source corroboration" },
-  { "factor": "graph-proximity",   "delta": 0.09,  "reason": "Infrastructure node implication score 0.90 → graph-confirmed path (+9%)" },
-  { "factor": "runtime-signals",   "delta": 0.05,  "reason": "Evidence from within the last hour; New error signature (isNew=true)" },
-  { "factor": "blast-radius",      "delta": 0.05,  "reason": "Blast radius: 20 affected symbol(s) — fault propagation risk" },
-  { "factor": "signal-strength",   "delta": 0.03,  "reason": "2 high-relevance anomaly signal(s) (relevance ≥ 0.85)" }
+  { "factor": "evidence-quality",      "delta":  0.225, "reason": "2 anomaly evidence item(s); priority-weighted quality 0.73 (+0.22 vs 0.50 baseline)" },
+  { "factor": "source-diversity",      "delta":  0.05,  "reason": "Evidence from 2 independent providers (logs, queue) — multi-source corroboration" },
+  { "factor": "graph-proximity",       "delta":  0.09,  "reason": "Infrastructure node implication score 0.90 → graph-confirmed path (+9%)" },
+  { "factor": "runtime-signals",       "delta":  0.05,  "reason": "Evidence from within the last hour; New error signature (isNew=true)" },
+  { "factor": "blast-radius",          "delta":  0.05,  "reason": "Blast radius: 20 affected symbol(s) — fault propagation risk" },
+  { "factor": "signal-strength",       "delta":  0.03,  "reason": "2 high-relevance anomaly signal(s) (relevance ≥ 0.85)" }
 ]
 ```
 
-`baseScore = 0.45`, `totalDelta = 0.445`, `finalScore = clamp01(0.895) = 0.895`, `band = 'highly-likely'`.
+`baseScore = 0.45`, `totalDelta = 0.445`, `rawScore = clamp01(0.895) = 0.895`. Two sources → single-source ceiling does not apply. `finalScore = 0.895`, `band = 'highly-likely'`.
+
+Single-source scenario (same cause, one provider):
+
+```json
+[
+  { "factor": "evidence-quality",      "delta":  0.225, "reason": "..." },
+  { "factor": "graph-proximity",       "delta":  0.09,  "reason": "..." },
+  { "factor": "runtime-signals",       "delta":  0.05,  "reason": "..." },
+  { "factor": "blast-radius",          "delta":  0.05,  "reason": "..." },
+  { "factor": "signal-strength",       "delta":  0.03,  "reason": "..." },
+  { "factor": "single-source-ceiling", "delta": -0.045, "reason": "Highly-likely requires multi-source corroboration — capped at 0.84 (single provider)" }
+]
+```
+
+`rawScore = 0.885` → capped to `0.84`, `band = 'likely'`.
