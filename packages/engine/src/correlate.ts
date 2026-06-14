@@ -279,10 +279,10 @@ function buildChains(evidence: Evidence[]): CauseChain[] {
 // ---------------------------------------------------------------------------
 
 const MISSING_NOTES: Record<string, string> = {
-  log: 'No log evidence yet (Elasticsearch provider pending, HOR-10)',
-  metric: 'No metric evidence yet (Prometheus provider pending, HOR-11)',
-  'queue-state': 'No live queue depth/failure data yet (BullMQ provider pending, HOR-12)',
-  'redis-key': 'No Redis state evidence yet',
+  log: 'No error logs collected for this investigation (Elasticsearch)',
+  metric: 'No metrics collected — run `horus metrics "<hint>"` (Grafana)',
+  'queue-state': 'No live queue depth/failure data (Redis/BullMQ)',
+  'redis-key': 'No Redis state collected',
 };
 
 const RUNTIME_KINDS: EvidenceKind[] = ['log', 'metric', 'queue-state', 'redis-key'];

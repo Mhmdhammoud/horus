@@ -65,7 +65,18 @@ export async function runInvestigate(
     try {
       const report = await investigate(
         { hint, repo: projectName, since: opts.since, service },
-        { code, db, logs, mongo },
+        {
+          code,
+          db,
+          logs,
+          mongo,
+          connectors: {
+            elasticsearch: !!renv.connectors.elasticsearch?.url,
+            grafana: !!renv.connectors.grafana?.url,
+            mongodb: !!renv.connectors.mongodb?.url,
+            redis: !!renv.connectors.redis?.url,
+          },
+        },
       );
       // --json is back-compat for --format json.
       const format = opts.json ? 'json' : (opts.format ?? 'text');

@@ -92,7 +92,7 @@ export function generateHypotheses(
       supportingEvidenceIds: queueEvs.map((e) => e.id),
       contradictingEvidenceIds: [],
       missingEvidence: [
-        'Live queue depth + failed/delayed job counts (BullMQ provider, HOR-12)',
+        'Live queue depth + failed/delayed counts (Redis/BullMQ — `horus queues`)',
       ],
     });
   }
@@ -110,7 +110,7 @@ export function generateHypotheses(
       supportingEvidenceIds: queueEvs.map((e) => e.id),
       contradictingEvidenceIds: [],
       missingEvidence: [
-        'Worker processing latency/throughput metrics (Prometheus, HOR-11)',
+        'Worker latency/throughput metrics (Grafana — `horus metrics`)',
       ],
     });
   }
@@ -125,7 +125,7 @@ export function generateHypotheses(
     supportingEvidenceIds: [],
     contradictingEvidenceIds: [],
     missingEvidence: [
-      'Request latency metrics + error logs (Prometheus/Elasticsearch, HOR-10/11)',
+      'Request latency metrics (Grafana) + error logs (Elasticsearch)',
     ],
   });
 
@@ -151,7 +151,7 @@ export function generateHypotheses(
     confidence: 0.15,
     supportingEvidenceIds: [],
     contradictingEvidenceIds: [],
-    missingEvidence: ['Infra/Redis metrics + Redis state (Prometheus/Redis)'],
+    missingEvidence: ['Infra/Redis metrics (Grafana) + Redis state'],
   });
 
   // Sort by confidence descending (stable — JS Array.sort is stable in V8 / Node 11+)

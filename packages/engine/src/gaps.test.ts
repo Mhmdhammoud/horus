@@ -147,26 +147,26 @@ describe('detectMissingEvidence', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Additional: metrics gap why-text is context-aware when queue topology present
+  // Additional: gap text reflects configured connectors, not ticket names
   // -------------------------------------------------------------------------
 
-  it('metrics gap why is context-aware when queue topology present', () => {
-    const report = makeMinimalReport({
-      timeline: {
-        events: [],
-        boundaryCrossings: [
-          { queueName: 'job-queue', producer: 'enqueue', worker: 'jobWorker', evidenceId: 'ev-002' },
-        ],
-      },
-      evidence: [],
-    });
-
-    const result = detectMissingEvidence(report);
+  it('metrics gap points at `horus metrics` when Grafana is configured', () => {
+    const report = makeMinimalReport({ evidence: [] });
+    const result = detectMissingEvidence(report, { grafana: true });
     const metricsGap = result.gaps.find((g) => g.dimension === 'metrics');
-    expect(metricsGap).toBeDefined();
-    if (metricsGap !== undefined) {
-      expect(metricsGap.why).toContain('worker-slowdown');
-    }
+    expect(metricsGap?.nextSource).toContain('horus metrics');
+    expect(metricsGap?.nextSource).not.toContain('HOR-');
+  });
+
+  it('logs gap distinguishes configured-but-empty from not-configured', () => {
+    const report = makeMinimalReport({ evidence: [] });
+    const configured = detectMissingEvidence(report, { elasticsearch: true })
+      .gaps.find((g) => g.dimension === 'logs');
+    const notConfigured = detectMissingEvidence(report, { elasticsearch: false })
+      .gaps.find((g) => g.dimension === 'logs');
+    expect(configured?.why).toContain('No error logs matched');
+    expect(notConfigured?.why).toContain('No Elasticsearch connector');
+    expect(configured?.nextSource).not.toContain('HOR-');
   });
 
   // -------------------------------------------------------------------------

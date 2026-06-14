@@ -8,6 +8,14 @@
 
 import type { InvestigationReport } from './types.js';
 
+/** Which connectors are configured for the active project/environment. */
+export interface ConnectorFlags {
+  elasticsearch?: boolean;
+  grafana?: boolean;
+  mongodb?: boolean;
+  redis?: boolean;
+}
+
 /** A single dimension of missing evidence and its investigation impact. */
 export interface EvidenceGap {
   /** Short label for the missing dimension, e.g. 'logs'. */
@@ -36,7 +44,10 @@ export interface GapAnalysis {
  * Analyse `r` to find missing evidence dimensions and compute the confidence
  * ceiling. Purely deterministic — same report always produces the same result.
  */
-export function detectMissingEvidence(r: InvestigationReport): GapAnalysis {
+export function detectMissingEvidence(
+  r: InvestigationReport,
+  connectors: ConnectorFlags = {},
+): GapAnalysis {
   // ── Presence flags ──────────────────────────────────────────────────────────
   const hasLog = r.evidence.some((e) => e.kind === 'log');
   const hasMetric = r.evidence.some((e) => e.kind === 'metric');
@@ -44,32 +55,36 @@ export function detectMissingEvidence(r: InvestigationReport): GapAnalysis {
   const hasCommit = r.evidence.some((e) => e.kind === 'commit');
   const hasTrace = r.evidence.some((e) => e.links != null && e.links.traceId != null);
   const hasQueueTopology = r.timeline.boundaryCrossings.length > 0;
-  // No ownership evidence kind yet — HOR-20.
   const ownershipKnown = false;
 
   const gaps: EvidenceGap[] = [];
   const blindSpots: string[] = [];
 
-  // ── Candidate gaps (context-aware; only pushed when MISSING) ────────────────
+  // ── Candidate gaps — text reflects what's actually CONFIGURED, not tickets ──
 
   if (!hasLog) {
     gaps.push({
       dimension: 'logs',
-      why: 'No runtime logs — cannot confirm the actual error signatures / what failed at runtime.',
-      nextSource: 'Elasticsearch logs provider (HOR-10)',
+      why: connectors.elasticsearch
+        ? 'No error logs matched in the window — cannot confirm the actual error signatures.'
+        : 'No Elasticsearch connector configured for this environment — no runtime logs.',
+      nextSource: connectors.elasticsearch
+        ? 'Widen the window (--since) or inspect `horus logs <service>`'
+        : 'Add an `elasticsearch` connector to the project/environment',
       confidenceImpact: 0.1,
     });
     blindSpots.push('Cannot see the real error.');
   }
 
   if (!hasMetric) {
-    const why = hasQueueTopology
-      ? 'Queue boundaries are present but worker latency/throughput metrics are unavailable — cannot confirm the worker-slowdown or external-api-latency hypotheses.'
-      : 'No metrics — cannot see latency/error-rate trends.';
     gaps.push({
       dimension: 'metrics',
-      why,
-      nextSource: 'Prometheus provider (HOR-11)',
+      why: connectors.grafana
+        ? 'Metrics are not folded into the investigation yet — latency/error-rate trends not collected here.'
+        : 'No Grafana connector configured — cannot see latency/error-rate trends.',
+      nextSource: connectors.grafana
+        ? 'Run `horus metrics "<hint>"` for latency spikes / throughput drops / queue growth'
+        : 'Add a `grafana` connector to the environment',
       confidenceImpact: 0.1,
     });
     blindSpots.push('Cannot validate latency-based hypotheses.');
@@ -78,8 +93,12 @@ export function detectMissingEvidence(r: InvestigationReport): GapAnalysis {
   if (hasQueueTopology && !hasQueueState) {
     gaps.push({
       dimension: 'queue runtime state',
-      why: 'Queue topology is known but live depth + failed/delayed job counts are unavailable — cannot confirm whether a backlog actually exists.',
-      nextSource: 'BullMQ runtime provider (HOR-12) / horus queues',
+      why: connectors.redis
+        ? 'Queue topology is known but live depth + failed/delayed counts were not collected.'
+        : 'Queue topology is known but there is no Redis/BullMQ connector for live depth/failures.',
+      nextSource: connectors.redis
+        ? 'Inspect `horus queues`'
+        : 'Add a `redis` connector to read live BullMQ state',
       confidenceImpact: 0.1,
     });
     blindSpots.push('Cannot determine if the queue is actually backed up.');
@@ -89,7 +108,7 @@ export function detectMissingEvidence(r: InvestigationReport): GapAnalysis {
     gaps.push({
       dimension: 'deployment records',
       why: 'No deployment/change data in scope — cannot tell what shipped before the incident.',
-      nextSource: 'Re-run with --since <ref>, or horus what-changed <service>',
+      nextSource: 'Re-run with --since <ref>, or `horus what-changed <service>`',
       confidenceImpact: 0.08,
     });
     blindSpots.push('Cannot correlate with a recent change.');
@@ -99,7 +118,7 @@ export function detectMissingEvidence(r: InvestigationReport): GapAnalysis {
     gaps.push({
       dimension: 'ownership',
       why: 'The owning team/maintainer of the implicated component is unknown.',
-      nextSource: 'Ownership mapping (HOR-20) / git blame',
+      nextSource: '`horus owner <symbol>` (git history)',
       confidenceImpact: 0.05,
     });
     blindSpots.push('Cannot route to an owner.');

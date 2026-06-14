@@ -40,7 +40,7 @@ import {
 import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
 import { recallSimilar, storeIncidentMemory, deriveTags } from './memory.js';
-import { detectMissingEvidence } from './gaps.js';
+import { detectMissingEvidence, type ConnectorFlags } from './gaps.js';
 import type {
   InvestigationInput,
   InvestigationReport,
@@ -49,6 +49,7 @@ import type {
 } from './types.js';
 import { buildTimeline } from './timeline.js';
 import { correlate } from './correlate.js';
+import { rankSeeds } from './seeds.js';
 
 /** Dependencies the engine needs: a code provider and a database handle. */
 export interface EngineDeps {
@@ -58,6 +59,8 @@ export interface EngineDeps {
   logs?: LogsProvider | null;
   /** Optional MongoDB state provider — folds application-state anomalies as evidence. */
   mongo?: StateProvider | null;
+  /** Which connectors are configured for the env — drives honest gap text. */
+  connectors?: ConnectorFlags;
 }
 
 /** Map an evidence kind to its originating provider. */
@@ -178,8 +181,11 @@ export async function investigate(
     return ev;
   }
 
-  // b. RESOLVE seeds
-  const seeds = await code.searchSymbols(hint, 5);
+  // b. RESOLVE seeds — rank candidates so we prefer architectural entry points
+  // (resolver/controller/service/route) over tiny helpers/scripts (HOR-39).
+  const rawSeeds = await code.searchSymbols(hint, 5);
+  const ranked = rankSeeds(rawSeeds);
+  const seeds = ranked.map((r) => r.symbol);
   // noUncheckedIndexedAccess: a non-empty array could still index to undefined.
   const top = seeds[0];
 
@@ -401,7 +407,7 @@ export async function investigate(
   // f. FINDINGS (label kept as 'e' externally but shifted to 'f' internally)
   const findings: ReportFinding[] = [];
 
-  // The top seed is search rank 0 — highest confidence in the resolution.
+  // The seed is the best-ranked candidate (architectural entry point preferred).
   findings.push({
     kind: 'observation',
     title: `Seed resolves to ${label} at ${top.filePath}:${seedLine}`,
@@ -409,6 +415,21 @@ export async function investigate(
     confidence: 1,
     evidenceIds: [seedEv.id],
   });
+
+  // Surface the other ranked candidate areas so a narrow pick is transparent.
+  if (ranked.length > 1) {
+    const candidates = ranked
+      .slice(0, 4)
+      .map((r) => `${r.symbol.name} [${r.role}]`)
+      .join(', ');
+    findings.push({
+      kind: 'observation',
+      title: `Candidate areas (ranked): ${candidates}`,
+      detail: `Investigating ${label} [${ranked[0]?.role}]; re-run with a more specific hint to target another.`,
+      confidence: 0.5,
+      evidenceIds: [seedEv.id],
+    });
+  }
 
   if (flows.length > 0) {
     findings.push({
@@ -577,7 +598,11 @@ export async function investigate(
 
   // HOR-19 — compute gap analysis and cap confidence BEFORE persisting so the
   // persisted record reflects the capped value.
-  const gapAnalysis = detectMissingEvidence(report);
+  const connectorFlags: ConnectorFlags = deps.connectors ?? {
+    elasticsearch: deps.logs != null,
+    mongodb: deps.mongo != null,
+  };
+  const gapAnalysis = detectMissingEvidence(report, connectorFlags);
   report.gapAnalysis = gapAnalysis;
   report.confidence = Math.min(report.confidence, gapAnalysis.confidenceCeiling);
 

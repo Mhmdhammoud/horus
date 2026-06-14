@@ -111,6 +111,24 @@ export function deriveSignature(r: InvestigationReport): string {
   return [area, topHypCategory, queues].join('|');
 }
 
+/** Hypothesis-category tags — generic, shared by many unrelated incidents. */
+const GENERIC_HYPOTHESIS_TAGS = new Set([
+  'queue-backlog',
+  'worker-slowdown',
+  'external-api-latency',
+  'deployment-regression',
+  'retry-storm',
+  'infrastructure',
+]);
+
+/** True for tags too generic to imply two incidents are actually related. */
+export function isGenericTag(tag: string): boolean {
+  return (
+    GENERIC_HYPOTHESIS_TAGS.has(tag) ||
+    /(^|-)(prod|production|staging|dev|local)$/.test(tag)
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Jaccard tag overlap
 // ---------------------------------------------------------------------------
@@ -154,6 +172,7 @@ export async function recallSimilar(
     const rows = await db.select().from(incidentMemory).limit(200);
 
     const candidates: SimilarIncident[] = [];
+    const tagSet = new Set(tags);
     for (const row of rows) {
       // Skip the current investigation.
       if (
@@ -167,9 +186,10 @@ export async function recallSimilar(
       const overlap = tagOverlap(tags, rowTags);
       if (overlap <= 0) continue;
 
-      // Compute shared tags (intersection).
-      const tagSet = new Set(tags);
       const sharedTags = rowTags.filter((t) => tagSet.has(t));
+      // A match is only meaningful if it shares a SPECIFIC tag (a symbol/file/queue/
+      // module), not just generic hypothesis categories or env/service labels (HOR-39).
+      if (sharedTags.every((t) => isGenericTag(t))) continue;
 
       candidates.push({
         investigationId: row.investigationId,
@@ -180,9 +200,16 @@ export async function recallSimilar(
       });
     }
 
-    // Sort by overlap descending, return top 3.
-    candidates.sort((a, b) => b.overlap - a.overlap);
-    return candidates.slice(0, 3);
+    // Deduplicate by title (the same incident may have been investigated repeatedly),
+    // keeping the best-overlap representative; then take the top 3 distinct incidents.
+    const byTitle = new Map<string, SimilarIncident>();
+    for (const c of candidates) {
+      const existing = byTitle.get(c.title);
+      if (existing === undefined || c.overlap > existing.overlap) {
+        byTitle.set(c.title, c);
+      }
+    }
+    return [...byTitle.values()].sort((a, b) => b.overlap - a.overlap).slice(0, 3);
   } catch {
     return [];
   }
