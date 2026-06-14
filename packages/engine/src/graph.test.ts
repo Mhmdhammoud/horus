@@ -532,12 +532,12 @@ describe('buildGraph — implication propagation', () => {
 // ---------------------------------------------------------------------------
 
 describe('maxImplicationScore', () => {
-  it('returns the implication score of the infrastructure node linked to the given evidence', () => {
+  it('returns the implication score of the implicated infrastructure node linked to the given evidence', () => {
     const edge = makeEv({
       id: 'ev-mis-edge',
       source: 'queue',
       kind: 'queue-edge',
-      relevance: 0.1,
+      relevance: 0.9,
       payload: { queueName: 'payments', producerSymbol: 'S', workerSymbol: 'W' },
       links: {},
     });
@@ -551,10 +551,28 @@ describe('maxImplicationScore', () => {
     });
     const g = buildGraph([edge, state]);
 
-    // evidence IDs from the queue-edge cause — the queue node has both IDs attached
+    // queue node has both evidence IDs attached.
+    // queue.implicationScore = 0.88 (from queue-state; queue-edge is structural, excluded).
+    // queue.implicated = true (0.88 >= 0.6).
     const score = maxImplicationScore(g, ['ev-mis-edge']);
-    // queue.implicationScore = max(0.1, 0.88) = 0.88
     expect(score).toBeCloseTo(0.88);
+  });
+
+  it('returns 0 when the matching infrastructure node is not implicated', () => {
+    // queue-state with low relevance — creates the node but does not implicate it
+    const state = makeEv({
+      id: 'ev-healthy-state',
+      source: 'queue',
+      kind: 'queue-state',
+      relevance: 0.4, // below the 0.6 implication threshold
+      payload: { queueName: 'healthy' },
+      links: { queueName: 'healthy' },
+    });
+    const g = buildGraph([state]);
+    // queue:healthy exists and has the evidence ID, but is not implicated
+    const queue = g.nodes.find((n) => n.id === 'queue:healthy')!;
+    expect(queue.implicated).toBe(false);
+    expect(maxImplicationScore(g, ['ev-healthy-state'])).toBe(0);
   });
 
   it('returns 0 when evidence ids match only evidence nodes (not infrastructure)', () => {

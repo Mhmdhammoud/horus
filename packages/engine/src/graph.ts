@@ -316,12 +316,12 @@ export function buildGraph(evidence: Evidence[]): InvestigationGraph {
 }
 
 /**
- * Return the maximum implication score among all infrastructure nodes that
- * have any of `evidenceIds` in their `.evidenceIds` list.
+ * Return the maximum implication score among all **implicated** infrastructure
+ * nodes that have any of `evidenceIds` in their `.evidenceIds` list.
  *
- * Used by the engine to compute a score boost for a suspected cause: a cause
- * whose evidence directly created an implicated infrastructure node (queue,
- * service, collection) warrants a higher base score.
+ * Only nodes where `implicated === true` contribute. Healthy snapshots and
+ * topology-only nodes have `implicationScore < 0.6` and are never implicated,
+ * so they cannot boost a suspected cause even if their evidence IDs match.
  */
 export function maxImplicationScore(
   graph: InvestigationGraph,
@@ -329,7 +329,7 @@ export function maxImplicationScore(
 ): number {
   const idSet = new Set(evidenceIds);
   return graph.nodes.reduce((max, node) => {
-    if (node.type === 'evidence') return max;
+    if (node.type === 'evidence' || !node.implicated) return max;
     return node.evidenceIds.some((eid) => idSet.has(eid))
       ? Math.max(max, node.implicationScore)
       : max;
