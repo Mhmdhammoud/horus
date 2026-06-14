@@ -141,6 +141,22 @@ export function logWindowFrom(since: string | undefined): string {
   return new Date(now - 7 * 86_400_000).toISOString();
 }
 
+/**
+ * Derive the confidence for the queue-runtime anomaly finding.
+ * Exported for unit testing — logic must stay in sync with the inline usage below.
+ *
+ * Rule: starvation-only (no pure-backlog queues) → 0.65 (hedged single snapshot).
+ * Any pure backlog or failure → 0.85 (higher certainty from depth counts).
+ */
+export function queueFindingConfidence(opts: {
+  starvedCount: number;
+  backloggedCount: number;
+  failingCount: number;
+}): number {
+  const { starvedCount, backloggedCount, failingCount } = opts;
+  return starvedCount > 0 && backloggedCount === 0 && failingCount === 0 ? 0.65 : 0.85;
+}
+
 /** Does `since` look like a range or a concrete ref worth diffing? */
 function looksDiffable(since: string): boolean {
   const s = since.trim();
@@ -567,7 +583,11 @@ export async function investigate(
       findings.push({
         kind: 'anomaly',
         title: `Queue runtime anomalies — ${parts.join('; ')}`,
-        confidence: starved.length > 0 && backlogged.length === 0 ? 0.65 : 0.85,
+        confidence: queueFindingConfidence({
+          starvedCount: starved.length,
+          backloggedCount: backlogged.length,
+          failingCount: failing.length,
+        }),
         evidenceIds: queueRuntimeEvIds,
       });
     } else {
