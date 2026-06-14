@@ -161,17 +161,17 @@ describe('renderReport — queue runtime section', () => {
     expect(output).not.toContain('## Queue runtime');
   });
 
-  it('shows unavailable note when queue gap exists but no evidence', () => {
+  it('shows gap.why when queue gap exists but no evidence', () => {
     const r = makeReport({
       gapAnalysis: {
-        gaps: [{ dimension: 'queue runtime state', why: 'Redis not reachable', nextSource: 'horus queues', confidenceImpact: 0.1 }],
+        gaps: [{ dimension: 'queue runtime state', why: 'No Redis connector configured for this environment.', nextSource: 'horus queues', confidenceImpact: 0.1 }],
         blindSpots: [],
         confidenceCeiling: 0.9,
       },
     });
     const output = renderReport(r);
     expect(output).toContain('## Queue runtime');
-    expect(output).toContain('unavailable');
+    expect(output).toContain('No Redis connector configured for this environment.');
   });
 
   it('renders backlog signal with queue name as sub-header', () => {
@@ -264,17 +264,17 @@ describe('reportToMarkdown — queue runtime section', () => {
     expect(output).not.toContain('## Queue runtime');
   });
 
-  it('renders unavailable note in markdown', () => {
+  it('renders gap.why in markdown when no queue evidence', () => {
     const r = makeReport({
       gapAnalysis: {
-        gaps: [{ dimension: 'queue runtime state', why: 'no redis', nextSource: 'horus queues', confidenceImpact: 0.1 }],
+        gaps: [{ dimension: 'queue runtime state', why: 'No Redis connector configured.', nextSource: 'horus queues', confidenceImpact: 0.1 }],
         blindSpots: [],
         confidenceCeiling: 0.9,
       },
     });
     const output = reportToMarkdown(r);
     expect(output).toContain('## Queue runtime');
-    expect(output).toContain('unavailable');
+    expect(output).toContain('No Redis connector configured.');
   });
 
   it('renders queue signals as bullet list with relevance code', () => {

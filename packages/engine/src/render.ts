@@ -255,11 +255,11 @@ export function renderReport(r: InvestigationReport): string {
   lines.push('');
 
   const queueGroups = groupQueueEvidence(r.evidence);
-  const hasQueueGap = r.gapAnalysis.gaps.some((g) => g.dimension === 'queue runtime state');
-  if (queueGroups.size > 0 || hasQueueGap) {
+  const queueGap = r.gapAnalysis.gaps.find((g) => g.dimension === 'queue runtime state');
+  if (queueGroups.size > 0 || queueGap) {
     lines.push('## Queue runtime');
     if (queueGroups.size === 0) {
-      lines.push('  (unavailable — Redis unreachable or no queues discovered)');
+      lines.push(`  (${queueGap!.why})`);
     } else {
       for (const [name, evs] of queueGroups) {
         lines.push(`  ${name}`);
@@ -397,11 +397,11 @@ export function reportToMarkdown(r: InvestigationReport): string {
   out.push('');
 
   const mdQueueGroups = groupQueueEvidence(r.evidence);
-  const mdHasQueueGap = r.gapAnalysis.gaps.some((g) => g.dimension === 'queue runtime state');
-  if (mdQueueGroups.size > 0 || mdHasQueueGap) {
+  const mdQueueGap = r.gapAnalysis.gaps.find((g) => g.dimension === 'queue runtime state');
+  if (mdQueueGroups.size > 0 || mdQueueGap) {
     out.push('## Queue runtime');
     if (mdQueueGroups.size === 0) {
-      out.push('_unavailable — Redis unreachable or no queues discovered_');
+      out.push(`_${mdQueueGap!.why}_`);
     } else {
       for (const [name, evs] of mdQueueGroups) {
         out.push(`**${name}**`);
