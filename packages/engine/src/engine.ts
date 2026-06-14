@@ -589,7 +589,7 @@ export async function investigate(
           : `${q.waiting} waiting jobs`;
         suspectedCauses.push({
           statement: `Queue "${q.queueName}" is backed up (${detail}) — ${producer} → ${worker} path implicated`,
-          score: clamp01(isStarved ? 0.7 : 0.5 + Math.min(q.waiting / 5_000, 0.2)),
+          score: clamp01(isStarved ? 0.5 : 0.5 + Math.min(q.waiting / 5_000, 0.2)),
           evidenceIds: queueRuntimeEvIds,
         });
       }

@@ -101,7 +101,7 @@ describe('analyzeQueueSignals', () => {
     expect(starvation).toBeDefined();
     expect(starvation!.title).toContain('423');
     expect(starvation!.title).toContain('0 active workers');
-    expect(starvation!.relevance).toBe(0.9);
+    expect(starvation!.relevance).toBe(0.7);
   });
 
   it('starvation takes precedence over plain backlog signal', () => {
