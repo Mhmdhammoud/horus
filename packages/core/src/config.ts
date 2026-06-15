@@ -387,12 +387,43 @@ export function defineConfig(config: HorusConfig): HorusConfig {
   return config;
 }
 
+/**
+ * Example value hints shown alongside Zod validation errors.
+ * Path segments that are array indices are replaced with '*' before lookup.
+ */
+const CONFIG_EXAMPLES: Record<string, string> = {
+  '(root)': 'add `database: { url: "postgresql://..." }` and at least one project',
+  'database': 'e.g. database: { url: "postgresql://horus:horus@localhost:5433/horus" }',
+  'database.url': 'e.g. "postgresql://horus:horus@localhost:5433/horus"',
+  'projects.*.name': 'e.g. name: "my-api"',
+  'projects.*.repositories': 'e.g. [{ name: "my-api", path: "/path/to/repo" }]',
+  'projects.*.repositories.*.name': 'e.g. name: "my-api"',
+  'projects.*.repositories.*.path': 'e.g. path: "/absolute/path/to/repo"',
+  'projects.*.repositories.*.axon.hostUrl':
+    'e.g. "http://127.0.0.1:8420"  (start one with: axon host --port 8420)',
+  'projects.*.environments': 'e.g. [{ name: "production", connectors: {} }]',
+  'projects.*.environments.*.name': 'e.g. name: "production"',
+  'projects.*.environments.*.connectors.elasticsearch.indexPattern':
+    'e.g. indexPattern: "my-api-prod-*"',
+};
+
+/** Normalize a Zod issue path to the lookup key (replace numeric indices with '*'). */
+function normalizePath(path: (string | number)[]): string {
+  if (path.length === 0) return '(root)';
+  return path.map((seg) => (typeof seg === 'number' ? '*' : seg)).join('.');
+}
+
 /** Validate a raw config object, throwing a readable error on failure. */
 function parseConfig(raw: unknown, source: string): HorusConfig {
   const parsed = horusConfigSchema.safeParse(raw);
   if (!parsed.success) {
     const details = parsed.error.issues
-      .map((i) => `  • ${i.path.join('.') || '(root)'}: ${i.message}`)
+      .map((i) => {
+        const key = normalizePath(i.path);
+        const example = CONFIG_EXAMPLES[key];
+        const hint = example ? `  → ${example}` : '';
+        return `  • ${key}: ${i.message}${hint ? `\n${hint}` : ''}`;
+      })
       .join('\n');
     throw new Error(`Invalid Horus config (${source}):\n${details}`);
   }

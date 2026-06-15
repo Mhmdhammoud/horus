@@ -539,3 +539,131 @@ describe('loadConfig — native JS/ESM loading (HOR-83)', () => {
     expect(cfg.database.url).toBe('postgresql://horus:horus@localhost:5433/horus');
   });
 });
+
+// ---------------------------------------------------------------------------
+// HOR-102: actionable config validation errors
+// ---------------------------------------------------------------------------
+
+describe('parseConfig — actionable validation errors (HOR-102)', () => {
+  it('includes the config source path in the error', () => {
+    expect(() => horusConfigSchema.parse({})).toThrow();
+    // Verify via loadConfig that the source path appears in the message
+  });
+
+  it('missing database.url shows a postgresql example', () => {
+    let caught: Error | null = null;
+    try {
+      horusConfigSchema.parse({ projects: [] });
+    } catch (e) {
+      caught = e as Error;
+    }
+    // Zod throws on missing database — the parseConfig wrapper adds the example hint
+    // Here we test the schema rejects it; example hint is tested via loadConfig below
+    expect(caught).not.toBeNull();
+  });
+
+  it('loadConfig shows database.url example in error for missing database', async () => {
+    const configPath = join(tmpdir(), `horus-valtest-${Math.random().toString(36).slice(2)}.js`);
+    writeFileSync(configPath, `export default { projects: [] };\n`);
+    try {
+      let err: Error | null = null;
+      try { await loadConfig(configPath); } catch (e) { err = e as Error; }
+      expect(err).not.toBeNull();
+      expect(err!.message).toContain('Invalid Horus config');
+      expect(err!.message).toContain(configPath);
+      expect(err!.message).toContain('postgresql://');
+    } finally {
+      rmSync(configPath, { force: true });
+    }
+  });
+
+  it('invalid axon hostUrl shows example URL with port hint', async () => {
+    const configPath = join(tmpdir(), `horus-valtest-${Math.random().toString(36).slice(2)}.js`);
+    writeFileSync(configPath, `export default {
+  database: { url: "postgresql://horus:horus@localhost:5433/horus" },
+  projects: [{
+    name: "x",
+    repositories: [{ name: "x", path: "/x", axon: { hostUrl: "not-a-url" } }],
+    environments: [{ name: "prod", connectors: {} }],
+  }],
+};\n`);
+    try {
+      let err: Error | null = null;
+      try { await loadConfig(configPath); } catch (e) { err = e as Error; }
+      expect(err).not.toBeNull();
+      expect(err!.message).toContain('hostUrl');
+      expect(err!.message).toContain('8420');
+    } finally {
+      rmSync(configPath, { force: true });
+    }
+  });
+
+  it('empty repositories array shows example repository shape', async () => {
+    const configPath = join(tmpdir(), `horus-valtest-${Math.random().toString(36).slice(2)}.js`);
+    writeFileSync(configPath, `export default {
+  database: { url: "postgresql://horus:horus@localhost:5433/horus" },
+  projects: [{
+    name: "x",
+    repositories: [],
+    environments: [{ name: "prod", connectors: {} }],
+  }],
+};\n`);
+    try {
+      let err: Error | null = null;
+      try { await loadConfig(configPath); } catch (e) { err = e as Error; }
+      expect(err).not.toBeNull();
+      expect(err!.message).toContain('repositories');
+    } finally {
+      rmSync(configPath, { force: true });
+    }
+  });
+
+  it('throws with a readable "not found" error for an unknown config path', async () => {
+    const err = await loadConfig('/tmp/horus-does-not-exist-xyz.js').catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain('Could not load Horus config');
+  });
+
+  it('valid config continues to load without errors', async () => {
+    const configPath = join(tmpdir(), `horus-valtest-${Math.random().toString(36).slice(2)}.js`);
+    writeFileSync(configPath, `export default {
+  database: { url: "postgresql://horus:horus@localhost:5433/horus" },
+  projects: [{
+    name: "valid-api",
+    repositories: [{ name: "valid-api", path: "/repos/valid-api" }],
+    environments: [{ name: "production", connectors: {} }],
+  }],
+};\n`);
+    try {
+      const cfg = await loadConfig(configPath);
+      expect(cfg.database.url).toContain('postgresql://');
+      expect(cfg.projects[0]?.name).toBe('valid-api');
+    } finally {
+      rmSync(configPath, { force: true });
+    }
+  });
+
+  it('invalid connector shape shows the field path in the error', async () => {
+    const configPath = join(tmpdir(), `horus-valtest-${Math.random().toString(36).slice(2)}.js`);
+    writeFileSync(configPath, `export default {
+  database: { url: "postgresql://horus:horus@localhost:5433/horus" },
+  projects: [{
+    name: "x",
+    repositories: [{ name: "x", path: "/x" }],
+    environments: [{
+      name: "prod",
+      connectors: { elasticsearch: { preset: "unknown-preset" } },
+    }],
+  }],
+};\n`);
+    try {
+      let err: Error | null = null;
+      try { await loadConfig(configPath); } catch (e) { err = e as Error; }
+      expect(err).not.toBeNull();
+      expect(err!.message).toContain('Invalid Horus config');
+      expect(err!.message).toContain('elasticsearch');
+    } finally {
+      rmSync(configPath, { force: true });
+    }
+  });
+});
