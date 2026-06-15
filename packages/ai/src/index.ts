@@ -36,3 +36,19 @@ export { AnthropicNarrativeProvider } from './anthropic.js';
 export type { AnthropicProviderOptions } from './anthropic.js';
 
 export { redactString, redactNarrativeInput } from './redact.js';
+
+export type {
+  LocalProviderId,
+  LocalProviderDescriptor,
+  LocalProviderStatus,
+  LocalProviderResult,
+  LocalProviderRegistry,
+  LocalProviderLookupResult,
+} from './local-providers.js';
+
+export {
+  LOCAL_PROVIDER_IDS,
+  createLocalProviderRegistry,
+  lookupLocalProvider,
+  DEFAULT_LOCAL_PROVIDER_REGISTRY,
+} from './local-providers.js';
