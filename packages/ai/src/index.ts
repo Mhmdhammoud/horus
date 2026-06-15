@@ -58,3 +58,15 @@ export {
   DETECTION_FIXTURES_INSTALLED,
   DETECTION_FIXTURES_UNAVAILABLE,
 } from './detection-fixtures.js';
+
+export type {
+  ProviderRunInput,
+  ProviderRunOutput,
+  ProviderRunError,
+  ProviderRunErrorCode,
+  ProviderRunResult,
+  ProviderExecutionAdapter,
+  MockProviderMode,
+} from './provider-execution.js';
+
+export { createMockedProviderAdapter } from './provider-execution.js';
