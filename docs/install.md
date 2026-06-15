@@ -47,11 +47,78 @@ horus 0.1.0
 - **Local AI providers** (Codex, Claude CLI, Gemini, etc.) — see [provider-setup.md](./provider-setup.md)
 - **Source intelligence** (code graph, ownership) — see [connector-setup.md](./connector-setup.md#source-intelligence)
 
+## Update
+
+Re-running the installer downloads and overwrites the current binary with the latest release.
+Your config files and project data are not affected.
+
+```sh
+curl -fsSL https://horus.sh/install.sh | bash
+```
+
+Verify the new version afterwards:
+
+```sh
+horus --version
+```
+
+To update to a **specific version** instead of the latest, download the binary directly:
+
+```sh
+# Replace vX.Y.Z with the target version tag
+VERSION=v0.1.0
+PLATFORM=darwin-arm64    # or linux-amd64, linux-arm64, darwin-amd64
+curl -fsSL "https://github.com/meritt-dev/horus/releases/download/${VERSION}/horus-${PLATFORM}" \
+  -o horus
+chmod +x horus
+sudo mv horus /usr/local/bin/horus   # or ~/.local/bin/horus
+horus --version
+```
+
+---
+
 ## Uninstall
+
+Horus places files in three locations. Remove only what you want to remove.
+
+### 1. Remove the binary
 
 ```sh
 rm -f /usr/local/bin/horus ~/.local/bin/horus
 ```
+
+This is the only step needed to remove the `horus` command from your PATH.
+
+### 2. Remove the global registry (optional)
+
+`horus init` registers projects in a global registry at `~/.horus/registry.json`. To remove it:
+
+```sh
+rm -rf ~/.horus
+```
+
+This only affects project lookup by name (`--name <project>`). It does **not** remove any project-level config files.
+
+### 3. Remove project-level config (per-repository — do this only if you want to fully reset a project)
+
+Each repository initialized with `horus init` has a `.horus/config.json` file at its root. Remove it per-project if needed:
+
+```sh
+rm -rf /path/to/your-repo/.horus
+```
+
+> **Do not delete** `.horus/config.json` files unless you intend to reconfigure that project. They are project config, not installer state — removing them does not affect the Horus binary or other projects.
+
+### What each file is
+
+| File / directory | What it is | Safe to delete? |
+|---|---|---|
+| `/usr/local/bin/horus` or `~/.local/bin/horus` | The installed binary | Yes — removes the `horus` command |
+| `~/.horus/registry.json` | Global project name → config path index | Yes — you can re-register with `horus init` |
+| `<repo>/.horus/config.json` | Per-project config (created by `horus init`) | Only if resetting that project |
+| `<repo>/horus.config.js` | User-authored global config (not created by installer) | Only if you created it and want to remove it |
+
+For guidance on which files to commit and which to gitignore, see **[docs/gitignore-guide.md](./gitignore-guide.md)**.
 
 ---
 

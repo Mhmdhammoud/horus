@@ -232,7 +232,7 @@ export default defineConfig({
 
 **No connector runs without an explicit project/env scope** — there are no global connector defaults.
 
-**Secrets are never committed.** Connector credentials are read from environment variables at runtime. Keep them in a gitignored file (e.g. `~/.horus.env`) and `source` it before running.
+**Secrets are never committed.** Connector credentials are read from environment variables at runtime. Keep them in a gitignored file (e.g. `~/.horus.env`) and `source` it before running. For a full reference on which Horus files to commit and which to gitignore, see **[docs/gitignore-guide.md](./docs/gitignore-guide.md)**.
 
 ## Install
 
@@ -272,6 +272,8 @@ horus --version
 ```
 
 Homebrew tap is planned but not yet available.
+
+To **update** to a newer version, re-run the installer — it overwrites the binary and leaves your config untouched. To **uninstall**, see **[docs/install.md#uninstall](./docs/install.md#uninstall)** for what to remove and what to keep.
 
 If something goes wrong after install, see **[docs/troubleshooting.md](./docs/troubleshooting.md)** for symptoms, likely causes, and exact fix commands covering: config missing, database not running, source-intelligence host unreachable, no indexed repo, connector not configured, and low-confidence reports.
 

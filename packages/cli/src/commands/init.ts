@@ -52,6 +52,9 @@ export async function runInit(opts: {
     console.log(
       pc.dim('  add runtime connectors (elasticsearch/mongodb/grafana) to .horus/config.json'),
     );
+    console.log(
+      pc.dim('  safe to commit .horus/config.json — no secrets stored (keep credentials in environment variables)'),
+    );
     return 0;
   } catch (err) {
     console.error(pc.red((err as Error).message));
