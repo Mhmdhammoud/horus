@@ -48,8 +48,9 @@ export function buildProgram(): Command {
   program
     .command('doctor')
     .description('Check local readiness: CLI version, git root, .horus config, and source-intelligence setup')
-    .action(async () => {
-      process.exitCode = await runDoctor();
+    .option('-c, --config <path>', 'path to horus.config.js for connector checks')
+    .action(async (opts: { config?: string }) => {
+      process.exitCode = await runDoctor({ config: opts.config });
     });
 
   const providers = program

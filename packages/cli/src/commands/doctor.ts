@@ -4,6 +4,7 @@ import {
   findRepoRoot,
   discoverLocalConfig,
   readLocalConfig,
+  loadConfig,
 } from '@horus/core';
 
 type CheckStatus = 'pass' | 'warn' | 'fail';
@@ -21,8 +22,13 @@ function mark(status: CheckStatus): string {
   return pc.red('✗');
 }
 
-export async function runDoctor(opts?: { cwd?: string }): Promise<number> {
+export async function runDoctor(opts?: {
+  cwd?: string;
+  config?: string;
+  write?: (line: string) => void;
+}): Promise<number> {
   const cwd = opts?.cwd ?? process.cwd();
+  const write = opts?.write ?? ((line: string) => console.log(line));
   const checks: DoctorCheck[] = [];
 
   checks.push({
@@ -87,16 +93,56 @@ export async function runDoctor(opts?: { cwd?: string }): Promise<number> {
     });
   }
 
-  console.log(pc.bold('\nHorus readiness check\n'));
+  // Elasticsearch connector check — requires a global Horus config to be loadable.
+  try {
+    const globalConfig = await loadConfig(opts?.config, { cwd });
+    let anyEs = false;
+
+    for (const project of globalConfig.projects) {
+      for (const env of project.environments) {
+        const es = env.connectors.elasticsearch;
+        if (!es) continue;
+        anyEs = true;
+
+        if (!es.indexPattern) {
+          checks.push({
+            label: 'Elasticsearch',
+            status: 'warn',
+            detail: `${project.name}/${env.name} — indexPattern not set`,
+            next: 'set indexPattern in connectors.elasticsearch',
+          });
+        } else {
+          checks.push({
+            label: 'Elasticsearch',
+            status: 'pass',
+            detail: `${project.name}/${env.name} — ${es.indexPattern} [runtime ingestion pending]`,
+          });
+        }
+      }
+    }
+
+    if (!anyEs) {
+      checks.push({
+        label: 'Elasticsearch',
+        status: 'warn',
+        detail: 'not configured',
+        next: 'add connectors.elasticsearch to an environment in your Horus config for runtime log evidence',
+      });
+    }
+  } catch {
+    // No global config loadable — skip ES check silently.
+  }
+
+  write(pc.bold('\nHorus readiness check\n'));
   let hasFailure = false;
   for (const check of checks) {
-    console.log(`  ${mark(check.status)} ${pc.bold(check.label.padEnd(26))}  ${pc.dim(check.detail)}`);
+    write(`  ${mark(check.status)} ${pc.bold(check.label.padEnd(26))}  ${pc.dim(check.detail)}`);
     if (check.next) {
-      console.log(`    ${pc.dim('→ ' + check.next)}`);
+      write(`    ${pc.dim('→ ' + check.next)}`);
     }
     if (check.status === 'fail') hasFailure = true;
   }
-  console.log('');
+  write('');
 
   return hasFailure ? 1 : 0;
 }
