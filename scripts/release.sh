@@ -28,7 +28,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HORUS_REPO="Mhmdhammoud/horus"
+HORUS_REPO="meritt-dev/horus"
 
 bold()  { printf '\033[1m%s\033[0m' "$*"; }
 dim()   { printf '\033[2m%s\033[0m' "$*"; }

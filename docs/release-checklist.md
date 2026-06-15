@@ -120,7 +120,7 @@ horus doctor            # prints "Horus readiness check" header + CLI version
 
 ## Artifact checklist
 
-- [ ] GitHub Release exists at `https://github.com/Mhmdhammoud/horus/releases/tag/vX.Y.Z`
+- [ ] GitHub Release exists at `https://github.com/meritt-dev/horus/releases/tag/vX.Y.Z`
 - [ ] `horus-vX.Y.Z` artifact is downloadable
 - [ ] `horus-vX.Y.Z.sha256` is present and matches the artifact
 - [ ] `horus-landing/public/install.sh` points at the new version

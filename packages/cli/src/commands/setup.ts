@@ -72,7 +72,7 @@ export async function runSetup(opts: {
         pc.dim(
           `      schema not applied — run migrations:\n` +
           `        from the Horus repo: pnpm db migrate\n` +
-          `        or apply the schema directly: https://github.com/Mhmdhammoud/horus/tree/master/packages/db/drizzle`,
+          `        or apply the schema directly: https://github.com/meritt-dev/horus/tree/master/packages/db/drizzle`,
         ),
       );
     }

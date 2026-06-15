@@ -265,7 +265,7 @@ The installer **does not** configure Elasticsearch, MongoDB, Grafana, Redis, or 
 
 ```bash
 # Replace vX.Y.Z with the current release tag
-curl -fsSL https://github.com/Mhmdhammoud/horus/releases/download/v0.1.0/horus-v0.1.0 -o horus
+curl -fsSL https://github.com/meritt-dev/horus/releases/download/v0.1.0/horus-v0.1.0 -o horus
 chmod +x horus
 sudo mv horus /usr/local/bin/horus
 horus --version
