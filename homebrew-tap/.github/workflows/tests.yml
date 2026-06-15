@@ -1,0 +1,72 @@
+name: Homebrew tap tests
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+jobs:
+  audit:
+    name: Audit formula
+    runs-on: macos-latest
+    steps:
+      - name: Check out tap
+        uses: actions/checkout@v4
+
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Tap local repository
+        run: brew tap meritt-dev/tap "$PWD"
+
+      - name: Audit formula
+        run: brew audit --strict meritt-dev/tap/horus
+
+  test:
+    name: Install and test formula
+    runs-on: macos-latest
+    steps:
+      - name: Check out tap
+        uses: actions/checkout@v4
+
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Build local test archives
+        env:
+          VERSION: 0.1.0
+        run: |
+          set -euo pipefail
+          release_url="https://github.com/meritt-dev/horus/releases/download/v${VERSION}/horus-v${VERSION}"
+          curl -fsSL "$release_url" -o /tmp/horus-exec
+          chmod +x /tmp/horus-exec
+          mkdir -p .homebrew-archives
+          for platform in darwin-arm64 darwin-x86_64 linux-arm64 linux-x86_64; do
+            tmp=$(mktemp -d)
+            mkdir -p "$tmp/horus/bin"
+            cp /tmp/horus-exec "$tmp/horus/bin/horus"
+            chmod +x "$tmp/horus/bin/horus"
+            tar -czf ".homebrew-archives/horus-v${VERSION}-${platform}.tar.gz" -C "$tmp" horus
+            rm -rf "$tmp"
+          done
+
+      - name: Create temporary test tap with local archives
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/horus-test-tap/Formula
+          sed "s|https://github.com/meritt-dev/horus/releases/download/v0.1.0/|file://$(pwd)/.homebrew-archives/|g" \
+            Formula/horus.rb > /tmp/horus-test-tap/Formula/horus.rb
+          cd /tmp/horus-test-tap
+          git init -q
+          git add .
+          git commit -q -m "ci test tap"
+
+      - name: Install formula from local tap
+        run: |
+          brew tap horus-local/test /tmp/horus-test-tap
+          brew install --build-from-source horus-local/test/horus
+
+      - name: Test formula
+        run: brew test horus-local/test/horus
