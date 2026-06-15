@@ -289,6 +289,16 @@ source ~/.horus.env
 node apps/horus/dist/index.cjs status
 ```
 
+**Verify the full v0.1 user path (init → investigate → replay → postmortem):**
+
+```bash
+# No-services startup check (version, help, doctor):
+./scripts/smoke-test.sh apps/horus/dist/index.cjs
+
+# Full end-to-end flow (requires Postgres from docker compose up -d):
+./scripts/e2e-smoke.sh apps/horus/dist/index.cjs
+```
+
 ```bash
 horus --help
 horus help <command>
