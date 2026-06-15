@@ -11,8 +11,7 @@
 
 import type { HorusConfig, ResolvedEnvironment, ResolvedElasticsearchFields } from '@horus/core';
 import { resolveEnvironment } from '@horus/core';
-import { AxonHttpClient } from './axon/client.js';
-import { AxonCodeProvider } from './axon/provider.js';
+import { SourceHttpClient, SourceCodeProvider } from './axon/source-boundary.js';
 import type { CodeProvider } from './contract.js';
 import { ElasticsearchClient } from './elasticsearch/client.js';
 import { ElasticsearchLogsProvider } from './elasticsearch/provider.js';
@@ -37,14 +36,14 @@ import type { QueueRuntimeProvider } from './bullmq/provider.js';
 // ---------------------------------------------------------------------------
 
 /**
- * Return an Axon `CodeProvider` for the given resolved environment, or `null` when
- * no Axon connector is configured.
+ * Return a source `CodeProvider` for the given resolved environment, or `null` when
+ * no source connector is configured.
  */
 export function codeForEnv(renv: ResolvedEnvironment): CodeProvider | null {
   const repo = renv.repositories[0];
   const hostUrl = repo?.sourceHostUrl ?? repo?.axonHostUrl;
   if (!hostUrl) return null;
-  return new AxonCodeProvider(new AxonHttpClient({ baseUrl: hostUrl }));
+  return new SourceCodeProvider(new SourceHttpClient({ baseUrl: hostUrl }));
 }
 
 /**
@@ -199,7 +198,7 @@ export function repoProviders(config: HorusConfig): RepoProvider[] {
         path: r.path,
         hostUrl,
         // A missing Axon host yields a stub that reports unreachable on health().
-        code: new AxonCodeProvider(new AxonHttpClient({ baseUrl: hostUrl })),
+        code: new SourceCodeProvider(new SourceHttpClient({ baseUrl: hostUrl })),
       });
     }
   }

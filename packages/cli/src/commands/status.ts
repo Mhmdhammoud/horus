@@ -10,7 +10,7 @@ import {
 } from '@horus/core';
 import {
   SourceHttpClient,
-  checkAxonCompatibility,
+  checkSourceCompatibility,
   codeForEnv,
   logsForEnv,
   metricsForEnv,
@@ -54,7 +54,7 @@ async function checkEnv(renv: ResolvedEnvironment): Promise<boolean> {
     const axon = new SourceHttpClient({ baseUrl: axonHostUrl });
     const [health, compat] = await Promise.all([
       axon.health(),
-      checkAxonCompatibility(axon),
+      checkSourceCompatibility(axon),
     ]);
 
     let versionPart: string;
