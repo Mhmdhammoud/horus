@@ -105,7 +105,7 @@ export interface Symbol {
   className?: string;
 }
 
-/** A reference to an Axon community node. */
+/** A reference to a source-intelligence community cluster. */
 export interface CommunityRef {
   id: string;
   name: string;
@@ -138,7 +138,7 @@ export interface ChangeSet {
   modified: { before: Symbol; after: Symbol }[];
 }
 
-/** Callers + callees of a symbol (Axon `context`), enriched with graph neighbours. */
+/** Callers + callees of a symbol, enriched with source-intelligence graph neighbours. */
 export interface SymbolContext {
   symbol: Symbol;
   snippet?: string; // short excerpt of the symbol's source
@@ -151,7 +151,7 @@ export interface SymbolContext {
   isDead?: boolean;
 }
 
-/** A pre-computed multi-hop execution flow (Axon `Process` node). */
+/** A pre-computed multi-hop execution flow (source-intelligence `Process` node). */
 export interface Flow {
   id: string;
   name: string;

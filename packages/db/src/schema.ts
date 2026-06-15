@@ -2,8 +2,8 @@
  * Horus database schema — Postgres + Drizzle, NO pgvector (HOR-2).
  *
  * Tables: projects, repositories, investigations, evidence, findings, hypotheses,
- * incident_memory, queue_edges, provider_cache. Semantic search is delegated to Axon's
- * hybrid search, so there are no embedding columns. See architecture.md §2.6.
+ * incident_memory, queue_edges, provider_cache. Semantic search is delegated to the
+ * source-intelligence backend, so there are no embedding columns. See architecture.md §2.6.
  */
 import {
   pgTable,
@@ -27,14 +27,14 @@ export const projects = pgTable('projects', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-/** Repositories Horus knows about. Horus owns this registry — `axon list` is unreliable. */
+/** Repositories Horus knows about. Horus owns this registry (not the source-intelligence backend). */
 export const repositories = pgTable('repositories', {
   id: uuid('id').defaultRandom().primaryKey(),
   name: text('name').notNull().unique(),
   path: text('path').notNull(),
   projectId: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }),
   lastIndexedAt: timestamp('last_indexed_at', { withTimezone: true }),
-  axonStatus: jsonb('axon_status'),
+  sourceStatus: jsonb('source_status'),
   stale: boolean('stale').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
