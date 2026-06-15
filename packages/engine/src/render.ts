@@ -76,6 +76,23 @@ function queueEvidenceIds(evidence: Evidence[]): Set<string> {
   return ids;
 }
 
+/**
+ * Returns a short caveat string when no runtime source contributed evidence,
+ * listing which dimensions were not configured. Returns null when runtime data
+ * is present or when sourceStatus is absent (pre-HOR-70 reports).
+ */
+export function runtimeSourceCaveat(r: InvestigationReport): string | null {
+  const status = r.sourceStatus;
+  if (!status) return null;
+  const contributed = status.sources.some((s) => s.status === 'contributed');
+  if (contributed) return null;
+  const notConfigured = status.sources
+    .filter((s) => s.status === 'not-configured')
+    .map((s) => s.source);
+  if (notConfigured.length === 0) return null;
+  return `source-only — ${notConfigured.join(', ')} not configured`;
+}
+
 /** A clean, sectioned text report suitable for a terminal or a log. */
 export function renderReport(r: InvestigationReport): string {
   const lines: string[] = [];
@@ -86,6 +103,8 @@ export function renderReport(r: InvestigationReport): string {
   if (r.input.service) lines.push(`Service: ${r.input.service}`);
   if (r.input.since) lines.push(`Since: ${r.input.since}`);
   lines.push(`Confidence: ${r.confidence.toFixed(2)}`);
+  const caveat = runtimeSourceCaveat(r);
+  if (caveat) lines.push(`  ↳ ${caveat}`);
   lines.push('');
 
   lines.push('## Summary');
@@ -302,7 +321,8 @@ export function reportToMarkdown(r: InvestigationReport): string {
 
   out.push(`# Investigation Report — ${r.input.hint}`);
   out.push('');
-  out.push(`**Confidence:** ${r.confidence.toFixed(2)}`);
+  const mdCaveat = runtimeSourceCaveat(r);
+  out.push(`**Confidence:** ${r.confidence.toFixed(2)}${mdCaveat ? ` _(${mdCaveat})_` : ''}`);
   if (r.input.service) out.push(`**Service:** ${r.input.service}`);
   if (r.input.since) out.push(`**Since:** ${r.input.since}`);
   out.push('');

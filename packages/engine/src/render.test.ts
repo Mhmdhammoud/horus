@@ -6,7 +6,8 @@
 import { describe, it, expect } from 'vitest';
 import type { Evidence } from '@horus/core';
 import type { InvestigationReport, CauseCandidate } from './types.js';
-import { renderReport, reportToMarkdown, groupQueueEvidence } from './render.js';
+import { renderReport, reportToMarkdown, groupQueueEvidence, runtimeSourceCaveat } from './render.js';
+import type { RuntimeSourceReport } from './source-status.js';
 
 function makeCause(title: string, finalScore: number, sourceEvidenceIds: string[]): CauseCandidate {
   const band = finalScore >= 0.85 ? 'highly-likely' as const
@@ -326,5 +327,146 @@ describe('reportToMarkdown — queue runtime section', () => {
     const otherLine = lines.find((l) => l.includes('Other cause'));
     expect(queueLine).toContain('[↑ queue]');
     expect(otherLine).not.toContain('[↑ queue]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runtimeSourceCaveat — HOR-89
+// ---------------------------------------------------------------------------
+
+function makeSourceStatus(
+  entries: Array<{ source: 'logs' | 'metrics' | 'state' | 'queue'; status: 'contributed' | 'empty' | 'failed' | 'not-configured' }>,
+): RuntimeSourceReport {
+  return {
+    sources: entries.map(({ source, status }) => ({
+      source,
+      configured: status !== 'not-configured',
+      evidenceCount: status === 'contributed' ? 1 : 0,
+      status,
+    })),
+  };
+}
+
+describe('runtimeSourceCaveat', () => {
+  it('returns null when sourceStatus is absent', () => {
+    const r = makeReport();
+    expect(runtimeSourceCaveat(r)).toBeNull();
+  });
+
+  it('returns null when at least one source contributed', () => {
+    const r = makeReport({
+      sourceStatus: makeSourceStatus([
+        { source: 'logs', status: 'contributed' },
+        { source: 'metrics', status: 'not-configured' },
+        { source: 'state', status: 'not-configured' },
+        { source: 'queue', status: 'not-configured' },
+      ]),
+    });
+    expect(runtimeSourceCaveat(r)).toBeNull();
+  });
+
+  it('returns caveat string listing not-configured sources', () => {
+    const r = makeReport({
+      sourceStatus: makeSourceStatus([
+        { source: 'logs', status: 'not-configured' },
+        { source: 'metrics', status: 'not-configured' },
+        { source: 'state', status: 'not-configured' },
+        { source: 'queue', status: 'not-configured' },
+      ]),
+    });
+    expect(runtimeSourceCaveat(r)).toBe('source-only — logs, metrics, state, queue not configured');
+  });
+
+  it('returns null when all sources are empty (configured but no evidence)', () => {
+    const r = makeReport({
+      sourceStatus: makeSourceStatus([
+        { source: 'logs', status: 'empty' },
+        { source: 'metrics', status: 'empty' },
+      ]),
+    });
+    expect(runtimeSourceCaveat(r)).toBeNull();
+  });
+
+  it('lists only not-configured sources, ignores failed/empty', () => {
+    const r = makeReport({
+      sourceStatus: makeSourceStatus([
+        { source: 'logs', status: 'not-configured' },
+        { source: 'metrics', status: 'failed' },
+        { source: 'state', status: 'empty' },
+        { source: 'queue', status: 'not-configured' },
+      ]),
+    });
+    expect(runtimeSourceCaveat(r)).toBe('source-only — logs, queue not configured');
+  });
+});
+
+describe('renderReport — runtime source caveat (HOR-89)', () => {
+  it('omits caveat line when sourceStatus is absent', () => {
+    const output = renderReport(makeReport({ confidence: 0.6 }));
+    const lines = output.split('\n');
+    const confLine = lines.find((l) => l.startsWith('Confidence:'));
+    expect(confLine).toBe('Confidence: 0.60');
+    expect(output).not.toContain('source-only');
+  });
+
+  it('omits caveat line when runtime sources contributed', () => {
+    const r = makeReport({
+      confidence: 0.85,
+      sourceStatus: makeSourceStatus([{ source: 'logs', status: 'contributed' }]),
+    });
+    const output = renderReport(r);
+    expect(output).not.toContain('source-only');
+    expect(output).not.toContain('↳');
+  });
+
+  it('renders caveat line after confidence when all sources not configured', () => {
+    const r = makeReport({
+      confidence: 0.65,
+      sourceStatus: makeSourceStatus([
+        { source: 'logs', status: 'not-configured' },
+        { source: 'metrics', status: 'not-configured' },
+        { source: 'state', status: 'not-configured' },
+        { source: 'queue', status: 'not-configured' },
+      ]),
+    });
+    const output = renderReport(r);
+    const lines = output.split('\n');
+    const confIdx = lines.findIndex((l) => l.startsWith('Confidence:'));
+    expect(lines[confIdx]).toBe('Confidence: 0.65');
+    expect(lines[confIdx + 1]).toBe('  ↳ source-only — logs, metrics, state, queue not configured');
+  });
+});
+
+describe('reportToMarkdown — runtime source caveat (HOR-89)', () => {
+  it('omits caveat when sourceStatus is absent', () => {
+    const output = reportToMarkdown(makeReport({ confidence: 0.6 }));
+    expect(output).toContain('**Confidence:** 0.60');
+    expect(output).not.toContain('source-only');
+  });
+
+  it('omits caveat when runtime sources contributed', () => {
+    const r = makeReport({
+      confidence: 0.9,
+      sourceStatus: makeSourceStatus([{ source: 'logs', status: 'contributed' }]),
+    });
+    const output = reportToMarkdown(r);
+    expect(output).toContain('**Confidence:** 0.90');
+    expect(output).not.toContain('source-only');
+  });
+
+  it('appends caveat inline after confidence when sources not configured', () => {
+    const r = makeReport({
+      confidence: 0.65,
+      sourceStatus: makeSourceStatus([
+        { source: 'logs', status: 'not-configured' },
+        { source: 'metrics', status: 'not-configured' },
+        { source: 'state', status: 'not-configured' },
+        { source: 'queue', status: 'not-configured' },
+      ]),
+    });
+    const output = reportToMarkdown(r);
+    expect(output).toContain(
+      '**Confidence:** 0.65 _(source-only — logs, metrics, state, queue not configured)_',
+    );
   });
 });
