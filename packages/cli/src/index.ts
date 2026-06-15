@@ -30,6 +30,7 @@ import { runConnect } from './commands/connect.js';
 import { runStop } from './commands/stop.js';
 import { runHosts } from './commands/hosts.js';
 import { runDoctor } from './commands/doctor.js';
+import { runProvidersDoctorCommand } from './commands/providers-doctor.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -49,6 +50,17 @@ export function buildProgram(): Command {
     .description('Check local readiness: CLI version, git root, .horus config, and source-intelligence setup')
     .action(async () => {
       process.exitCode = await runDoctor();
+    });
+
+  const providers = program
+    .command('providers')
+    .description('Local AI provider management');
+
+  providers
+    .command('doctor')
+    .description('Check which local AI providers (Codex, Claude, Gemini, etc.) are available')
+    .action(async () => {
+      process.exitCode = await runProvidersDoctorCommand();
     });
 
   program
