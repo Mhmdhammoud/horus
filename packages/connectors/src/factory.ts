@@ -162,6 +162,11 @@ export function axonHostUrlForRepo(config: HorusConfig, repoName?: string): stri
   return renv.repositories[0]?.axonHostUrl ?? '';
 }
 
+/** Horus-facing delegate for axonHostUrlForRepo (HOR-136). */
+export function sourceHostUrlForRepo(config: HorusConfig, repoName?: string): string {
+  return axonHostUrlForRepo(config, repoName);
+}
+
 /**
  * Build and return a Connectors bundle for the default (or single) project/env.
  * Throws when no Axon connector is present.

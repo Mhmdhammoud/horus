@@ -3,7 +3,7 @@
  * over read-only Cypher, run the pure extractor, and replace the stitcher-owned rows in
  * `queue_edges`. This is the one source-intelligence layer Axon's static graph can't give.
  */
-import { AxonHttpClient } from '@horus/connectors';
+import { SourceHttpClient } from '@horus/connectors';
 import { replaceQueueEdges, type HorusDb, type NewQueueEdge } from '@horus/db';
 import {
   extractQueueGraph,
@@ -19,7 +19,7 @@ export interface StitchSummary {
 }
 
 export async function stitch(
-  client: AxonHttpClient,
+  client: SourceHttpClient,
   db: HorusDb,
   opts: { project?: string } = {},
 ): Promise<StitchSummary> {

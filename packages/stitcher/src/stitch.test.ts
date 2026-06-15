@@ -8,13 +8,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import * as db from '@horus/db';
 import { stitch } from './stitch.js';
-import type { AxonHttpClient } from '@horus/connectors';
+import type { SourceHttpClient } from '@horus/connectors';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeAxon(producerContent: string, workerContent: string): AxonHttpClient {
+function makeAxon(producerContent: string, workerContent: string): SourceHttpClient {
   return {
     cypher: vi.fn(async (query: string) => {
       if (query.includes('@InjectQueue(') || query.includes('new Queue(')) {
@@ -26,7 +26,7 @@ function makeAxon(producerContent: string, workerContent: string): AxonHttpClien
         rows: [['EmailProcessor', 'src/email.processor.ts', workerContent]],
       };
     }),
-  } as unknown as AxonHttpClient;
+  } as unknown as SourceHttpClient;
 }
 
 const PRODUCER_CONTENT = "constructor(@InjectQueue('emails') private q: Queue) {}";

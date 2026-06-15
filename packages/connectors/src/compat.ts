@@ -16,3 +16,10 @@ export async function checkAxonCompatibility(
 
 // Horus-facing alias (HOR-64); implementation unchanged.
 export type SourceCompatibility = AxonCompatibility;
+
+/** Horus-facing delegate for checkAxonCompatibility (HOR-136). */
+export async function checkSourceCompatibility(
+  client: AxonHttpClient,
+): Promise<SourceCompatibility> {
+  return checkAxonCompatibility(client);
+}
