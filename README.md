@@ -273,6 +273,8 @@ horus --version
 
 Homebrew tap is planned but not yet available.
 
+If something goes wrong after install, see **[docs/troubleshooting.md](./docs/troubleshooting.md)** for symptoms, likely causes, and exact fix commands covering: config missing, database not running, source-intelligence host unreachable, no indexed repo, connector not configured, and low-confidence reports.
+
 ## Local development / Usage
 
 ```bash
