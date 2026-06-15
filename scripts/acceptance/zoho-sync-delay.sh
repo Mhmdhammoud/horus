@@ -5,11 +5,11 @@
 # (HOR-10) and MongoDB state evidence (HOR-33)).
 #
 # Replays the "Zoho sync delays" incident against the live leadcall-api/production
-# environment (Axon :8420 + Elasticsearch leadcall-api-prod-* + Postgres :5433)
+# environment (source-intelligence host :8420 + Elasticsearch leadcall-api-prod-* + Postgres :5433)
 # and asserts the investigation surfaces the expected structure. Exits non-zero
 # if any expectation regresses.
 #
-# Prereqs: `axon host --port 8420` inside leadcall-api, `docker compose up -d`,
+# Prereqs: `horus index` inside leadcall-api, `docker compose up -d`,
 # `pnpm build`, and runtime creds in ~/.horus.env (ES_URL/ES_USERNAME/ES_PASSWORD).
 set -uo pipefail
 
@@ -43,11 +43,11 @@ echo "== HOR-17 acceptance: $PROJECT/$ENVIRONMENT \"$HINT\" =="
 $BIN index --project "$PROJECT" --env "$ENVIRONMENT" >/dev/null 2>&1
 REPORT="$($BIN investigate --project "$PROJECT" --env "$ENVIRONMENT" "$HINT" 2>&1)"
 if [ -z "$REPORT" ]; then
-  echo "  ✗ investigate produced no output (is Axon on :8420 and Postgres up?)"
+  echo "  ✗ investigate produced no output (is the source-intelligence host on :8420 and Postgres up?)"
   exit 1
 fi
 
-# The async boundary Axon can't stitch — the heart of the scenario.
+# The async boundary the stitcher can't resolve — the heart of the scenario.
 check "resolves the Zoho sync source"         "ZohoService"            "$REPORT"
 check "surfaces the realtime queue boundary"   "zoho-sync-realtime"     "$REPORT"
 check "surfaces the batch queue boundary"      "zoho-sync-batch"        "$REPORT"
