@@ -6,6 +6,9 @@ import {
   readLocalConfig,
   loadConfig,
 } from '@horus/core';
+import { checkDatabase, type DbHealth } from '@horus/db';
+
+const DEFAULT_DB_URL = 'postgresql://horus:horus@localhost:5433/horus';
 
 type CheckStatus = 'pass' | 'warn' | 'fail';
 
@@ -26,6 +29,8 @@ export async function runDoctor(opts?: {
   cwd?: string;
   config?: string;
   write?: (line: string) => void;
+  /** Injectable for tests — defaults to the real checkDatabase. */
+  _dbCheck?: (url: string) => Promise<DbHealth>;
 }): Promise<number> {
   const cwd = opts?.cwd ?? process.cwd();
   const write = opts?.write ?? ((line: string) => console.log(line));
@@ -91,6 +96,47 @@ export async function runDoctor(opts?: {
       detail: 'not configured (no local config)',
       next: 'run `horus init` then `horus index` to set up source intelligence',
     });
+  }
+
+  // Database check — probe Postgres for reachability and schema readiness.
+  {
+    const dbChecker = opts?._dbCheck ?? checkDatabase;
+    let dbUrl = process.env['DATABASE_URL'] ?? DEFAULT_DB_URL;
+    let globalConfig: Awaited<ReturnType<typeof loadConfig>> | null = null;
+    try {
+      globalConfig = await loadConfig(opts?.config, { cwd });
+      dbUrl = globalConfig.database.url;
+    } catch {
+      // No global config — use env var or default URL
+    }
+
+    const db = await dbChecker(dbUrl);
+    if (!db.reachable) {
+      checks.push({
+        label: 'Database',
+        status: 'warn',
+        detail: 'Postgres not reachable',
+        next:
+          'start a local instance:\n' +
+          '      docker run -d --name horus-db \\\n' +
+          '        -e POSTGRES_USER=horus -e POSTGRES_PASSWORD=horus -e POSTGRES_DB=horus \\\n' +
+          '        -p 5433:5432 postgres:16\n' +
+          '    or set DATABASE_URL to an existing Postgres 16 instance',
+      });
+    } else if (!db.schemaReady) {
+      checks.push({
+        label: 'Database',
+        status: 'warn',
+        detail: 'connected but schema not applied',
+        next: 'run migrations: pnpm db migrate',
+      });
+    } else {
+      checks.push({
+        label: 'Database',
+        status: 'pass',
+        detail: db.schemaDetail,
+      });
+    }
   }
 
   // Elasticsearch connector check — requires a global Horus config to be loadable.

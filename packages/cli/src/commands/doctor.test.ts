@@ -29,6 +29,21 @@ afterEach(() => {
   dirs.length = 0;
 });
 
+// Stub DB checks injected into all tests to avoid live Postgres calls in CI.
+const stubDbReady = async () => ({
+  reachable: true,
+  schemaReady: true,
+  reachableDetail: 'connected',
+  schemaDetail: '9 tables present',
+});
+
+const stubDbUnreachable = async () => ({
+  reachable: false,
+  schemaReady: false,
+  reachableDetail: 'unreachable',
+  schemaDetail: 'cannot check',
+});
+
 // ---------------------------------------------------------------------------
 // Existing checks (unchanged behaviour)
 // ---------------------------------------------------------------------------
@@ -51,7 +66,7 @@ describe('runDoctor', () => {
         },
       }),
     );
-    const code = await runDoctor({ cwd: root });
+    const code = await runDoctor({ cwd: root, _dbCheck: stubDbReady });
     expect(code).toBe(0);
   });
 
@@ -59,14 +74,14 @@ describe('runDoctor', () => {
     const root = tempDir();
     execFileSync('git', ['init'], { cwd: root, stdio: 'pipe' });
     // No .horus/config.json — missing setup case
-    const code = await runDoctor({ cwd: root });
+    const code = await runDoctor({ cwd: root, _dbCheck: stubDbUnreachable });
     expect(code).toBe(0);
   });
 
   it('exits 0 (warn) when not in a git repository', async () => {
     const root = tempDir();
     // No git init
-    const code = await runDoctor({ cwd: root });
+    const code = await runDoctor({ cwd: root, _dbCheck: stubDbUnreachable });
     expect(code).toBe(0);
   });
 
@@ -85,7 +100,7 @@ describe('runDoctor', () => {
         },
       }),
     );
-    const code = await runDoctor({ cwd: root });
+    const code = await runDoctor({ cwd: root, _dbCheck: stubDbUnreachable });
     expect(code).toBe(0);
   });
 });
@@ -118,7 +133,7 @@ describe('runDoctor — Elasticsearch present (HOR-85)', () => {
 };
 `);
     const { lines, code } = await captureOutput((write) =>
-      runDoctor({ config: configPath, write }),
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
     );
     expect(code).toBe(0);
     const output = lines.join('\n');
@@ -141,7 +156,7 @@ describe('runDoctor — Elasticsearch present (HOR-85)', () => {
 };
 `);
     const { lines } = await captureOutput((write) =>
-      runDoctor({ config: configPath, write }),
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
     );
     const output = lines.join('\n');
     expect(output).toContain('leadcall/production');
@@ -169,7 +184,7 @@ describe('runDoctor — Elasticsearch present (HOR-85)', () => {
 };
 `);
     const { lines } = await captureOutput((write) =>
-      runDoctor({ config: configPath, write }),
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
     );
     const output = lines.join('\n');
     expect(output).not.toContain('es-secret.example.com');
@@ -192,7 +207,7 @@ describe('runDoctor — Elasticsearch present (HOR-85)', () => {
 };
 `);
     const { lines } = await captureOutput((write) =>
-      runDoctor({ config: configPath, write }),
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
     );
     expect(lines.join('\n')).toContain('pending');
   });
@@ -211,7 +226,7 @@ describe('runDoctor — Elasticsearch absent (HOR-85)', () => {
 };
 `);
     const { lines } = await captureOutput((write) =>
-      runDoctor({ config: configPath, write }),
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
     );
     expect(lines.join('\n')).toContain('not configured');
   });
@@ -228,7 +243,7 @@ describe('runDoctor — Elasticsearch absent (HOR-85)', () => {
 };
 `);
     const { lines } = await captureOutput((write) =>
-      runDoctor({ config: configPath, write }),
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
     );
     expect(lines.join('\n')).toContain('connectors.elasticsearch');
   });
@@ -245,7 +260,7 @@ describe('runDoctor — Elasticsearch absent (HOR-85)', () => {
 };
 `);
     const { code } = await captureOutput((write) =>
-      runDoctor({ config: configPath, write }),
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
     );
     expect(code).toBe(0);
   });
@@ -267,7 +282,7 @@ describe('runDoctor — Elasticsearch partial (indexPattern missing) (HOR-85)', 
 };
 `);
     const { lines } = await captureOutput((write) =>
-      runDoctor({ config: configPath, write }),
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
     );
     const output = lines.join('\n');
     expect(output).toContain('indexPattern not set');
@@ -280,7 +295,7 @@ describe('runDoctor — no global config (HOR-85)', () => {
     const root = tempDir();
     // No horus.config.js, no horus.config.ts, no HORUS_CONFIG
     const { lines } = await captureOutput((write) =>
-      runDoctor({ cwd: root, write }),
+      runDoctor({ cwd: root, _dbCheck: stubDbUnreachable, write }),
     );
     const output = lines.join('\n');
     expect(output).not.toContain('Elasticsearch');
@@ -289,8 +304,97 @@ describe('runDoctor — no global config (HOR-85)', () => {
   it('still outputs existing checks when global config is absent', async () => {
     const root = tempDir();
     const { lines } = await captureOutput((write) =>
-      runDoctor({ cwd: root, write }),
+      runDoctor({ cwd: root, _dbCheck: stubDbUnreachable, write }),
     );
     expect(lines.join('\n')).toContain('CLI version');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-100: fix hints for missing prerequisites
+// ---------------------------------------------------------------------------
+
+const stubDbReadyNoSchema = async () => ({
+  reachable: true,
+  schemaReady: false,
+  reachableDetail: 'connected',
+  schemaDetail: 'missing: investigations',
+});
+
+describe('runDoctor — fix hints (HOR-100)', () => {
+  it('shows horus init hint when local config is missing', async () => {
+    const root = tempDir();
+    execFileSync('git', ['init'], { cwd: root, stdio: 'pipe' });
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ cwd: root, _dbCheck: stubDbUnreachable, write }),
+    );
+    const output = lines.join('\n');
+    expect(output).toContain('horus init');
+  });
+
+  it('shows docker run hint when database is not reachable', async () => {
+    const root = tempDir();
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ cwd: root, _dbCheck: stubDbUnreachable, write }),
+    );
+    const output = lines.join('\n');
+    expect(output).toContain('docker run');
+    expect(output).toContain('postgres:16');
+  });
+
+  it('shows DATABASE_URL hint when database is not reachable', async () => {
+    const root = tempDir();
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ cwd: root, _dbCheck: stubDbUnreachable, write }),
+    );
+    expect(lines.join('\n')).toContain('DATABASE_URL');
+  });
+
+  it('shows pnpm db migrate hint when schema is not applied', async () => {
+    const root = tempDir();
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ cwd: root, _dbCheck: stubDbReadyNoSchema, write }),
+    );
+    expect(lines.join('\n')).toContain('pnpm db migrate');
+  });
+
+  it('shows Database pass when db is healthy', async () => {
+    const root = tempDir();
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ cwd: root, _dbCheck: stubDbReady, write }),
+    );
+    const output = lines.join('\n');
+    expect(output).toContain('Database');
+    expect(output).toContain('9 tables present');
+  });
+
+  it('shows horus index hint when source-intelligence host is not configured', async () => {
+    const root = tempDir();
+    execFileSync('git', ['init'], { cwd: root, stdio: 'pipe' });
+    mkdirSync(join(root, '.horus'));
+    writeFileSync(
+      join(root, '.horus', 'config.json'),
+      JSON.stringify({
+        version: 1,
+        project: {
+          name: 'test-project',
+          repositories: [{ name: 'test-project', path: root }], // no axon
+          environments: [{ name: 'production', readOnly: true, connectors: {} }],
+        },
+      }),
+    );
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ cwd: root, _dbCheck: stubDbUnreachable, write }),
+    );
+    const output = lines.join('\n');
+    expect(output).toContain('horus index');
+  });
+
+  it('exits 0 (warn, not fail) for all missing prerequisites', async () => {
+    const root = tempDir();
+    const { code } = await captureOutput((write) =>
+      runDoctor({ cwd: root, _dbCheck: stubDbUnreachable, write }),
+    );
+    expect(code).toBe(0);
   });
 });
