@@ -1,0 +1,88 @@
+/**
+ * HOR-70 — Runtime source status report.
+ *
+ * Summarises which evidence sources contributed to an investigation:
+ * whether each connector was configured, how many evidence items it
+ * produced, and whether collection succeeded or failed.
+ */
+
+import type { Evidence } from '@horus/core';
+import type { ConnectorFlags } from './gaps.js';
+
+export type RuntimeSourceKind = 'logs' | 'metrics' | 'state' | 'queue';
+export type RuntimeSourceStatus = 'contributed' | 'empty' | 'failed' | 'not-configured';
+
+export interface RuntimeSourceEntry {
+  source: RuntimeSourceKind;
+  /** Whether the connector for this source was configured for the investigation. */
+  configured: boolean;
+  /** Number of runtime evidence items contributed by this source. */
+  evidenceCount: number;
+  status: RuntimeSourceStatus;
+  /** Human-readable failure detail when status is 'failed'. */
+  detail?: string;
+}
+
+export interface RuntimeSourceReport {
+  sources: RuntimeSourceEntry[];
+}
+
+function buildEntry(
+  source: RuntimeSourceKind,
+  configured: boolean,
+  evidenceCount: number,
+  failed: boolean,
+  detail?: string,
+): RuntimeSourceEntry {
+  let status: RuntimeSourceStatus;
+  if (!configured) {
+    status = 'not-configured';
+  } else if (failed) {
+    status = 'failed';
+  } else if (evidenceCount > 0) {
+    status = 'contributed';
+  } else {
+    status = 'empty';
+  }
+  const entry: RuntimeSourceEntry = { source, configured, evidenceCount, status };
+  if (detail) entry.detail = detail;
+  return entry;
+}
+
+/**
+ * Build a runtime source status report from the collected evidence and
+ * connector flags that were active during the investigation.
+ *
+ * Queue evidenceCount counts only `kind === 'queue-state'` (operational
+ * queue snapshot evidence) — not `queue-edge` which is structural topology
+ * produced by the stitcher, not a runtime signal.
+ */
+export function buildRuntimeSourceStatus(
+  evidence: Evidence[],
+  connectors: ConnectorFlags,
+): RuntimeSourceReport {
+  const logsCount = evidence.filter((e) => e.source === 'logs').length;
+  const logsConfigured = !!connectors.elasticsearch;
+  const logsFailed = logsConfigured && !connectors.logsCollected;
+
+  const metricsCount = evidence.filter((e) => e.source === 'metrics').length;
+  const metricsConfigured = !!connectors.grafana;
+  const metricsFailed = metricsConfigured && !connectors.metricsCollected;
+
+  const stateCount = evidence.filter((e) => e.source === 'state').length;
+  const stateConfigured = !!(connectors.redis || connectors.mongodb);
+
+  // Queue: configured when any queue evidence exists (connector ran); runtime
+  // count is queue-state only (queue-edge is structural, not operational).
+  const queueConfigured = evidence.some((e) => e.source === 'queue');
+  const queueCount = evidence.filter((e) => e.kind === 'queue-state').length;
+
+  return {
+    sources: [
+      buildEntry('logs', logsConfigured, logsCount, logsFailed, connectors.logsCompatibilityError),
+      buildEntry('metrics', metricsConfigured, metricsCount, metricsFailed),
+      buildEntry('state', stateConfigured, stateCount, false),
+      buildEntry('queue', queueConfigured, queueCount, false),
+    ],
+  };
+}

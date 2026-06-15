@@ -12,6 +12,7 @@ import type { GapAnalysis } from './gaps.js';
 import type { InvestigationGraph } from './graph.js';
 import type { CauseCandidate } from './score-cause.js';
 import type { OwnershipEstimate } from './ownership.js';
+import type { RuntimeSourceReport } from './source-status.js';
 
 export type { CauseCandidate };
 
@@ -67,6 +68,8 @@ export interface InvestigationReport {
   nextActions: string[];
   /** Ownership estimate for the implicated component (HOR-40). Null when repoPath is not supplied. */
   ownership?: OwnershipEstimate | null;
+  /** Per-source runtime contribution summary (HOR-70). */
+  sourceStatus?: RuntimeSourceReport;
 }
 
 /** Re-exported for convenience so callers can type flow steps without @horus/core. */
