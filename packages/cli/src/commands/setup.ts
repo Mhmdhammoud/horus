@@ -1,27 +1,32 @@
 /**
- * `horus setup` — verify the prerequisites are in place (HOR-37): the Horus
+ * `horus setup` — verify the prerequisites are in place (HOR-37, HOR-84): the Horus
  * source-intelligence backend and the Horus Postgres. Guides the user to fix
  * anything missing. Does not modify the system.
  */
 
 import pc from 'picocolors';
 import { loadConfig } from '@horus/core';
-import { getAxonVersion } from '@horus/connectors';
+import { getAxonVersion, AxonHttpClient } from '@horus/connectors';
 import { checkDatabase } from '@horus/db';
 import { PINNED_AXON_VERSION } from '@horus/core';
 
 const DEFAULT_DB_URL = 'postgresql://horus:horus@localhost:5433/horus';
 
-export async function runSetup(opts: { config?: string }): Promise<number> {
-  console.log(pc.bold('\nHorus setup\n'));
+export async function runSetup(opts: {
+  config?: string;
+  write?: (line: string) => void;
+}): Promise<number> {
+  const write = opts.write ?? ((line: string) => console.log(line));
   let ok = true;
+
+  write(pc.bold('\nHorus setup\n'));
 
   // 1. Source-intelligence backend — presence and version.
   const backendVersion = await getAxonVersion();
   if (backendVersion === null) {
     ok = false;
-    console.log(`  ${pc.red('●')} Horus source-intelligence backend not found`);
-    console.log(
+    write(`  ${pc.red('●')} Horus source-intelligence backend not found`);
+    write(
       pc.dim(
         `      install it (Python 3.11+ required):\n` +
         `        uv tool install axoniq==${PINNED_AXON_VERSION}\n` +
@@ -31,11 +36,11 @@ export async function runSetup(opts: { config?: string }): Promise<number> {
     );
   } else if (backendVersion !== PINNED_AXON_VERSION) {
     ok = false;
-    console.log(
+    write(
       `  ${pc.yellow('●')} Horus source-intelligence backend version mismatch` +
       pc.dim(` (installed: ${backendVersion}, required: ${PINNED_AXON_VERSION})`),
     );
-    console.log(
+    write(
       pc.dim(
         `      update it:\n` +
         `        uv tool install axoniq==${PINNED_AXON_VERSION}\n` +
@@ -43,7 +48,7 @@ export async function runSetup(opts: { config?: string }): Promise<number> {
       ),
     );
   } else {
-    console.log(
+    write(
       `  ${pc.green('●')} Horus source-intelligence backend ` +
       pc.dim(`(${backendVersion})`),
     );
@@ -51,18 +56,19 @@ export async function runSetup(opts: { config?: string }): Promise<number> {
 
   // 2. Horus's own Postgres.
   let dbUrl = process.env['DATABASE_URL'] ?? DEFAULT_DB_URL;
+  let config: Awaited<ReturnType<typeof loadConfig>> | null = null;
   try {
-    const config = await loadConfig(opts.config);
+    config = await loadConfig(opts.config);
     dbUrl = config.database.url;
   } catch {
-    // No config resolvable here — fall back to the default DB URL.
+    // No config resolvable — fall back to the default DB URL.
   }
   const db = await checkDatabase(dbUrl);
   if (db.reachable) {
-    console.log(`  ${pc.green('●')} Postgres reachable ${pc.dim(`(${db.schemaDetail})`)}`);
+    write(`  ${pc.green('●')} Postgres reachable ${pc.dim(`(${db.schemaDetail})`)}`);
     if (!db.schemaReady) {
       ok = false;
-      console.log(
+      write(
         pc.dim(
           `      schema not applied — run migrations:\n` +
           `        from the Horus repo: pnpm db migrate\n` +
@@ -72,8 +78,8 @@ export async function runSetup(opts: { config?: string }): Promise<number> {
     }
   } else {
     ok = false;
-    console.log(`  ${pc.red('●')} Postgres unreachable`);
-    console.log(
+    write(`  ${pc.red('●')} Postgres unreachable`);
+    write(
       pc.dim(
         `      start a local instance:\n` +
         `        docker run -d --name horus-db \\\n` +
@@ -84,13 +90,70 @@ export async function runSetup(opts: { config?: string }): Promise<number> {
     );
   }
 
-  console.log('');
+  // 3. Axon host reachability and repo indexing — per configured repository.
+  if (config && config.projects.length > 0) {
+    for (const project of config.projects) {
+      for (const repo of project.repositories) {
+        if (!repo.axon?.hostUrl) {
+          continue;
+        }
+        let port = '';
+        try {
+          port = new URL(repo.axon.hostUrl).port;
+        } catch {
+          port = '8420';
+        }
+        const client = new AxonHttpClient({
+          baseUrl: repo.axon.hostUrl,
+          timeoutMs: 3000,
+          maxRetries: 0,
+        });
+        const health = await client.health();
+        if (!health.ok) {
+          ok = false;
+          write(
+            `  ${pc.red('●')} Axon host unreachable for ${pc.bold(repo.name)} ` +
+            pc.dim(`(${repo.axon.hostUrl})`),
+          );
+          write(
+            pc.dim(
+              `      start an Axon host for this repo:\n` +
+              `        cd ${repo.path}\n` +
+              `        axon host --port ${port}`,
+            ),
+          );
+        } else {
+          const count = await client.nodeCount().catch(() => 0);
+          if (count === 0) {
+            ok = false;
+            write(
+              `  ${pc.yellow('●')} Axon host running but ${pc.bold(repo.name)} is not indexed`,
+            );
+            write(
+              pc.dim(
+                `      index the repo:\n` +
+                `        cd ${repo.path}\n` +
+                `        axon index .`,
+              ),
+            );
+          } else {
+            write(
+              `  ${pc.green('●')} ${pc.bold(repo.name)} — ${count} nodes indexed ` +
+              pc.dim(`(${repo.axon.hostUrl})`),
+            );
+          }
+        }
+      }
+    }
+  }
+
+  write('');
   if (ok) {
-    console.log(
+    write(
       pc.green('Ready.') + ' Next: `cd` into a repo and run `horus index`, then `horus investigate "<hint>"`.',
     );
   } else {
-    console.log(pc.yellow('Resolve the items above, then re-run `horus setup`.'));
+    write(pc.yellow('Resolve the items above, then re-run `horus setup`.'));
   }
   return ok ? 0 : 1;
 }
