@@ -14,6 +14,40 @@ function shortId(id: string): string {
 }
 
 /**
+ * Verify that every evidence short-ID cited in a generated postmortem text
+ * maps back to an evidence item in the source report.
+ *
+ * The check is structural: `generatePostmortem` cites IDs only from the
+ * report's evidence array, so any unknown ID signals tampering or a bug.
+ * Returns `valid: true` when all cited IDs are known; otherwise lists the
+ * unknown ones.
+ */
+export function validatePostmortemGrounding(
+  r: InvestigationReport,
+  postmortemText: string,
+): { valid: boolean; unknownIds: string[] } {
+  const knownShortIds = new Set(r.evidence.map((e) => e.id.slice(0, 8)));
+
+  const cited = new Set<string>();
+
+  // Pattern 1: backtick-wrapped 8-char IDs — `ev-abcde` (impact + contributing factors sections)
+  const backtickRe = /`([a-zA-Z0-9_-]{8})`/g;
+  let m: RegExpExecArray | null;
+  while ((m = backtickRe.exec(postmortemText)) !== null) {
+    cited.add(m[1]!);
+  }
+
+  // Pattern 2: evidence section list items — "- ev-abcde [source/kind]"
+  const listRe = /^- ([a-zA-Z0-9_-]{8}) \[/gm;
+  while ((m = listRe.exec(postmortemText)) !== null) {
+    cited.add(m[1]!);
+  }
+
+  const unknownIds = [...cited].filter((id) => !knownShortIds.has(id));
+  return { valid: unknownIds.length === 0, unknownIds };
+}
+
+/**
  * Generate a deterministic DRAFT postmortem Markdown document from a completed
  * investigation report. All sections are derived mechanically from `r`; no
  * randomness, no AI inference.

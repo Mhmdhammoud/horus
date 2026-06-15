@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { generatePostmortem } from './postmortem.js';
+import { generatePostmortem, validatePostmortemGrounding } from './postmortem.js';
 import type { InvestigationReport } from './types.js';
 import type { Evidence } from '@horus/core';
 import type { ValidatedHypothesis } from './validate.js';
@@ -205,5 +205,163 @@ describe('generatePostmortem', () => {
     // Should never assert certainty — check that "confirmed" is qualified
     // The word "confirmed" only appears in the uncertainty caveat context
     expect(out).not.toContain('This is the confirmed root cause');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-112 — Evidence grounding validation
+// ---------------------------------------------------------------------------
+
+describe('validatePostmortemGrounding', () => {
+  it('passes for a report with evidence (all cited IDs are known)', () => {
+    const out = generatePostmortem(syntheticReport);
+    const result = validatePostmortemGrounding(syntheticReport, out);
+    expect(result.valid).toBe(true);
+    expect(result.unknownIds).toHaveLength(0);
+  });
+
+  it('passes for a report with no evidence (nothing is cited)', () => {
+    const emptyReport: InvestigationReport = {
+      ...syntheticReport,
+      evidence: [],
+      hypotheses: [],
+      suspectedCauses: [],
+      timeline: { events: [], boundaryCrossings: [] },
+    };
+    const out = generatePostmortem(emptyReport);
+    const result = validatePostmortemGrounding(emptyReport, out);
+    expect(result.valid).toBe(true);
+    expect(result.unknownIds).toHaveLength(0);
+  });
+
+  it('passes for multiple evidence items (all IDs mapped)', () => {
+    const secondEvidence: typeof syntheticEvidence = {
+      ...syntheticEvidence,
+      id: 'ev-zzzzzzzz99999999',
+      title: 'Second piece of evidence',
+      kind: 'impact',
+    };
+    const richReport: InvestigationReport = {
+      ...syntheticReport,
+      evidence: [syntheticEvidence, secondEvidence],
+    };
+    const out = generatePostmortem(richReport);
+    const result = validatePostmortemGrounding(richReport, out);
+    expect(result.valid).toBe(true);
+    expect(result.unknownIds).toHaveLength(0);
+  });
+
+  it('fails when the postmortem text contains a phantom (unknown) evidence ID', () => {
+    const out = generatePostmortem(syntheticReport);
+    // Inject a fake 8-char citation that does not exist in the report
+    const tampered = out + '\n- `phantom0` [fake/kind] injected reference\n';
+    const result = validatePostmortemGrounding(syntheticReport, tampered);
+    expect(result.valid).toBe(false);
+    expect(result.unknownIds).toContain('phantom0');
+  });
+
+  it('returns all unknown IDs when multiple phantoms are present', () => {
+    const out = generatePostmortem(syntheticReport);
+    const tampered =
+      out +
+      '\n- `phantom0` [fake/kind] first\n' +
+      '- `ghost123` [fake/kind] second\n';
+    const result = validatePostmortemGrounding(syntheticReport, tampered);
+    expect(result.valid).toBe(false);
+    expect(result.unknownIds).toContain('phantom0');
+    expect(result.unknownIds).toContain('ghost123');
+  });
+
+  it('ignores genuine 8-char content that matches the known ID (no false positive)', () => {
+    // The real ID prefix ev-abcde appears in backtick form; confirm it is NOT flagged
+    const out = generatePostmortem(syntheticReport);
+    const result = validatePostmortemGrounding(syntheticReport, out);
+    expect(result.unknownIds).not.toContain('ev-abcde');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-112 — Missing evidence: honest "no data" wording
+// ---------------------------------------------------------------------------
+
+describe('generatePostmortem — missing evidence wording', () => {
+  const noEvidenceReport: InvestigationReport = {
+    ...syntheticReport,
+    evidence: [],
+    hypotheses: [],
+    suspectedCauses: [],
+    timeline: { events: [], boundaryCrossings: [] },
+    gapAnalysis: { gaps: [], blindSpots: [], confidenceCeiling: 1 },
+    nextActions: [],
+  };
+
+  it('says "No evidence was collected" in the Evidence section', () => {
+    const out = generatePostmortem(noEvidenceReport);
+    expect(out).toContain('_No evidence was collected._');
+  });
+
+  it('says no impact evidence was captured', () => {
+    const out = generatePostmortem(noEvidenceReport);
+    expect(out).toContain('_No impact evidence was captured during this investigation._');
+  });
+
+  it('says no confirmed contributing factors when evidence is empty', () => {
+    const out = generatePostmortem(noEvidenceReport);
+    expect(out).toContain('_No confirmed contributing factors were identified.');
+  });
+
+  it('says no candidate root cause when both hypotheses and causes are empty', () => {
+    const out = generatePostmortem(noEvidenceReport);
+    expect(out).toContain('_No candidate root cause could be determined');
+  });
+
+  it('still produces all required section headers even with no evidence', () => {
+    const out = generatePostmortem(noEvidenceReport);
+    expect(out).toContain('## Evidence');
+    expect(out).toContain('## Summary');
+    expect(out).toContain('## Contributing factors');
+    expect(out).toContain('## Root cause');
+  });
+
+  it('follow-up actions defaults to the review checkbox when no next actions', () => {
+    const out = generatePostmortem(noEvidenceReport);
+    expect(out).toContain('- [ ] Review this postmortem with the team');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-112 — Weak evidence: unconfirmed / qualified language
+// ---------------------------------------------------------------------------
+
+describe('generatePostmortem — weak evidence / unconfirmed wording', () => {
+  const weakReport: InvestigationReport = {
+    ...syntheticReport,
+    // No supported hypotheses — only suspected causes
+    hypotheses: [
+      {
+        ...syntheticReport.hypotheses[0]!,
+        verdict: 'weakened',
+      },
+    ],
+  };
+
+  it('labels the root cause candidate as unconfirmed when no hypothesis is supported', () => {
+    const out = generatePostmortem(weakReport);
+    expect(out).toContain('unconfirmed');
+  });
+
+  it('still emits CANDIDATE heading when only a suspected cause exists', () => {
+    const out = generatePostmortem(weakReport);
+    expect(out).toContain('**CANDIDATE**');
+  });
+
+  it('mentions evidence gaps in the root-cause caveat', () => {
+    const out = generatePostmortem(weakReport);
+    expect(out).toContain('evidence gaps remain');
+  });
+
+  it('does not claim certainty (no "confirmed root cause" text)', () => {
+    const out = generatePostmortem(weakReport);
+    expect(out).not.toContain('confirmed root cause');
   });
 });
