@@ -31,6 +31,7 @@ import { runStop } from './commands/stop.js';
 import { runHosts } from './commands/hosts.js';
 import { runDoctor } from './commands/doctor.js';
 import { runProvidersDoctorCommand } from './commands/providers-doctor.js';
+import { runGenerateConfig } from './commands/generate-config.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -90,6 +91,17 @@ export function buildProgram(): Command {
     .description('List projects registered in the global registry (~/.horus/registry.json)')
     .action(async () => {
       process.exitCode = await runProjects();
+    });
+
+  program
+    .command('generate-config')
+    .description('Create a starter horus.config.js with placeholders (HOR-90)')
+    .option('--out <path>', 'output path (default: horus.config.js in cwd)')
+    .option('--name <name>', 'project name placeholder (default: my-project)')
+    .option('--repo <path>', 'repository path placeholder (default: /path/to/<name>)')
+    .option('--force', 'overwrite an existing config file')
+    .action(async (opts: { out?: string; name?: string; repo?: string; force?: boolean }) => {
+      process.exitCode = await runGenerateConfig(opts);
     });
 
   program
