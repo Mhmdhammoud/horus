@@ -7,7 +7,7 @@
  *   Blocking  — must pass before any demo or release (DB reachability/schema,
  *               CLI binary present). Non-zero exit code when any blocking check fails.
  *   Optional  — improve investigation depth but do not block a basic demo
- *               (Axon backend, local config, connectors, indexed repo).
+ *               (source intelligence, local config, connectors, indexed repo).
  *
  * Does not auto-start services, run investigation flows, or probe live
  * external connectors (Elasticsearch, Grafana, MongoDB, Redis).
@@ -126,7 +126,7 @@ export async function runReadiness(opts?: {
   const axonVersion = await axonVersionFn();
   if (axonVersion === null) {
     checks.push({
-      label: 'Axon backend',
+      label: 'Source intelligence',
       status: 'warn',
       blocking: false,
       detail: 'not installed — source intelligence unavailable',
@@ -134,7 +134,7 @@ export async function runReadiness(opts?: {
     });
   } else if (axonVersion !== PINNED_AXON_VERSION) {
     checks.push({
-      label: 'Axon backend',
+      label: 'Source intelligence',
       status: 'warn',
       blocking: false,
       detail: `version mismatch (installed: ${axonVersion}, required: ${PINNED_AXON_VERSION})`,
@@ -142,7 +142,7 @@ export async function runReadiness(opts?: {
     });
   } else {
     checks.push({
-      label: 'Axon backend',
+      label: 'Source intelligence',
       status: 'pass',
       blocking: false,
       detail: `${axonVersion} — ready`,
@@ -180,12 +180,12 @@ export async function runReadiness(opts?: {
 
     checks.push(
       anyRepoConfigured
-        ? { label: 'Repo / Axon host', status: 'pass', blocking: false, detail: 'configured' }
+        ? { label: 'Source host', status: 'pass', blocking: false, detail: 'configured' }
         : {
-            label: 'Repo / Axon host',
+            label: 'Source host',
             status: 'warn',
             blocking: false,
-            detail: 'no Axon host URL in any project',
+            detail: 'no source host URL in any project',
             next: 'run `horus init --axon <url>` or set axon.hostUrl in horus.config.js',
           },
     );

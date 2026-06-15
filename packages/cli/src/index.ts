@@ -107,7 +107,7 @@ export function buildProgram(): Command {
 
   program
     .command('readiness')
-    .description('Summarize release/demo readiness: DB, Axon, connectors, and local config (HOR-97)')
+    .description('Summarize release/demo readiness: DB, source intelligence, connectors, and local config (HOR-97)')
     .option('-c, --config <path>', 'path to horus.config.js')
     .action(async (opts: { config?: string }) => {
       process.exitCode = await runReadiness({ config: opts.config });

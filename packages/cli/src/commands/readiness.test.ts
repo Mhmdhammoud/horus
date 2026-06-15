@@ -120,7 +120,7 @@ describe('horus readiness — fully ready', () => {
       _loadConfig: async () => { throw new Error('no config'); },
     });
     const output = lines(out);
-    expect(output).toContain('Axon backend');
+    expect(output).toContain('Source intelligence');
     expect(output).toContain('ready');
   });
 
@@ -210,8 +210,8 @@ describe('horus readiness — partial (DB pass, optional items missing)', () => 
       _loadConfig: async () => makeConfig({}),
     });
     const output = lines(out);
-    expect(output).toContain('Repo / Axon host');
-    expect(output).toContain('no Axon host URL');
+    expect(output).toContain('Source host');
+    expect(output).toContain('no source host URL');
   });
 
   it('connectors not configured — shows next steps', async () => {

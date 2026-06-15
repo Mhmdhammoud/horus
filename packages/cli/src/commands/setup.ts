@@ -112,12 +112,12 @@ export async function runSetup(opts: {
         if (!health.ok) {
           ok = false;
           write(
-            `  ${pc.red('●')} Axon host unreachable for ${pc.bold(repo.name)} ` +
+            `  ${pc.red('●')} Source intelligence host unreachable for ${pc.bold(repo.name)} ` +
             pc.dim(`(${repo.axon.hostUrl})`),
           );
           write(
             pc.dim(
-              `      start an Axon host for this repo:\n` +
+              `      start a source intelligence host for this repo:\n` +
               `        cd ${repo.path}\n` +
               `        axon host --port ${port}`,
             ),
@@ -127,7 +127,7 @@ export async function runSetup(opts: {
           if (count === 0) {
             ok = false;
             write(
-              `  ${pc.yellow('●')} Axon host running but ${pc.bold(repo.name)} is not indexed`,
+              `  ${pc.yellow('●')} Source intelligence host running but ${pc.bold(repo.name)} is not indexed`,
             );
             write(
               pc.dim(
