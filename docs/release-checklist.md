@@ -78,6 +78,9 @@ docker run --rm ubuntu:22.04 bash -c \
 
 # Or use the acceptance script against an existing install:
 ./scripts/acceptance/release-smoke.sh
+
+# To verify exact version after release (set HORUS_EXPECTED_VERSION):
+HORUS_EXPECTED_VERSION="horus 0.1.0" ./scripts/acceptance/release-smoke.sh
 ```
 
 Required commands that must pass post-install:
@@ -93,6 +96,7 @@ horus investigate --help # exits 0
 - [ ] `horus --version` contains the correct version string (not "Axon")
 - [ ] `horus --help` usage line reads `Usage: horus`
 - [ ] All five smoke commands above exit 0
+- [ ] Config loading: `horus doctor --config horus.config.js` does not crash with babel.cjs error (HOR-83 regression guard)
 
 ---
 

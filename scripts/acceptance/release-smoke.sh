@@ -11,9 +11,10 @@
 #   ./scripts/acceptance/release-smoke.sh --install  # curl-installs first, then verifies
 #
 # Environment variables:
-#   INSTALL_URL            override the installer URL (default: https://horus.sh/install.sh)
-#   HORUS_BIN              path to horus binary (overrides PATH lookup)
-#   HORUS_INSTALL_UNSAFE=1 bypass the existing-binary safety check in --install mode
+#   INSTALL_URL              override the installer URL (default: https://horus.sh/install.sh)
+#   HORUS_BIN                path to horus binary (overrides PATH lookup)
+#   HORUS_INSTALL_UNSAFE=1   bypass the existing-binary safety check in --install mode
+#   HORUS_EXPECTED_VERSION   if set, --version output must contain exactly this string
 #
 # Isolation note:
 #   --install mode aborts if /usr/local/bin/horus or ~/.local/bin/horus already exists,
@@ -28,6 +29,7 @@
 #   ✓ --version exits 0
 #   ✓ --version shows "horus" (not Axon)
 #   ✓ --version shows semver
+#   ✓ --version shows expected version (if HORUS_EXPECTED_VERSION is set)
 #   ✓ --help exits 0
 #   ✓ --help lists investigate
 #   ✓ --help lists setup
@@ -35,6 +37,8 @@
 #   ✓ --help lists connect
 #   ✓ --help usage line names product 'horus'
 #   ✓ setup --help exits 0
+#   ✓ config loading: no babel.cjs error (HOR-83 regression guard)
+#   ✓ config loading: doctor printed expected output
 #   ✓ index --help exits 0
 #   ✓ investigate --help exits 0
 #   ✓ connect --help exits 0
@@ -193,6 +197,11 @@ check_contains    "--version shows 'horus'"        "horus"       --version
 check_contains    "--version shows semver"          "0."          --version
 # The CLI must not identify itself as Axon in version output.
 check_not_contains "--version does not show 'Axon'" "Axon"       --version
+# Optional: verify an exact version string (useful in CI after a release).
+if [ -n "${HORUS_EXPECTED_VERSION:-}" ]; then
+  check_contains "--version shows expected version (${HORUS_EXPECTED_VERSION})" \
+    "${HORUS_EXPECTED_VERSION}" --version
+fi
 
 # ── 4. --help ────────────────────────────────────────────────────────────────
 
@@ -214,7 +223,48 @@ check_exit0  "connect --help exits 0"     connect     --help
 check_exit0  "hosts --help exits 0"       hosts       --help
 check_exit0  "stop --help exits 0"        stop        --help
 
-# ── 6. setup command (non-zero exit is acceptable when prereqs absent) ────────
+# ── 6. config loading — HOR-83 regression guard (HOR-87) ────────────────────
+#
+# The built binary must load a minimal .js config without the babel.cjs crash.
+# Previously: "Cannot find module '../dist/babel.cjs'" when loading any JS config.
+# Approach: write a self-contained minimal config to a temp dir, then run
+# `horus doctor --config <path>`. doctor prints "CLI version" even when the DB
+# is unreachable, so we can verify the binary didn't crash silently.
+
+_config_tmpdir="$(mktemp -d)"
+_config_file="${_config_tmpdir}/horus.config.js"
+cat > "${_config_file}" << 'HORUS_CONFIG_EOF'
+export default {
+  database: { url: "postgresql://localhost:5432/horus" },
+  projects: [{
+    name: "smoke-test",
+    repositories: [{ name: "smoke-test", path: "/tmp/smoke-test" }],
+    environments: [{ name: "production", connectors: {} }],
+  }],
+};
+HORUS_CONFIG_EOF
+
+_doctor_out="$("${HORUS[@]}" doctor --config "${_config_file}" 2>&1 || true)"
+
+# Regression: must not crash with babel.cjs error
+if printf '%s' "${_doctor_out}" | grep -qF 'babel.cjs'; then
+  fail_check "config loading: babel.cjs crash (HOR-83 regression)"
+  printf '    output: %s\n' "$(printf '%s' "${_doctor_out}" | head -3)"
+else
+  ok "config loading: no babel.cjs error"
+fi
+
+# Sanity: doctor must produce recognizable output (not a silent crash)
+if printf '%s' "${_doctor_out}" | grep -qF 'CLI version'; then
+  ok "config loading: doctor printed expected output"
+else
+  fail_check "config loading: doctor output missing 'CLI version'"
+  printf '    got: %s\n' "$(printf '%s' "${_doctor_out}" | head -5)"
+fi
+
+rm -rf "${_config_tmpdir}"
+
+# ── 7. setup command (non-zero exit is acceptable when prereqs absent) ────────
 
 # setup may exit non-zero when Node/Python versions are wrong, but it must
 # still print the "Horus setup" header rather than crashing silently.
