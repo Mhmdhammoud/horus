@@ -24,6 +24,20 @@ export async function axonAvailable(): Promise<boolean> {
   }
 }
 
+/**
+ * Return the installed axon version string (e.g. "1.0.1"), or null if axon
+ * is not on PATH or version cannot be parsed.
+ */
+export async function getAxonVersion(): Promise<string | null> {
+  try {
+    const { stdout } = await exec('axon', ['--version'], { timeout: 5000 });
+    const match = stdout.trim().match(/(\d+\.\d+\.\d+)/);
+    return match?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Has the repo been analyzed (a `.axon/` index exists)? */
 export function isAnalyzed(root: string): boolean {
   return existsSync(join(root, '.axon'));

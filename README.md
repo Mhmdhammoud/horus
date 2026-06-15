@@ -209,20 +209,59 @@ export default defineConfig({
 
 **Secrets are never committed.** Connector credentials are read from environment variables at runtime. Keep them in a gitignored file (e.g. `~/.horus.env`) and `source` it before running.
 
-## Usage
+## Install
+
+```bash
+curl -fsSL https://horus.sh/install.sh | bash
+horus --version
+horus setup
+```
+
+The installer downloads the Horus CLI from GitHub Releases and installs it to your PATH. No npm step required.
+
+### What the installer installs
+
+| Component | Role | Required |
+|---|---|---|
+| **Horus CLI** | The `horus` command | Yes |
+| **Horus source-intelligence backend** | Enables `horus index`, `horus explain`, `horus changes`, `horus architecture` | Optional |
+
+### Prerequisites
+
+| Requirement | Role |
+|---|---|
+| Node.js 22+ | Horus CLI runtime (the installed binary needs Node.js) |
+| Postgres 16 | Investigation audit store — run locally via `docker compose up -d` or use a managed instance |
+| Python 3.11+ + uv/pip | Required only for the source-intelligence backend |
+
+The installer **does not** configure Elasticsearch, MongoDB, Grafana, Redis, or any production system. Runtime connectors are added per-project after install via `horus connect`.
+
+### Direct download (without the curl installer)
+
+```bash
+# Replace vX.Y.Z with the current release tag
+curl -fsSL https://github.com/Mhmdhammoud/horus/releases/download/v0.1.0/horus-v0.1.0 -o horus
+chmod +x horus
+sudo mv horus /usr/local/bin/horus
+horus --version
+```
+
+Homebrew tap is planned but not yet available.
+
+## Local development / Usage
 
 ```bash
 pnpm install
 docker compose up -d                  # Postgres 16 on localhost:5433
-pnpm build                            # build the bundled `horus` binary
+pnpm build                            # builds apps/horus/dist/index.cjs
 
-# Per repository: index its Axon graph + host it
+# Per repository: start the source-intelligence host
 axon analyze .
 axon host --port 8420
 
 source ~/.horus.env
 
-node apps/horus/dist/index.js status
+node apps/horus/dist/index.cjs status
 ```
 
 ```bash
@@ -241,7 +280,7 @@ horus investigate --help
 | `horus logs [service] --project <p> --env <e>` | Error-signature evidence (`--raw` for lines) |
 | `horus state --project <p> --env <e>` | MongoDB application-state evidence (read-only) |
 | `horus metrics [hint] --project <p> --env <e>` | Grafana metrics evidence |
-| `horus explain <symbol>` · `blast-radius` · `architecture` · `what-changed` | Source-aware code intelligence (Axon) |
+| `horus explain <symbol>` · `blast-radius` · `architecture` · `what-changed` | Source-aware code intelligence (requires source-intelligence backend) |
 
 ## Local project workflow (git-style)
 

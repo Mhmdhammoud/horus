@@ -41,11 +41,11 @@ export function buildProgram(): Command {
   program
     .name('horus')
     .description('Local-first, source-aware production-incident investigation engine')
-    .version(HORUS_VERSION);
+    .version(`horus ${HORUS_VERSION}`, '-V, --version', 'output the version number');
 
   program
     .command('setup')
-    .description('Verify prerequisites (Axon CLI + Postgres) and guide any fixes')
+    .description('Verify prerequisites (source-intelligence backend + Postgres) and guide any fixes')
     .option('-c, --config <path>', 'path to horus.config.ts')
     .action(async (opts: { config?: string }) => {
       process.exitCode = await runSetup(opts);

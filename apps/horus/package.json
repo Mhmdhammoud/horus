@@ -1,0 +1,46 @@
+{
+  "name": "horus",
+  "version": "0.1.0",
+  "description": "Local-first, source-aware production-incident investigation engine",
+  "type": "module",
+  "bin": {
+    "horus": "./dist/index.cjs"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@horus/ai": "workspace:*",
+    "@horus/cli": "workspace:*",
+    "@horus/connectors": "workspace:*",
+    "@horus/core": "workspace:*",
+    "@horus/db": "workspace:*",
+    "@horus/engine": "workspace:*",
+    "@horus/stitcher": "workspace:*",
+    "@types/node": "^22.10.2",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "keywords": [
+    "incident-investigation",
+    "observability",
+    "sre",
+    "debugging",
+    "cli"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Mhmdhammoud/horus"
+  },
+  "homepage": "https://horus.sh"
+}

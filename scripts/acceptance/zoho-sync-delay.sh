@@ -14,7 +14,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BIN="node $ROOT/apps/horus/dist/index.js"
+BIN="node $ROOT/apps/horus/dist/index.cjs"
 PROJECT="leadcall-api"
 ENVIRONMENT="production"
 HINT="zoho sync delays"

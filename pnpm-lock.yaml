@@ -33,6 +33,42 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
 
+  apps/horus:
+    devDependencies:
+      '@horus/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
+      '@horus/cli':
+        specifier: workspace:*
+        version: link:../../packages/cli
+      '@horus/connectors':
+        specifier: workspace:*
+        version: link:../../packages/connectors
+      '@horus/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@horus/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@horus/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+      '@horus/stitcher':
+        specifier: workspace:*
+        version: link:../../packages/stitcher
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.19.21
+      tsup:
+        specifier: ^8.3.5
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.15)(tsx@4.22.4)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.21)
+
   packages/ai:
     dependencies:
       '@horus/core':
