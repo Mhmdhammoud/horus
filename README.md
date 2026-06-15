@@ -132,6 +132,31 @@ Under active development.
 - Incident replay
 - Slack evidence ingestion
 
+## Can I use Horus today?
+
+The investigation engine runs end-to-end. Some surfaces require a local setup before they work — Postgres for the audit store, an Axon host for source intelligence, and at least one configured runtime connector for live evidence.
+
+| Feature | Status | Notes |
+|---|---|---|
+| Install (`curl` or direct download) | Partial | Builds and runs from source; public binary release not yet published |
+| `horus init` | Works today | Creates `.horus/config.json` and registers the project |
+| `horus doctor` | Works today | Checks CLI, git root, config, and source-intelligence setup |
+| `horus setup` | Works today | Verifies prerequisites and guides fixes |
+| Source indexing (`horus index`) | Partial | Command works; requires an Axon source-intelligence host running locally |
+| `horus investigate` | Works today | Full deterministic report; requires Postgres + at least one connector or git history |
+| `horus replay` | Works today | Re-renders a saved investigation from the audit store; no re-query |
+| `horus postmortem` | Works today | Drafts an editable Markdown postmortem from a saved investigation |
+| Runtime connectors (ES / Mongo / Grafana / Redis) | Partial | Connectors exist; each requires a live instance and per-project connector config |
+| AI narrative (`--ai` flag on `investigate`) | Partial | Requires `ANTHROPIC_API_KEY`; falls back to deterministic output automatically on failure |
+| Local AI provider bridge | Partial | Provider detection works; execution requires a local model installed |
+
+**Prerequisites before Horus works end-to-end:**
+- Postgres 16 (audit store) — `docker compose up -d` starts it
+- At least one runtime connector configured via `horus connect <type>`
+- Axon source-intelligence host running locally for source-aware commands (`horus index`, `horus explain`, `horus blast-radius`, `horus architecture`, `horus search`)
+
+`horus replay` and `horus postmortem` work from the saved audit store and require neither live connectors nor an Axon host.
+
 ---
 
 ## Architecture
