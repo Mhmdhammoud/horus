@@ -11,6 +11,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@horus/ai": "workspace:*",
     "@horus/connectors": "workspace:*",
     "@horus/core": "workspace:*",
     "@horus/db": "workspace:*",

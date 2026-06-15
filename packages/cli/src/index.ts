@@ -218,6 +218,8 @@ export function buildProgram(): Command {
     )
     .option('--json', 'output JSON (alias for --format json)')
     .option('--format <fmt>', 'output format: text | markdown | json', 'text')
+    .option('--ai', 'enrich report with AI narrative (requires ANTHROPIC_API_KEY; falls back to deterministic on failure)')
+    .option('--ai-model <model>', 'AI model for --ai (default: claude-opus-4-8)')
     .action(
       async (
         hint: string,
@@ -231,6 +233,8 @@ export function buildProgram(): Command {
           service?: string;
           json?: boolean;
           format?: string;
+          ai?: boolean;
+          aiModel?: string;
         },
       ) => {
         process.exitCode = await runInvestigate(hint, {
@@ -243,6 +247,8 @@ export function buildProgram(): Command {
           service: opts.service,
           json: opts.json,
           format: opts.format,
+          ai: opts.ai,
+          aiModel: opts.aiModel,
         });
       },
     );

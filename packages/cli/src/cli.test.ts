@@ -67,6 +67,27 @@ describe('CLI program structure', () => {
     expect(longs).toContain('--format');
   });
 
+  it('investigate command has --ai and --ai-model options', () => {
+    const investigate = buildProgram().commands.find((c) => c.name() === 'investigate')!;
+    const longs = investigate.options.map((o) => o.long);
+    expect(longs).toContain('--ai');
+    expect(longs).toContain('--ai-model');
+  });
+
+  it('investigate --ai option description mentions ANTHROPIC_API_KEY', () => {
+    const investigate = buildProgram().commands.find((c) => c.name() === 'investigate')!;
+    const aiOpt = investigate.options.find((o) => o.long === '--ai');
+    expect(aiOpt?.description).toContain('ANTHROPIC_API_KEY');
+  });
+
+  it('investigate --ai is a boolean flag (no required argument)', () => {
+    const investigate = buildProgram().commands.find((c) => c.name() === 'investigate')!;
+    const aiOpt = investigate.options.find((o) => o.long === '--ai');
+    // Boolean flags have required=false and optional=false
+    expect(aiOpt?.required).toBe(false);
+    expect(aiOpt?.optional).toBe(false);
+  });
+
   it('connect command requires a <type> argument', () => {
     const connect = buildProgram().commands.find((c) => c.name() === 'connect')!;
     expect(connect.registeredArguments.length).toBeGreaterThan(0);

@@ -81,6 +81,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@horus/ai':
+        specifier: workspace:*
+        version: link:../ai
       '@horus/connectors':
         specifier: workspace:*
         version: link:../connectors
