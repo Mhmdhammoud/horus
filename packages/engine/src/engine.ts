@@ -47,7 +47,7 @@ import { rankCauses, type CauseInput } from './score-cause.js';
 import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
 import { recallSimilar, storeIncidentMemory, deriveTags } from './memory.js';
-import { detectMissingEvidence, type ConnectorFlags } from './gaps.js';
+import { detectMissingEvidence, gapNextActions, type ConnectorFlags } from './gaps.js';
 import { buildRuntimeSourceStatus } from './source-status.js';
 import type {
   InvestigationInput,
@@ -983,6 +983,7 @@ export async function investigate(
   const gapAnalysis = detectMissingEvidence(report, connectorFlags);
   report.gapAnalysis = gapAnalysis;
   report.confidence = Math.min(report.confidence, gapAnalysis.confidenceCeiling);
+  report.nextActions.push(...gapNextActions(gapAnalysis.gaps));
   report.sourceStatus = buildRuntimeSourceStatus(evidence, connectorFlags);
 
   // j. PERSIST — may overwrite report.id with the DB-assigned id.

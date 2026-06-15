@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Evidence } from '@horus/core';
 import type { InvestigationReport } from './types.js';
-import { detectMissingEvidence } from './gaps.js';
+import { detectMissingEvidence, gapNextActions } from './gaps.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -301,5 +301,80 @@ describe('HOR-58 evidence gap regression', () => {
         expect(blind, `blindSpot contains a ticket ref`).not.toMatch(stalePattern);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gapNextActions — HOR-106
+// ---------------------------------------------------------------------------
+
+describe('gapNextActions', () => {
+  it('returns empty array for no gaps', () => {
+    expect(gapNextActions([])).toEqual([]);
+  });
+
+  it('returns nextSource strings sorted by confidenceImpact descending', () => {
+    const gaps = [
+      { dimension: 'ownership', why: '', nextSource: 'horus owner', confidenceImpact: 0.05 },
+      { dimension: 'logs', why: '', nextSource: 'Add elasticsearch connector', confidenceImpact: 0.1 },
+      { dimension: 'metrics', why: '', nextSource: 'Add grafana connector', confidenceImpact: 0.1 },
+      { dimension: 'deployment records', why: '', nextSource: 'Re-run with --since', confidenceImpact: 0.08 },
+    ];
+    const actions = gapNextActions(gaps);
+    expect(actions[0]).toBe('Add elasticsearch connector');
+    expect(actions[1]).toBe('Add grafana connector');
+    expect(actions[2]).toBe('Re-run with --since');
+    expect(actions[3]).toBe('horus owner');
+  });
+
+  it('source-only path: detectMissingEvidence gaps produce connector-setup actions', () => {
+    const report = makeMinimalReport();
+    const { gaps } = detectMissingEvidence(report, {});
+    const actions = gapNextActions(gaps);
+    // Should include log and metrics connector hints (no ES, no grafana configured)
+    expect(actions.some((a) => a.toLowerCase().includes('elasticsearch'))).toBe(true);
+    expect(actions.some((a) => a.toLowerCase().includes('grafana'))).toBe(true);
+    // Should include deployment records hint
+    expect(actions.some((a) => a.includes('--since') || a.includes('what-changed'))).toBe(true);
+  });
+
+  it('runtime-present path: no log gap when logs are present', () => {
+    const report = makeMinimalReport({
+      evidence: [makeEvidence('log'), makeEvidence('metric'), makeEvidence('commit')],
+      ownership: {
+        query: 'git log',
+        symbol: null,
+        file: 'src/foo.ts',
+        contributors: [],
+        likelyMaintainer: 'alice',
+        maintainerShare: 0.8,
+        mostActiveRecent: 'alice',
+        confidence: 0.8,
+        evidence: [],
+        note: '',
+      },
+    });
+    const { gaps } = detectMissingEvidence(report, {
+      elasticsearch: true,
+      logsCollected: true,
+      grafana: true,
+      metricsCollected: true,
+    });
+    const actions = gapNextActions(gaps);
+    // Logs and metrics are present — no setup hints for those
+    expect(actions.every((a) => !a.toLowerCase().includes('elasticsearch'))).toBe(true);
+    expect(actions.every((a) => !a.toLowerCase().includes('grafana'))).toBe(true);
+  });
+
+  it('missing queue evidence path: includes queue inspector hint when topology is known', () => {
+    const report = makeMinimalReport({
+      timeline: {
+        events: [],
+        boundaryCrossings: [{ queueName: 'jobs', producer: 'api', worker: 'worker', evidenceId: 'ev-q1' }],
+      },
+    });
+    const { gaps } = detectMissingEvidence(report, { redis: false });
+    const actions = gapNextActions(gaps);
+    expect(actions.some((a) => a.toLowerCase().includes('redis') || a.toLowerCase().includes('bullmq'))).toBe(true);
   });
 });

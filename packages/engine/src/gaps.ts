@@ -182,3 +182,14 @@ export function detectMissingEvidence(
 
   return { gaps, blindSpots, confidenceCeiling };
 }
+
+/**
+ * Converts gap `nextSource` hints into recommended next-action strings, sorted
+ * by confidence impact (highest first). Safe to append directly to
+ * `report.nextActions` — the strings are already action-phrased.
+ */
+export function gapNextActions(gaps: EvidenceGap[]): string[] {
+  return [...gaps]
+    .sort((a, b) => b.confidenceImpact - a.confidenceImpact)
+    .map((g) => g.nextSource);
+}
