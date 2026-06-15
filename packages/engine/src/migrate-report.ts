@@ -36,6 +36,11 @@ export function migrateReport(raw: unknown): InvestigationReport {
   }
   const r = raw as Record<string, unknown>;
 
+  // Normalize nextActions — required since v0.1 but absent in pre-v0.1 packets.
+  if (!Array.isArray(r['nextActions'])) {
+    r['nextActions'] = [];
+  }
+
   if (Array.isArray(r['suspectedCauses'])) {
     r['suspectedCauses'] = (r['suspectedCauses'] as unknown[]).flatMap(
       (c: unknown, i: number) => {
