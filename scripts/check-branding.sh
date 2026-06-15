@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Branding regression check (HOR-119)
+# Branding regression check (HOR-119, extended HOR-144)
 #
-# Checks user-visible CLI output strings and Commander help text for disallowed
-# "Axon" branding. Run this before any release to catch accidental regressions.
+# Checks user-visible CLI output strings, Commander help text, and user-facing
+# docs for disallowed "Axon" branding. Run this before any release to catch
+# accidental regressions.
 #
 # Exit 0 = clean
 # Exit 1 = violations found (list printed to stdout)
 #
-# Allowlist (intentional references — never flag these):
+# Full categorized allowlist: docs/axon-allowlist.md
+#
+# Short allowlist (intentional references — never flag these):
 #   - "axon host <...>"      the external CLI binary command users must run
 #   - "axon analyze <...>"   the external CLI binary command for repo indexing
 #   - "axon serve"           the external CLI binary command for MCP mode
@@ -83,8 +86,58 @@ done < <(
   | grep -iE '\bAxon\b'
 )
 
+# ── user-facing docs surface check ───────────────────────────────────────────
+# Scan the canonical user-facing docs for capital-A "Axon" as a product brand.
+# Internal developer docs (architecture.md, source-intelligence-boundary.md,
+# source-compat-checklist.md, v0.1-readiness-gate.md, cli-exit-codes.md) are
+# intentionally excluded — they document the compatibility boundary itself.
+# See docs/axon-allowlist.md §8 for the full list of excluded internal docs.
+DOCS_USER_FACING=(
+  "$REPO_ROOT/README.md"
+  "$REPO_ROOT/docs/install.md"
+  "$REPO_ROOT/docs/connector-setup.md"
+  "$REPO_ROOT/docs/demo.md"
+  "$REPO_ROOT/docs/troubleshooting.md"
+  "$REPO_ROOT/docs/provider-setup.md"
+)
+
+while IFS= read -r match; do
+  file="${match%%:*}"
+  rest="${match#*:}"
+  linenum="${rest%%:*}"
+  text="${rest#*:}"
+
+  # CLI binary invocations: "axon host", "axon analyze", "axon serve", "axon --version"
+  if echo "$text" | grep -qiE '(axon host|axon analyze|axon serve|axon --version)'; then
+    continue
+  fi
+  # CLI flag reference: --axon
+  if echo "$text" | grep -qiE '(--axon|pass --axon)'; then
+    continue
+  fi
+  # On-disk directory or file created by the axon binary
+  if echo "$text" | grep -qiE '\.axon\b'; then
+    continue
+  fi
+  # Config property access: axon.hostUrl, axon.pinnedVersion, repo.axon
+  if echo "$text" | grep -qiE '\baxon\.(hostUrl|version|port|pinnedVersion)\b|\brepo\.axon\b'; then
+    continue
+  fi
+  # PyPI package name
+  if echo "$text" | grep -qiE 'axoniq'; then
+    continue
+  fi
+
+  violations=$((violations + 1))
+  violation_lines+=("  $file:$linenum: $text")
+done < <(
+  # Case-sensitive: only flag capital-A "Axon" brand usage; lowercase "axon" in
+  # code blocks (binary name) is intentional and should never be flagged in docs.
+  grep -n -E '\bAxon\b' "${DOCS_USER_FACING[@]}" 2>/dev/null
+)
+
 if [[ $violations -eq 0 ]]; then
-  echo "✓ No disallowed Axon branding in user-visible CLI surfaces"
+  echo "✓ No disallowed Axon branding in user-visible CLI and doc surfaces"
   exit 0
 fi
 
@@ -94,7 +147,8 @@ for v in "${violation_lines[@]}"; do
   echo "$v"
 done
 echo ""
-echo "Allowed Axon references (update allowlist in scripts/check-branding.sh if intentional):"
+echo "Full allowlist: docs/axon-allowlist.md"
+echo "Short allowlist (always safe to use):"
 echo "  axon host / axon analyze / axon serve  — CLI binary commands"
 echo "  'axon' / \`axon\` not found              — binary name in error messages"
 echo "  --axon <url>                            — config flag (cannot rename yet)"
