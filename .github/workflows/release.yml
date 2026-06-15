@@ -85,42 +85,48 @@ jobs:
           sha256sum "apps/horus/dist/horus-${RELEASE_TAG}" | awk '{print $1}' \
             > "apps/horus/dist/horus-${RELEASE_TAG}.sha256"
 
+      - name: Write release notes
+        if: steps.check.outputs.exists == 'false'
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          printf '%s\n' \
+            "## Install" \
+            "" \
+            '```bash' \
+            "curl -fsSL https://horus.sh/install.sh | bash" \
+            '```' \
+            "" \
+            "## Requirements" \
+            "" \
+            "- Node.js 22+ (self-contained executable)" \
+            "- Python 3.11+ with uv or pip (optional — source-intelligence features)" \
+            "" \
+            "## Also available via" \
+            "" \
+            '```bash' \
+            "npm install -g @merittdev/horus" \
+            "brew install meritt-dev/tap/horus" \
+            '```' \
+            "" \
+            "## Direct download (Linux / macOS)" \
+            "" \
+            '```bash' \
+            "curl -fsSL https://github.com/meritt-dev/horus/releases/download/${RELEASE_TAG}/horus-${RELEASE_TAG} -o horus" \
+            "chmod +x horus && sudo mv horus /usr/local/bin/horus" \
+            "horus --version" \
+            '```' \
+            > /tmp/release-notes.md
+
       - name: Create GitHub Release
         if: steps.check.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          REPO="meritt-dev/horus"
-
           gh release create "$RELEASE_TAG" \
             --title "Horus ${RELEASE_TAG}" \
-            --notes "## Install
-
-\`\`\`bash
-curl -fsSL https://horus.sh/install.sh | bash
-\`\`\`
-
-## Requirements
-
-- Node.js 22+ (self-contained executable)
-- Python 3.11+ with uv or pip (optional — source-intelligence features)
-
-## Also available via
-
-\`\`\`bash
-npm install -g @merittdev/horus
-brew install meritt-dev/tap/horus
-\`\`\`
-
-## Direct download (Linux / macOS)
-
-\`\`\`bash
-curl -fsSL https://github.com/${REPO}/releases/download/${RELEASE_TAG}/horus-${RELEASE_TAG} -o horus
-chmod +x horus && sudo mv horus /usr/local/bin/horus
-horus --version
-\`\`\`" \
+            --notes-file /tmp/release-notes.md \
             "apps/horus/dist/horus-${RELEASE_TAG}" \
             "apps/horus/dist/horus-${RELEASE_TAG}.sha256" \
             ".homebrew-archives/horus-${RELEASE_TAG}-darwin-arm64.tar.gz" \
