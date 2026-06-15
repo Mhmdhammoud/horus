@@ -780,3 +780,115 @@ describe('runDoctor — Redis partial (URL missing) (HOR-107)', () => {
     expect(output).toContain('redis.url');
   });
 });
+
+// ---------------------------------------------------------------------------
+// HOR-130 — --json / machine-readable output
+// ---------------------------------------------------------------------------
+
+describe('runDoctor --json', () => {
+  it('outputs valid JSON with version, ready, checks, and summary fields', async () => {
+    const root = tempDir();
+    const { lines, code } = await captureOutput((write) =>
+      runDoctor({ cwd: root, json: true, _dbCheck: stubDbReady, write }),
+    );
+    expect(code).toBe(0);
+    const out = JSON.parse(lines.join(''));
+    expect(out).toHaveProperty('version');
+    expect(typeof out.version).toBe('string');
+    expect(out).toHaveProperty('ready', true);
+    expect(Array.isArray(out.checks)).toBe(true);
+    expect(out).toHaveProperty('summary');
+    expect(typeof out.summary.pass).toBe('number');
+    expect(typeof out.summary.warn).toBe('number');
+    expect(typeof out.summary.fail).toBe('number');
+  });
+
+  it('each check has label, status, and detail fields', async () => {
+    const root = tempDir();
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ cwd: root, json: true, _dbCheck: stubDbReady, write }),
+    );
+    const out = JSON.parse(lines.join(''));
+    for (const check of out.checks) {
+      expect(check).toHaveProperty('label');
+      expect(check).toHaveProperty('status');
+      expect(['pass', 'warn', 'fail']).toContain(check.status);
+      expect(check).toHaveProperty('detail');
+    }
+  });
+
+  it('always includes a CLI version check with status pass', async () => {
+    const root = tempDir();
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ cwd: root, json: true, _dbCheck: stubDbUnreachable, write }),
+    );
+    const out = JSON.parse(lines.join(''));
+    const versionCheck = out.checks.find((c: { label: string }) => c.label === 'CLI version');
+    expect(versionCheck).toBeDefined();
+    expect(versionCheck.status).toBe('pass');
+  });
+
+  it('reports Database as warn when DB is unreachable', async () => {
+    const root = tempDir();
+    const { lines, code } = await captureOutput((write) =>
+      runDoctor({ cwd: root, json: true, _dbCheck: stubDbUnreachable, write }),
+    );
+    expect(code).toBe(0); // warn does not fail
+    const out = JSON.parse(lines.join(''));
+    const dbCheck = out.checks.find((c: { label: string }) => c.label === 'Database');
+    expect(dbCheck).toBeDefined();
+    expect(dbCheck.status).toBe('warn');
+    expect(out.ready).toBe(true); // warn-only → ready (no fail checks)
+    expect(out.summary.warn).toBeGreaterThan(0);
+  });
+
+  it('reports Database as pass when DB is healthy', async () => {
+    const root = tempDir();
+    execFileSync('git', ['init'], { cwd: root, stdio: 'pipe' });
+    mkdirSync(join(root, '.horus'));
+    writeFileSync(
+      join(root, '.horus', 'config.json'),
+      JSON.stringify({
+        version: 1,
+        project: {
+          name: 'json-test',
+          repositories: [{ name: 'json-test', path: root }],
+          environments: [{ name: 'production', readOnly: true, connectors: {} }],
+        },
+      }),
+    );
+    const { lines, code } = await captureOutput((write) =>
+      runDoctor({ cwd: root, json: true, _dbCheck: stubDbReady, write }),
+    );
+    expect(code).toBe(0);
+    const out = JSON.parse(lines.join(''));
+    const dbCheck = out.checks.find((c: { label: string }) => c.label === 'Database');
+    expect(dbCheck.status).toBe('pass');
+    expect(out.summary.pass).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not output human-readable text when --json is set', async () => {
+    const root = tempDir();
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ cwd: root, json: true, _dbCheck: stubDbReady, write }),
+    );
+    const raw = lines.join('\n');
+    expect(raw).not.toContain('Horus readiness check');
+    expect(raw).not.toContain('✓');
+    expect(raw).not.toContain('~');
+  });
+
+  it('summary counts are consistent with checks array', async () => {
+    const root = tempDir();
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ cwd: root, json: true, _dbCheck: stubDbUnreachable, write }),
+    );
+    const out = JSON.parse(lines.join(''));
+    const passCount = out.checks.filter((c: { status: string }) => c.status === 'pass').length;
+    const warnCount = out.checks.filter((c: { status: string }) => c.status === 'warn').length;
+    const failCount = out.checks.filter((c: { status: string }) => c.status === 'fail').length;
+    expect(out.summary.pass).toBe(passCount);
+    expect(out.summary.warn).toBe(warnCount);
+    expect(out.summary.fail).toBe(failCount);
+  });
+});

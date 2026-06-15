@@ -51,8 +51,9 @@ export function buildProgram(): Command {
     .command('doctor')
     .description('Check local readiness: CLI version, git root, .horus config, and source-intelligence setup')
     .option('-c, --config <path>', 'path to horus.config.js for connector checks')
-    .action(async (opts: { config?: string }) => {
-      process.exitCode = await runDoctor({ config: opts.config });
+    .option('--json', 'output machine-readable JSON instead of human-readable text')
+    .action(async (opts: { config?: string; json?: boolean }) => {
+      process.exitCode = await runDoctor({ config: opts.config, json: opts.json });
     });
 
   const providers = program

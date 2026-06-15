@@ -19,6 +19,14 @@ interface DoctorCheck {
   next?: string;
 }
 
+export interface DoctorOutput {
+  version: string;
+  /** True when no check has status 'fail'. Warn-level issues are advisory, not blocking. */
+  ready: boolean;
+  checks: DoctorCheck[];
+  summary: { pass: number; warn: number; fail: number };
+}
+
 function mark(status: CheckStatus): string {
   if (status === 'pass') return pc.green('✓');
   if (status === 'warn') return pc.yellow('~');
@@ -28,6 +36,7 @@ function mark(status: CheckStatus): string {
 export async function runDoctor(opts?: {
   cwd?: string;
   config?: string;
+  json?: boolean;
   write?: (line: string) => void;
   /** Injectable for tests — defaults to the real checkDatabase. */
   _dbCheck?: (url: string) => Promise<DbHealth>;
@@ -267,14 +276,30 @@ export async function runDoctor(opts?: {
     // No global config loadable — skip connector checks silently.
   }
 
+  const hasFailure = checks.some((c) => c.status === 'fail');
+
+  if (opts?.json) {
+    const summary = {
+      pass: checks.filter((c) => c.status === 'pass').length,
+      warn: checks.filter((c) => c.status === 'warn').length,
+      fail: checks.filter((c) => c.status === 'fail').length,
+    };
+    const output: DoctorOutput = {
+      version: HORUS_VERSION,
+      ready: !hasFailure,
+      checks,
+      summary,
+    };
+    write(JSON.stringify(output, null, 2));
+    return hasFailure ? 1 : 0;
+  }
+
   write(pc.bold('\nHorus readiness check\n'));
-  let hasFailure = false;
   for (const check of checks) {
     write(`  ${mark(check.status)} ${pc.bold(check.label.padEnd(26))}  ${pc.dim(check.detail)}`);
     if (check.next) {
       write(`    ${pc.dim('→ ' + check.next)}`);
     }
-    if (check.status === 'fail') hasFailure = true;
   }
   write('');
 
