@@ -4,6 +4,9 @@ Audit of every place in the Horus monorepo that exposes Axon naming, commands,
 config keys, or source-intelligence assumptions. No renames in this ticket —
 this file feeds follow-up tickets (HOR-80, HOR-81).
 
+The migration checklist (tiers, ordering, and follow-up ticket candidates) is in
+`docs/axon-migration-checklist.md` (HOR-80).
+
 **Categories**
 - **User-facing** — visible in terminal output, CLI flags, user config, docs
 - **Developer-facing** — exported types, function names, internal APIs

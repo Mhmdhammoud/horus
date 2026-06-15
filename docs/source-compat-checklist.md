@@ -4,6 +4,9 @@ Before changing any surface in the Axon-compatible fork or in the Horus connecto
 layer, work through this checklist. The authoritative surface inventory is in
 `docs/source-intelligence-boundary.md`. The contract details are in `docs/axon-compat.md`.
 
+The full migration checklist with tiers and follow-up ticket candidates is in
+`docs/axon-migration-checklist.md` (HOR-80).
+
 ---
 
 ## Quick rule
