@@ -137,7 +137,7 @@ Expected: `{"status":"ok"}` or similar JSON.
 The `.horus/config.json` created by `horus index` uses `source.hostUrl`. To update an existing config:
 
 ```sh
-horus init --axon http://127.0.0.1:8420
+horus init --source http://127.0.0.1:8420
 # or edit .horus/config.json directly:
 #   "source": { "hostUrl": "http://127.0.0.1:8420" }
 ```

@@ -4,9 +4,13 @@
 
 ```sh
 curl -fsSL https://horus.sh/install.sh | bash
+npm install -g @merittdev/horus
+brew install meritt-dev/tap/horus
 ```
 
-The installer:
+Homebrew tap is live through meritt-dev/tap.
+
+The curl installer:
 
 1. Detects your platform (macOS/Linux, arm64/amd64)
 2. Chooses an install directory: `/usr/local/bin` if writable, otherwise `$HOME/.local/bin`
@@ -39,7 +43,7 @@ horus 0.1.0
 | **Node.js 22+**         | The CLI is a self-contained Node.js executable — Node is required at runtime |
 | **curl**                | Required only for the one-line installer                                     |
 | **OS**                  | macOS 12+ or Linux (x86_64 or arm64)                                         |
-| Python 3.11+ (optional) | Enables source-intelligence features (install via `pip install axoniq`)      |
+| Python 3.11+ (optional) | Enables Horus source intelligence (installed by the curl installer when Python/uv/pip are available) |
 
 ## Next steps
 
@@ -65,11 +69,9 @@ horus --version
 To update to a **specific version** instead of the latest, download the binary directly:
 
 ```sh
-# Replace vX.Y.Z with the target version tag
-VERSION=v0.1.0
-PLATFORM=darwin-arm64    # or linux-amd64, linux-arm64, darwin-amd64
-curl -fsSL "https://github.com/meritt-dev/horus/releases/download/${VERSION}/horus-${PLATFORM}" \
-  -o horus
+# Replace X.Y.Z with the target version tag
+VERSION=0.1.0
+curl -fsSL "https://github.com/meritt-dev/horus/releases/download/v${VERSION}/horus-v${VERSION}" -o horus
 chmod +x horus
 sudo mv horus /usr/local/bin/horus   # or ~/.local/bin/horus
 horus --version
@@ -79,9 +81,9 @@ horus --version
 
 ## Package manager installs
 
-The recommended install path is still the curl installer above, but npm is now available for environments that prefer it. Homebrew remains pending the tap publishing step.
+All three channels install the same `horus` binary and leave your project config untouched.
 
-### npm (live)
+### npm
 
 Install Horus globally with npm:
 
@@ -92,30 +94,22 @@ horus --version
 
 The npm package contains the same self-contained Node.js executable as the curl installer.
 
-### Homebrew (pending approval)
+### Homebrew
 
-Once the tap is published, install Horus with:
-
-```sh
-brew tap meritt-dev/tap
-brew install horus
-```
-
-or directly:
+Homebrew tap is live through meritt-dev/tap.
 
 ```sh
 brew install meritt-dev/tap/horus
+horus --version
 ```
 
 ### Choosing a channel
 
-| Channel                    | Best for                                                           | Status                         |
-| -------------------------- | ------------------------------------------------------------------ | ------------------------------ |
-| **curl / direct download** | Recommended; always points to the latest GitHub Release executable | Live                           |
-| **npm**                    | Environments already using Node.js/npm; `npm update -g` semantics  | Live                           |
-| **Homebrew**               | macOS/Linux users who prefer `brew upgrade` semantics              | Pending tap approval (HOR-124) |
-
-All three channels install the same `horus` binary and leave your project config untouched.
+| Channel                    | Best for                                                           | Status |
+| -------------------------- | ------------------------------------------------------------------ | ------ |
+| **curl / direct download** | Recommended; always points to the latest GitHub Release executable | Live   |
+| **npm**                    | Environments already using Node.js/npm; `npm update -g` semantics  | Live   |
+| **Homebrew**               | macOS/Linux users who prefer `brew upgrade` semantics              | Live   |
 
 ---
 
@@ -273,9 +267,9 @@ To test a locally built binary instead of the PATH `horus`:
 
 ---
 
-### `setup` fails with "source-intelligence host unreachable"
+### `setup` fails with "source intelligence host unreachable"
 
-`horus setup` checks that the Horus source-intelligence backend is reachable. This is not
+`horus setup` checks that the Horus source intelligence backend is reachable. This is not
 required for basic CLI use — only for investigations that need code-level evidence.
 
 To set up source intelligence, see [connector-setup.md](./connector-setup.md).

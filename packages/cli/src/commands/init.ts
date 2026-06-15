@@ -17,7 +17,7 @@ import {
 export async function runInit(opts: {
   name?: string;
   env?: string;
-  axon?: string;
+  source?: string;
   path?: string;
 }): Promise<number> {
   try {
@@ -27,7 +27,7 @@ export async function runInit(opts: {
     const envName = opts.env ?? 'production';
 
     const repo: Record<string, unknown> = { name, path: root };
-    if (opts.axon) repo['axon'] = { hostUrl: opts.axon };
+    if (opts.source) repo['source'] = { hostUrl: opts.source };
 
     const file: LocalConfigFile = {
       version: 1,
@@ -44,9 +44,9 @@ export async function runInit(opts: {
     console.log(`${pc.green('✓')} Initialized Horus project ${pc.bold(name)}`);
     console.log(pc.dim(`  config:     ${configPath}`));
     console.log(pc.dim(`  registered: horus investigate --name ${name} "<hint>"`));
-    if (!opts.axon) {
+    if (!opts.source) {
       console.log(
-        pc.dim('  no source-intelligence host set — run `horus index` to analyze + host, or pass --axon <url>'),
+        pc.dim('  no source-intelligence host set — run `horus index` to analyze + host, or pass --source <url>'),
       );
     }
     console.log(

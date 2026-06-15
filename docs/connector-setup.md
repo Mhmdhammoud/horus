@@ -59,7 +59,7 @@ Options:
 |------|---------|
 | `--name <name>` | Project name (default: git root directory name) |
 | `--env <name>` | Environment name (default: production) |
-| `--axon <url>` | Source-intelligence host URL (e.g. `http://127.0.0.1:8420`) |
+| `--source <url>` | Source-intelligence host URL (e.g. `http://127.0.0.1:8420`) |
 | `--path <dir>` | Repository root (default: nearest git root) |
 
 After `horus init`, the local config lives at `.horus/config.json`. Horus
@@ -77,10 +77,10 @@ Horus can investigate incidents using **source intelligence alone**:
 - Ownership estimation
 
 Source intelligence is built into Horus. Point your config at
-a running source-intelligence host with `--axon`:
+a running source-intelligence host with `--source`:
 
 ```sh
-horus init --name my-service --env production --axon http://127.0.0.1:8420
+horus init --name my-service --env production --source http://127.0.0.1:8420
 ```
 
 To build the queue map (run the stitcher against the source-intelligence host):

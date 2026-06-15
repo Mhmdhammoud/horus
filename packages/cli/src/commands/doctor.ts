@@ -72,7 +72,9 @@ export async function runDoctor(opts?: {
       const project = file.project as Record<string, unknown>;
       const repos = project['repositories'] as Array<Record<string, unknown>> | undefined;
       const hasHost = repos?.some(
-        (r) => (r['axon'] as Record<string, unknown> | undefined)?.['hostUrl'],
+        (r) =>
+          (r['source'] as Record<string, unknown> | undefined)?.['hostUrl'] ??
+          (r['axon'] as Record<string, unknown> | undefined)?.['hostUrl'],
       );
       if (hasHost) {
         checks.push({ label: 'Source-intelligence host', status: 'pass', detail: 'configured' });
@@ -81,7 +83,7 @@ export async function runDoctor(opts?: {
           label: 'Source-intelligence host',
           status: 'warn',
           detail: 'not configured',
-          next: 'run `horus index` to analyze this repo and start a host, or pass --axon <url> to `horus init`',
+          next: 'run `horus index` to analyze this repo and start a host, or pass --source <url> to `horus init`',
         });
       }
     } catch {

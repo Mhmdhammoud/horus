@@ -19,7 +19,7 @@ export default {
     repositories: [{
       name: '${name}',
       path: '${repoPath}',
-      axon: { hostUrl: 'http://127.0.0.1:8420' },
+      source: { hostUrl: 'http://127.0.0.1:8420' },
     }],
     environments: [{
       name: 'production',

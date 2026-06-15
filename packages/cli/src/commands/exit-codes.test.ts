@@ -108,7 +108,7 @@ describe('runInit exit codes', () => {
     expect(code).toBe(1);
   });
 
-  it('exits 0 regardless of missing Axon host (optional — not a failure)', async () => {
+  it('exits 0 regardless of missing source-intelligence host (optional — not a failure)', async () => {
     const dir = makeTempDir();
     const code = await runInit({ name: 'exit-test-no-axon', path: dir });
     expect(code).toBe(0);
@@ -120,12 +120,12 @@ describe('runInit exit codes', () => {
     expect(code).toBe(0);
   });
 
-  it('exits 0 with an explicit axon host URL', async () => {
+  it('exits 0 with an explicit source host URL', async () => {
     const dir = makeTempDir();
     const code = await runInit({
-      name: 'exit-test-axon',
+      name: 'exit-test-source',
       path: dir,
-      axon: 'http://127.0.0.1:8420',
+      source: 'http://127.0.0.1:8420',
     });
     expect(code).toBe(0);
   });
