@@ -28,18 +28,18 @@ horus 0.1.0
 
 ## What gets installed
 
-| File | Purpose |
-|------|---------|
+| File                                             | Purpose          |
+| ------------------------------------------------ | ---------------- |
 | `/usr/local/bin/horus` (or `~/.local/bin/horus`) | Horus CLI binary |
 
 ## Requirements
 
-| Requirement | Details |
-|-------------|---------|
-| **Node.js 22+** | The CLI is a self-contained Node.js executable — Node is required at runtime |
-| **curl** | Required only for the one-line installer |
-| **OS** | macOS 12+ or Linux (x86_64 or arm64) |
-| Python 3.11+ (optional) | Enables source-intelligence features (install via `pip install axoniq`) |
+| Requirement             | Details                                                                      |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| **Node.js 22+**         | The CLI is a self-contained Node.js executable — Node is required at runtime |
+| **curl**                | Required only for the one-line installer                                     |
+| **OS**                  | macOS 12+ or Linux (x86_64 or arm64)                                         |
+| Python 3.11+ (optional) | Enables source-intelligence features (install via `pip install axoniq`)      |
 
 ## Next steps
 
@@ -77,6 +77,48 @@ horus --version
 
 ---
 
+## Package manager installs (pending approval)
+
+The npm and Homebrew distribution paths are prepared but **not yet published**. They will be enabled after Mohammad approves the actual publish/push step.
+
+### npm
+
+Once published, install Horus globally with npm:
+
+```sh
+npm install -g @merittdev/horus
+horus --version
+```
+
+The npm package contains the same self-contained Node.js executable as the curl installer.
+
+### Homebrew
+
+Once the tap is published, install Horus with:
+
+```sh
+brew tap meritt-dev/tap
+brew install horus
+```
+
+or directly:
+
+```sh
+brew install meritt-dev/tap/horus
+```
+
+### Choosing a channel
+
+| Channel                    | Best for                                                          | Status                             |
+| -------------------------- | ----------------------------------------------------------------- | ---------------------------------- |
+| **curl / direct download** | Today; always points to the latest GitHub Release executable      | Live                               |
+| **npm**                    | Environments already using Node.js/npm; `npm update -g` semantics | Pending publish approval (HOR-122) |
+| **Homebrew**               | macOS/Linux users who prefer `brew upgrade` semantics             | Pending tap approval (HOR-124)     |
+
+All three channels install the same `horus` binary and leave your project config untouched.
+
+---
+
 ## Uninstall
 
 Horus places files in three locations. Remove only what you want to remove.
@@ -111,12 +153,12 @@ rm -rf /path/to/your-repo/.horus
 
 ### What each file is
 
-| File / directory | What it is | Safe to delete? |
-|---|---|---|
-| `/usr/local/bin/horus` or `~/.local/bin/horus` | The installed binary | Yes — removes the `horus` command |
-| `~/.horus/registry.json` | Global project name → config path index | Yes — you can re-register with `horus init` |
-| `<repo>/.horus/config.json` | Per-project config (created by `horus init`) | Only if resetting that project |
-| `<repo>/horus.config.js` | User-authored global config (not created by installer) | Only if you created it and want to remove it |
+| File / directory                               | What it is                                             | Safe to delete?                              |
+| ---------------------------------------------- | ------------------------------------------------------ | -------------------------------------------- |
+| `/usr/local/bin/horus` or `~/.local/bin/horus` | The installed binary                                   | Yes — removes the `horus` command            |
+| `~/.horus/registry.json`                       | Global project name → config path index                | Yes — you can re-register with `horus init`  |
+| `<repo>/.horus/config.json`                    | Per-project config (created by `horus init`)           | Only if resetting that project               |
+| `<repo>/horus.config.js`                       | User-authored global config (not created by installer) | Only if you created it and want to remove it |
 
 For guidance on which files to commit and which to gitignore, see **[docs/gitignore-guide.md](./gitignore-guide.md)**.
 
@@ -152,11 +194,11 @@ ls -la ~/.local/bin/horus /usr/local/bin/horus 2>/dev/null
 If `curl` fails or the download hangs, the installer exits with a non-zero code and prints an
 error. Common causes:
 
-| Symptom | Likely cause | Fix |
-|---------|-------------|-----|
-| `curl: (6) Could not resolve host` | DNS or network issue | Check internet connectivity |
-| `curl: (22) The requested URL returned error: 404` | Release not yet published | Check [github.com/meritt-dev/horus/releases](https://github.com/meritt-dev/horus/releases) for the latest tag |
-| Download hangs indefinitely | Firewall blocking outbound HTTPS | Try from a different network or contact your network admin |
+| Symptom                                            | Likely cause                     | Fix                                                                                                           |
+| -------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `curl: (6) Could not resolve host`                 | DNS or network issue             | Check internet connectivity                                                                                   |
+| `curl: (22) The requested URL returned error: 404` | Release not yet published        | Check [github.com/meritt-dev/horus/releases](https://github.com/meritt-dev/horus/releases) for the latest tag |
+| Download hangs indefinitely                        | Firewall blocking outbound HTTPS | Try from a different network or contact your network admin                                                    |
 
 To retry a failed install, run the same command again:
 

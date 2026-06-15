@@ -271,7 +271,7 @@ sudo mv horus /usr/local/bin/horus
 horus --version
 ```
 
-Homebrew tap is planned — the packaging archive contract is documented in [docs/homebrew-archive-contract.md](./docs/homebrew-archive-contract.md).
+**Package managers (pending approval):** npm (`@merittdev/horus`) and Homebrew tap (`meritt-dev/tap`) are prepared but not yet published — they require explicit publish approval. See [docs/install.md](./docs/install.md#package-manager-installs-pending-approval) for the channel comparison and commands.
 
 To **update** to a newer version, re-run the installer — it overwrites the binary and leaves your config untouched. To **uninstall**, see **[docs/install.md#uninstall](./docs/install.md#uninstall)** for what to remove and what to keep.
 
