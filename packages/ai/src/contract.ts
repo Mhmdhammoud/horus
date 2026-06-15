@@ -13,6 +13,8 @@
  * @horus/ai stays decoupled from @horus/engine.
  */
 
+import { redactNarrativeInput } from './redact.js';
+
 // ---------------------------------------------------------------------------
 // Input packet — what the AI provider receives
 // ---------------------------------------------------------------------------
@@ -200,9 +202,11 @@ export async function renderNarrative(
   const ceiling = opts.confidenceCeiling ?? input.reportConfidence;
 
   if (opts.provider) {
+    // Redact sensitive values from the packet before it reaches the provider.
+    const safeInput = redactNarrativeInput(input);
     try {
-      const output = await opts.provider.render(input, { confidenceCeiling: ceiling });
-      const validation = validateNarrative(output, input);
+      const output = await opts.provider.render(safeInput, { confidenceCeiling: ceiling });
+      const validation = validateNarrative(output, safeInput);
       if (validation.valid) {
         return { output, fromProvider: true };
       }

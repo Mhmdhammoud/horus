@@ -34,3 +34,5 @@ export {
 
 export { AnthropicNarrativeProvider } from './anthropic.js';
 export type { AnthropicProviderOptions } from './anthropic.js';
+
+export { redactString, redactNarrativeInput } from './redact.js';
