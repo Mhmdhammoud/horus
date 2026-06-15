@@ -12,5 +12,8 @@
   },
   "dependencies": {
     "@horus/core": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.8"
   }
 }
