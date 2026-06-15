@@ -77,13 +77,13 @@ horus --version
 
 ---
 
-## Package manager installs (pending approval)
+## Package manager installs
 
-The npm and Homebrew distribution paths are prepared but **not yet published**. They will be enabled after Mohammad approves the actual publish/push step.
+The recommended install path is still the curl installer above, but npm is now available for environments that prefer it. Homebrew remains pending the tap publishing step.
 
-### npm
+### npm (live)
 
-Once published, install Horus globally with npm:
+Install Horus globally with npm:
 
 ```sh
 npm install -g @merittdev/horus
@@ -92,7 +92,7 @@ horus --version
 
 The npm package contains the same self-contained Node.js executable as the curl installer.
 
-### Homebrew
+### Homebrew (pending approval)
 
 Once the tap is published, install Horus with:
 
@@ -109,11 +109,11 @@ brew install meritt-dev/tap/horus
 
 ### Choosing a channel
 
-| Channel                    | Best for                                                          | Status                             |
-| -------------------------- | ----------------------------------------------------------------- | ---------------------------------- |
-| **curl / direct download** | Today; always points to the latest GitHub Release executable      | Live                               |
-| **npm**                    | Environments already using Node.js/npm; `npm update -g` semantics | Pending publish approval (HOR-122) |
-| **Homebrew**               | macOS/Linux users who prefer `brew upgrade` semantics             | Pending tap approval (HOR-124)     |
+| Channel                    | Best for                                                           | Status                         |
+| -------------------------- | ------------------------------------------------------------------ | ------------------------------ |
+| **curl / direct download** | Recommended; always points to the latest GitHub Release executable | Live                           |
+| **npm**                    | Environments already using Node.js/npm; `npm update -g` semantics  | Live                           |
+| **Homebrew**               | macOS/Linux users who prefer `brew upgrade` semantics              | Pending tap approval (HOR-124) |
 
 All three channels install the same `horus` binary and leave your project config untouched.
 

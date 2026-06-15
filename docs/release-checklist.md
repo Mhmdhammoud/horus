@@ -19,11 +19,11 @@ Use this checklist for every version release. The automated release script
 
 **Version bump locations** (updated automatically by `scripts/release.sh`):
 
-| File | Field |
-|------|-------|
-| `apps/horus/package.json` | `"version"` |
-| `packages/core/src/version.ts` | `HORUS_VERSION` constant |
-| `horus-landing/public/install.sh` | `HORUS_VERSION=` line |
+| File                              | Field                    |
+| --------------------------------- | ------------------------ |
+| `apps/horus/package.json`         | `"version"`              |
+| `packages/core/src/version.ts`    | `HORUS_VERSION` constant |
+| `horus-landing/public/install.sh` | `HORUS_VERSION=` line    |
 
 ---
 
@@ -75,6 +75,7 @@ Run the release script (handles version sync, commit, tag, push, GitHub Release)
 ```
 
 The script will:
+
 1. Sync versions across all three files above
 2. Run `pnpm typecheck` + `pnpm --filter ./apps/horus build`
 3. Run `scripts/smoke-test.sh`
@@ -149,6 +150,6 @@ If the release is broken after publishing:
 
 ## Notes
 
-- No npm or Homebrew distribution is live yet; do not reference them in release notes.
+- npm is live as `@merittdev/horus`. Homebrew is not yet live; do not reference Homebrew in release notes until the tap is published.
 - The CLI is a self-contained Node.js executable (Node 22+ required at runtime).
 - The optional source-intelligence backend (`axoniq` on PyPI) is installed separately by the installer.

@@ -28,11 +28,11 @@ Every incident leaves evidence.
 
 ## What Horus is not
 
-| | |
-|---|---|
-| **Monitoring** | Detects problems |
-| **Observability** | Shows signals |
-| **Horus** | Reconstructs what happened |
+|                   |                            |
+| ----------------- | -------------------------- |
+| **Monitoring**    | Detects problems           |
+| **Observability** | Shows signals              |
+| **Horus**         | Reconstructs what happened |
 
 Horus is not another dashboard, alerting tool, or log viewer. It sits on top of the systems you already use.
 
@@ -47,12 +47,12 @@ Runtime Evidence  →  Investigation Engine  →  Investigation Report
 ```
 
 | Runtime Evidence | Investigation Engine | Investigation Report |
-|---|---|---|
-| Logs | Correlation | Root Cause |
-| Metrics | Timeline | Confidence |
-| Traces | Hypotheses | Evidence |
-| Queues | Reconstruction | Contradictions |
-| Databases | | Recommended Actions |
+| ---------------- | -------------------- | -------------------- |
+| Logs             | Correlation          | Root Cause           |
+| Metrics          | Timeline             | Confidence           |
+| Traces           | Hypotheses           | Evidence             |
+| Queues           | Reconstruction       | Contradictions       |
+| Databases        |                      | Recommended Actions  |
 
 Pipeline: **Evidence → Correlation → Hypotheses → Timeline → Report**
 
@@ -136,21 +136,22 @@ Under active development.
 
 The investigation engine runs end-to-end. Some surfaces require a local setup before they work — Postgres for the audit store, a source-intelligence host, and at least one configured runtime connector for live evidence.
 
-| Feature | Status | Notes |
-|---|---|---|
-| Install (`curl` or direct download) | Partial | Builds and runs from source; public binary release not yet published |
-| `horus init` | Works today | Creates `.horus/config.json` and registers the project |
-| `horus doctor` | Works today | Checks CLI, git root, config, and source-intelligence setup |
-| `horus setup` | Works today | Verifies prerequisites and guides fixes |
-| Source indexing (`horus index`) | Partial | Command works; requires a source-intelligence host running locally |
-| `horus investigate` | Works today | Full deterministic report; requires Postgres + at least one connector or git history |
-| `horus replay` | Works today | Re-renders a saved investigation from the audit store; no re-query |
-| `horus postmortem` | Works today | Drafts an editable Markdown postmortem from a saved investigation |
-| Runtime connectors (ES / Mongo / Grafana / Redis) | Partial | Connectors exist; each requires a live instance and per-project connector config |
-| AI narrative (`--ai` flag on `investigate`) | Partial | Requires `ANTHROPIC_API_KEY`; falls back to deterministic output automatically on failure |
-| Local AI provider bridge | Partial | Provider detection works; execution requires a local model installed |
+| Feature                                           | Status      | Notes                                                                                     |
+| ------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------- |
+| Install (`curl` or direct download)               | Partial     | Builds and runs from source; public binary release not yet published                      |
+| `horus init`                                      | Works today | Creates `.horus/config.json` and registers the project                                    |
+| `horus doctor`                                    | Works today | Checks CLI, git root, config, and source-intelligence setup                               |
+| `horus setup`                                     | Works today | Verifies prerequisites and guides fixes                                                   |
+| Source indexing (`horus index`)                   | Partial     | Command works; requires a source-intelligence host running locally                        |
+| `horus investigate`                               | Works today | Full deterministic report; requires Postgres + at least one connector or git history      |
+| `horus replay`                                    | Works today | Re-renders a saved investigation from the audit store; no re-query                        |
+| `horus postmortem`                                | Works today | Drafts an editable Markdown postmortem from a saved investigation                         |
+| Runtime connectors (ES / Mongo / Grafana / Redis) | Partial     | Connectors exist; each requires a live instance and per-project connector config          |
+| AI narrative (`--ai` flag on `investigate`)       | Partial     | Requires `ANTHROPIC_API_KEY`; falls back to deterministic output automatically on failure |
+| Local AI provider bridge                          | Partial     | Provider detection works; execution requires a local model installed                      |
 
 **Prerequisites before Horus works end-to-end:**
+
 - Postgres 16 (audit store) — `docker compose up -d` starts it
 - At least one runtime connector configured via `horus connect <type>`
 - Source-intelligence host running locally for source-aware commands (`horus index`, `horus explain`, `horus blast-radius`, `horus architecture`, `horus search`)
@@ -164,9 +165,11 @@ The investigation engine runs end-to-end. Some surfaces require a local setup be
 Horus is organized in four layers:
 
 **Source Intelligence**
+
 - Built-in source-intelligence backend — code graph, semantic search, impact analysis, ownership (see below).
 
 **Runtime Evidence**
+
 - **Elasticsearch** — logs → synthesized error-signature evidence
 - **MongoDB** — application/operational state
 - **Grafana** — metrics via its datasource proxy
@@ -174,11 +177,13 @@ Horus is organized in four layers:
 - **Git** — change history, ownership signals
 
 **Investigation** (deterministic)
+
 - **Queue Stitcher** — connects producer `queue.add(...)` to consumer `@Processor` handlers
 - **Timeline Engine** — orders evidence into a sequence of events
 - **Correlation Engine** — connects evidence across sources into incident threads
 
 **Presentation**
+
 - **Deterministic investigation report** — evidence, timeline, hypotheses, gap analysis, next actions
 - **Optional AI narrative** — a later layer on top of the deterministic report
 
@@ -217,16 +222,23 @@ export default defineConfig({
           name: 'production',
           readOnly: true,
           connectors: {
-            elasticsearch: { indexPattern: 'atlas-payments-prod-*', serviceName: 'atlas-payments-prod' },
-            mongodb: { database: 'atlas_payments_prod', collections: ['orders', 'payments', 'workers'] },
+            elasticsearch: {
+              indexPattern: 'atlas-payments-prod-*',
+              serviceName: 'atlas-payments-prod',
+            },
+            mongodb: {
+              database: 'atlas_payments_prod',
+              collections: ['orders', 'payments', 'workers'],
+            },
             grafana: {},
           },
         },
       ],
     },
   ],
-  axon: { pinnedVersion: '1.0.1' },
-  database: { url: process.env.DATABASE_URL ?? 'postgresql://horus:horus@localhost:5433/horus' },
+  database: {
+    url: process.env.DATABASE_URL ?? 'postgresql://horus:horus@localhost:5433/horus',
+  },
 });
 ```
 
@@ -246,18 +258,18 @@ The installer downloads the Horus CLI from GitHub Releases and installs it to yo
 
 ### What the installer installs
 
-| Component | Role | Required |
-|---|---|---|
-| **Horus CLI** | The `horus` command | Yes |
+| Component                             | Role                                                                          | Required |
+| ------------------------------------- | ----------------------------------------------------------------------------- | -------- |
+| **Horus CLI**                         | The `horus` command                                                           | Yes      |
 | **Horus source-intelligence backend** | Enables `horus index`, `horus explain`, `horus changes`, `horus architecture` | Optional |
 
 ### Prerequisites
 
-| Requirement | Role |
-|---|---|
-| Node.js 22+ | Horus CLI runtime (the installed binary needs Node.js) |
-| Postgres 16 | Investigation audit store — run locally via `docker compose up -d` or use a managed instance |
-| Python 3.11+ + uv/pip | Required only for the source-intelligence backend |
+| Requirement           | Role                                                                                         |
+| --------------------- | -------------------------------------------------------------------------------------------- |
+| Node.js 22+           | Horus CLI runtime (the installed binary needs Node.js)                                       |
+| Postgres 16           | Investigation audit store — run locally via `docker compose up -d` or use a managed instance |
+| Python 3.11+ + uv/pip | Required only for the source-intelligence backend                                            |
 
 The installer **does not** configure Elasticsearch, MongoDB, Grafana, Redis, or any production system. Runtime connectors are added per-project after install via `horus connect`.
 
@@ -271,7 +283,7 @@ sudo mv horus /usr/local/bin/horus
 horus --version
 ```
 
-**Package managers (pending approval):** npm (`@merittdev/horus`) and Homebrew tap (`meritt-dev/tap`) are prepared but not yet published — they require explicit publish approval. See [docs/install.md](./docs/install.md#package-manager-installs-pending-approval) for the channel comparison and commands.
+**Package managers:** npm (`npm install -g @merittdev/horus`) is now live. The Homebrew tap (`meritt-dev/tap`) is prepared but still pending publish approval. See [docs/install.md](./docs/install.md#package-manager-installs) for the channel comparison and commands.
 
 To **update** to a newer version, re-run the installer — it overwrites the binary and leaves your config untouched. To **uninstall**, see **[docs/install.md#uninstall](./docs/install.md#uninstall)** for what to remove and what to keep.
 
@@ -310,14 +322,14 @@ horus investigate --help
 
 ### Core commands
 
-| Command | What it does |
-|---|---|
-| `horus status [--project --env]` | Per-project/env connector-health matrix |
-| `horus index --project <p> --env <e>` | Build the queue map (stitcher) for a project |
-| `horus investigate --project <p> --env <e> "<hint>"` | Full deterministic investigation report |
-| `horus logs [service] --project <p> --env <e>` | Error-signature evidence (`--raw` for lines) |
-| `horus state --project <p> --env <e>` | MongoDB application-state evidence (read-only) |
-| `horus metrics [hint] --project <p> --env <e>` | Grafana metrics evidence |
+| Command                                                                     | What it does                                                          |
+| --------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `horus status [--project --env]`                                            | Per-project/env connector-health matrix                               |
+| `horus index --project <p> --env <e>`                                       | Build the queue map (stitcher) for a project                          |
+| `horus investigate --project <p> --env <e> "<hint>"`                        | Full deterministic investigation report                               |
+| `horus logs [service] --project <p> --env <e>`                              | Error-signature evidence (`--raw` for lines)                          |
+| `horus state --project <p> --env <e>`                                       | MongoDB application-state evidence (read-only)                        |
+| `horus metrics [hint] --project <p> --env <e>`                              | Grafana metrics evidence                                              |
 | `horus explain <symbol>` · `blast-radius` · `architecture` · `what-changed` | Source-aware code intelligence (requires source-intelligence backend) |
 
 ## Local project workflow (git-style)
