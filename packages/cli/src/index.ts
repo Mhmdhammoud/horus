@@ -437,8 +437,10 @@ export function buildProgram(): Command {
     .command('postmortem <id>')
     .description('Draft an editable incident postmortem from a saved investigation')
     .option('-c, --config <path>', 'path to horus.config.ts')
-    .action(async (id: string, opts: { config?: string }) => {
-      process.exitCode = await runPostmortem(id, { config: opts.config });
+    .option('--output <path>', 'write Markdown to a file instead of printing to stdout')
+    .option('--force', 'overwrite the output file if it already exists')
+    .action(async (id: string, opts: { config?: string; output?: string; force?: boolean }) => {
+      process.exitCode = await runPostmortem(id, { config: opts.config, output: opts.output, force: opts.force });
     });
 
   program
