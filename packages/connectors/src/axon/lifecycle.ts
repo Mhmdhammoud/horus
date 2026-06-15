@@ -1,9 +1,12 @@
 /**
- * Axon process lifecycle (HOR-37) — analyze a repo and host its graph.
+ * Source-intelligence process lifecycle (HOR-37) — analyze a repo and host its graph.
  *
  * This shells out to the `axon` CLI for LIFECYCLE only (analyze / host), which is
  * explicitly allowed (like the git connector). The "no CLI shell-out" rule applies
- * to QUERIES — those still go over HTTP/MCP via AxonHttpClient.
+ * to QUERIES — those still go over HTTP/MCP via SourceHttpClient.
+ *
+ * The binary is still named `axon` (upstream PyPI package `axoniq`); Horus exposes
+ * lifecycle wrappers through source-boundary.ts (HOR-136, HOR-145).
  */
 
 import { execFile, spawn } from 'node:child_process';
@@ -14,7 +17,7 @@ import { createServer } from 'node:net';
 
 const exec = promisify(execFile);
 
-/** Is the `axon` binary on PATH? */
+/** Is the source-intelligence backend binary (`axon`) on PATH? */
 export async function axonAvailable(): Promise<boolean> {
   try {
     await exec('axon', ['--version'], { timeout: 5000 });
@@ -25,8 +28,8 @@ export async function axonAvailable(): Promise<boolean> {
 }
 
 /**
- * Return the installed axon version string (e.g. "1.0.1"), or null if axon
- * is not on PATH or version cannot be parsed.
+ * Return the installed source-intelligence backend version string (e.g. "1.0.1"),
+ * or null if the `axon` binary is not on PATH or the version cannot be parsed.
  */
 export async function getAxonVersion(): Promise<string | null> {
   try {
@@ -38,7 +41,7 @@ export async function getAxonVersion(): Promise<string | null> {
   }
 }
 
-/** Has the repo been analyzed (a `.axon/` index exists)? */
+/** Has the repo been analyzed (a `.axon/` source-intelligence index exists)? */
 export function isAnalyzed(root: string): boolean {
   return existsSync(join(root, '.axon'));
 }
@@ -53,10 +56,12 @@ export async function analyzeRepo(root: string): Promise<void> {
 }
 
 /**
- * Read the host URL Axon itself records for a repo (`<root>/.axon/host.json`),
- * if any. Axon runs at most ONE host per repo (single-writer Kùzu lock), so this
- * is the source of truth for "is this repo already being hosted, and where".
- * Different repos get different hosts/ports and run concurrently.
+ * Read the host URL the source-intelligence backend records for a repo
+ * (`<root>/.axon/host.json`), if any. The backend runs at most ONE host per repo
+ * (single-writer Kùzu lock), so this is the source of truth for "is this repo
+ * already being hosted, and where". Different repos get different hosts/ports and
+ * run concurrently. See also `readSourceHostUrl` (source-boundary.ts) for the
+ * Horus-canonical 2-step lookup that prefers `.horus/source/host.json`.
  */
 export function readAxonHostUrl(root: string): string | null {
   const p = join(root, '.axon', 'host.json');
@@ -69,7 +74,7 @@ export function readAxonHostUrl(root: string): string | null {
   }
 }
 
-/** Is an Axon host reachable + healthy at this base URL? */
+/** Is a source-intelligence host reachable + healthy at this base URL? */
 export async function isHostHealthy(hostUrl: string): Promise<boolean> {
   try {
     const res = await fetch(`${hostUrl}/api/health`, {
@@ -104,7 +109,7 @@ export interface SpawnedHostRecord {
 
 const SPAWNED_HOST_FILE = 'spawned-host.json';
 
-/** Read the PID record Horus wrote when it spawned an Axon host for `root`. */
+/** Read the PID record Horus wrote when it spawned a source-intelligence host for `root`. */
 export function readSpawnedHost(root: string): SpawnedHostRecord | null {
   const p = join(root, '.horus', SPAWNED_HOST_FILE);
   if (!existsSync(p)) return null;
@@ -116,8 +121,8 @@ export function readSpawnedHost(root: string): SpawnedHostRecord | null {
 }
 
 /**
- * Spawn `axon host --port <port>` as a detached background process in `root`,
- * logging to `.horus/source-host.log`. Records the PID in `.horus/spawned-host.json`
+ * Spawn `axon host --port <port>` as a detached background source-intelligence host in
+ * `root`, logging to `.horus/source-host.log`. Records the PID in `.horus/spawned-host.json`
  * for safe teardown. Returns immediately — poll `waitForHost`.
  */
 export function startHost(root: string, port: number): void {

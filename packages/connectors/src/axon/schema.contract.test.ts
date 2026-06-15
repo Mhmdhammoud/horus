@@ -1,19 +1,19 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { AxonHttpClient, AxonHttpError } from './client.js';
-import { PINNED_AXON_VERSION } from '@horus/core';
+import { SourceHttpClient, SourceHttpError } from './source-boundary.js';
+import { PINNED_SOURCE_VERSION } from '@horus/core';
 
-const baseUrl = process.env['AXON_HOST_URL'] ?? 'http://127.0.0.1:8420';
-const client = new AxonHttpClient({ baseUrl });
+const baseUrl = process.env['HORUS_SOURCE_HOST_URL'] ?? process.env['AXON_HOST_URL'] ?? 'http://127.0.0.1:8420';
+const client = new SourceHttpClient({ baseUrl });
 let hostUp = false;
 
 beforeAll(async () => {
   hostUp = (await client.health()).ok;
 });
 
-describe('Axon schema contract', () => {
-  it('pins the Axon version (openapi.json)', async (ctx) => {
+describe('source-intelligence schema contract', () => {
+  it('pins the source-intelligence version (openapi.json)', async (ctx) => {
     if (!hostUp) return ctx.skip();
-    expect(await client.version()).toBe(PINNED_AXON_VERSION);
+    expect(await client.version()).toBe(PINNED_SOURCE_VERSION);
   });
 
   it('exposes all expected node labels', async (ctx) => {
@@ -69,8 +69,8 @@ describe('Axon schema contract', () => {
     } catch (e) {
       err = e;
     }
-    expect(err).toBeInstanceOf(AxonHttpError);
-    expect((err as AxonHttpError).status).toBe(400);
+    expect(err).toBeInstanceOf(SourceHttpError);
+    expect((err as SourceHttpError).status).toBe(400);
   });
 
   it('retains snake_case node properties', async (ctx) => {
@@ -82,7 +82,7 @@ describe('Axon schema contract', () => {
     expect(typeof r.rows[0]?.[1]).toBe('number');
   });
 
-  it('hybrid search resolves a synonym query (semantic delegated to Axon)', async (ctx) => {
+  it('hybrid search resolves a synonym query (semantic delegated to source backend)', async (ctx) => {
     if (!hostUp) return ctx.skip();
     const res = await client.search('deduplicate incoming leads', 5);
     expect(res.map((x) => x.name)).toContain('markDuplicateLead');

@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { AxonHttpClient, AxonHttpError } from './client.js';
+import { SourceHttpClient, SourceHttpError } from './source-boundary.js';
 
-const baseUrl = process.env.AXON_HOST_URL ?? 'http://127.0.0.1:8420';
-const client = new AxonHttpClient({ baseUrl });
+const baseUrl = process.env['HORUS_SOURCE_HOST_URL'] ?? process.env['AXON_HOST_URL'] ?? 'http://127.0.0.1:8420';
+const client = new SourceHttpClient({ baseUrl });
 
 let hostUp = false;
 
@@ -10,7 +10,7 @@ beforeAll(async () => {
   hostUp = (await client.health()).ok;
 });
 
-describe('Axon HTTP API contract', () => {
+describe('source-intelligence HTTP API contract', () => {
   it('cypher returns a node count', async (ctx) => {
     if (!hostUp) return ctx.skip();
 
@@ -55,7 +55,7 @@ describe('Axon HTTP API contract', () => {
       expect(Array.isArray(d.removed)).toBe(true);
       expect(Array.isArray(d.modified)).toBe(true);
     } catch (e) {
-      if (e instanceof AxonHttpError && e.status === 400) return ctx.skip();
+      if (e instanceof SourceHttpError && e.status === 400) return ctx.skip();
       throw e;
     }
   });

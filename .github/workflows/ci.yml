@@ -21,15 +21,15 @@ jobs:
 
       - run: pnpm typecheck
 
-      # The Axon HTTP contract tests (packages/connectors/src/axon/contract.test.ts)
-      # auto-skip when no host is reachable at AXON_HOST_URL, so CI passes without a
-      # live Axon; to exercise them, run with an Axon host and AXON_HOST_URL set.
+      # The source-intelligence HTTP contract tests (packages/connectors/src/axon/contract.test.ts)
+      # auto-skip when no host is reachable at HORUS_SOURCE_HOST_URL, so CI passes without a
+      # live source-intelligence backend; to exercise them, run with a backend and HORUS_SOURCE_HOST_URL set.
       - run: pnpm test
 
       - run: pnpm build
 
       # CLI smoke gate (HOR-96): verify the built artifact starts correctly and
-      # outputs expected content without requiring live Postgres or Axon.
+      # outputs expected content without requiring live Postgres or a source-intelligence backend.
       # Run with bash to avoid relying on execute permission in CI checkout.
       - name: CLI smoke test
         run: bash ./scripts/smoke-test.sh apps/horus/dist/index.cjs

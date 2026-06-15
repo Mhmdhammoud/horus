@@ -1,20 +1,21 @@
 /**
- * AxonCodeProvider — live contract tests.
+ * SourceCodeProvider — live contract tests (HOR-142).
  *
- * These tests run against a real Axon host. When no host is reachable (CI without
- * Axon), every test skips cleanly so the suite stays green.
+ * These tests run against a real source-intelligence host. When no host is
+ * reachable (CI without the backend), every test skips cleanly so the suite
+ * stays green.
  *
- * Set AXON_HOST_URL to point at a non-default host, e.g.:
- *   AXON_HOST_URL=http://axon.internal:8420 pnpm test provider.contract
+ * Set HORUS_SOURCE_HOST_URL (or the legacy AXON_HOST_URL) to point at a
+ * non-default host, e.g.:
+ *   HORUS_SOURCE_HOST_URL=http://source.internal:8420 pnpm test provider.contract
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { AxonHttpClient, AxonHttpError } from './client.js';
-import { AxonCodeProvider } from './provider.js';
+import { SourceHttpClient, SourceHttpError, SourceCodeProvider } from './source-boundary.js';
 
-const baseUrl = process.env['AXON_HOST_URL'] ?? 'http://127.0.0.1:8420';
-const client = new AxonHttpClient({ baseUrl });
-const provider = new AxonCodeProvider(client);
+const baseUrl = process.env['HORUS_SOURCE_HOST_URL'] ?? process.env['AXON_HOST_URL'] ?? 'http://127.0.0.1:8420';
+const client = new SourceHttpClient({ baseUrl });
+const provider = new SourceCodeProvider(client);
 
 let hostUp = false;
 
@@ -22,7 +23,7 @@ beforeAll(async () => {
   hostUp = (await client.health()).ok;
 });
 
-describe('AxonCodeProvider contract', () => {
+describe('SourceCodeProvider contract', () => {
   it('searchSymbols returns symbols', async (ctx) => {
     if (!hostUp) return ctx.skip();
 
@@ -111,7 +112,7 @@ describe('AxonCodeProvider contract', () => {
       expect(Array.isArray(d.removed)).toBe(true);
       expect(Array.isArray(d.modified)).toBe(true);
     } catch (e) {
-      if (e instanceof AxonHttpError && e.status === 400) return ctx.skip();
+      if (e instanceof SourceHttpError && e.status === 400) return ctx.skip();
       throw e;
     }
   });

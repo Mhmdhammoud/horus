@@ -1,7 +1,8 @@
 # Horus dev infrastructure.
-# Plain Postgres 16 — NO pgvector in v0 (semantic search is delegated to Axon's
-# built-in hybrid search over HTTP/MCP). Redis is intentionally omitted; it is added
-# only if/when the investigation engine (HOR-5) needs background jobs.
+# Plain Postgres 16 — NO pgvector in v0 (semantic search is delegated to the
+# Horus source-intelligence backend's built-in hybrid search over HTTP/MCP).
+# Redis is intentionally omitted; it is added only if/when the investigation
+# engine (HOR-5) needs background jobs.
 services:
   postgres:
     image: postgres:16-alpine

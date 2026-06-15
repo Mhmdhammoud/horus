@@ -3,11 +3,11 @@ import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { horusConfigSchema, resolveEnvironment, listEnvironments, loadConfig } from './config.js';
-import { PINNED_AXON_VERSION } from './version.js';
+import { PINNED_SOURCE_VERSION } from './version.js';
 
 // ---------------------------------------------------------------------------
-// Fixtures — code (Axon) belongs to the project's repositories; runtime
-// connectors belong to the environment.
+// Fixtures — source-intelligence (code index) belongs to the project's
+// repositories; runtime connectors belong to the environment.
 // ---------------------------------------------------------------------------
 
 const DB = { url: 'postgresql://horus:horus@localhost:5433/horus' };
@@ -76,7 +76,7 @@ const MULTI_ENV_CONFIG = horusConfigSchema.parse({
 describe('horusConfigSchema', () => {
   it('applies defaults and requires a database url', () => {
     const parsed = horusConfigSchema.parse({ database: DB });
-    expect(parsed.axon.pinnedVersion).toBe(PINNED_AXON_VERSION);
+    expect(parsed.axon.pinnedVersion).toBe(PINNED_SOURCE_VERSION);
     expect(parsed.models.reasoning).toBe('claude-opus-4-8');
     expect(parsed.projects).toEqual([]);
   });

@@ -1,5 +1,5 @@
 /**
- * Horus source-intelligence boundary (HOR-136, HOR-137).
+ * Horus source-intelligence boundary (HOR-136, HOR-137, HOR-142).
  *
  * Exposes Horus-owned names for the source-intelligence layer so the rest of
  * Horus can depend on these abstractions instead of Axon-named identifiers.
@@ -10,10 +10,25 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+// Client class / error / options
 export { AxonHttpClient as SourceHttpClient } from './client.js';
 export { AxonHttpError as SourceHttpError } from './client.js';
 export type { AxonClientOptions as SourceClientOptions } from './client.js';
+
+// Code provider
 export { AxonCodeProvider as SourceCodeProvider } from './provider.js';
+
+// Response / wire types (HOR-142)
+export type {
+  SourceNode,
+  SourceSearchResult,
+  SourceCypherResult,
+  SourceImpactResult,
+  SourceDiffResult,
+  SourceOverview,
+  SourceHostInfo,
+  SourceHealth,
+} from './types.js';
 
 import { axonAvailable, getAxonVersion, readAxonHostUrl } from './lifecycle.js';
 
