@@ -76,6 +76,24 @@ check_output  "--help lists index"       "index"       --help
 # setup: must print the "Horus setup" header (prereqs may be absent — non-zero exit allowed)
 check_output  "setup prints header"      "Horus setup" setup
 
+# JS config loading: built binary must load config/horus.config.js without jiti/babel.cjs errors.
+# Regression guard for HOR-83: previously failed with "Cannot find module '../dist/babel.cjs'".
+JS_CONFIG="$ROOT/config/horus.config.js"
+if [ -f "$JS_CONFIG" ]; then
+  check_output  "JS config loads (no babel error)"  "Horus setup" setup --config "$JS_CONFIG"
+  # Ensure the known regression string is absent
+  out="$("${HORUS[@]}" setup --config "$JS_CONFIG" 2>&1 || true)"
+  if printf '%s' "$out" | grep -qF 'babel.cjs'; then
+    printf '  %s %s\n' "$(red '✗')" "JS config load: unexpected babel.cjs error"
+    fail=1
+  else
+    printf '  %s %s\n' "$(green '✓')" "JS config load: no babel.cjs error"
+  fi
+else
+  printf '  %s %s\n' "$(red '✗')" "JS config not found at $JS_CONFIG"
+  fail=1
+fi
+
 printf '\n'
 if [ "$fail" -eq 0 ]; then
   printf '  %s\n\n' "$(green "$(bold 'PASS')")"

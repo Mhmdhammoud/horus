@@ -1,5 +1,8 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { horusConfigSchema, resolveEnvironment, listEnvironments } from './config.js';
+import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { horusConfigSchema, resolveEnvironment, listEnvironments, loadConfig } from './config.js';
 import { PINNED_AXON_VERSION } from './version.js';
 
 // ---------------------------------------------------------------------------
@@ -454,5 +457,85 @@ describe('resolveEnvironment — elasticsearch fields forwarded (HOR-47)', () =>
     });
     const renv = resolveEnvironment(cfg);
     expect(renv.connectors.elasticsearch?.fields).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-83: native JS/ESM config loading (built binary path)
+// ---------------------------------------------------------------------------
+
+const MINIMAL_JS_CONFIG_CONTENT = `export default {
+  database: { url: "postgresql://horus:horus@localhost:5433/horus" },
+  projects: [],
+};
+`;
+
+const NO_DEFAULT_EXPORT_CONTENT = `export const notDefault = { database: { url: "x" } };
+`;
+
+describe('loadConfig — native JS/ESM loading (HOR-83)', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `horus-config-test-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('loads a .js config via native import() and returns a valid HorusConfig', async () => {
+    const configPath = join(tmpDir, 'horus.config.js');
+    writeFileSync(configPath, MINIMAL_JS_CONFIG_CONTENT);
+    const cfg = await loadConfig(configPath);
+    expect(cfg.database.url).toBe('postgresql://horus:horus@localhost:5433/horus');
+    expect(cfg.projects).toEqual([]);
+  });
+
+  it('loads a .mjs config via native import()', async () => {
+    const configPath = join(tmpDir, 'horus.config.mjs');
+    writeFileSync(configPath, MINIMAL_JS_CONFIG_CONTENT);
+    const cfg = await loadConfig(configPath);
+    expect(cfg.database.url).toContain('postgresql://');
+  });
+
+  it('loads a .cjs config via native import()', async () => {
+    const configPath = join(tmpDir, 'horus.config.cjs');
+    writeFileSync(configPath, `module.exports = { database: { url: "postgresql://horus:horus@localhost:5433/horus" }, projects: [] };\n`);
+    const cfg = await loadConfig(configPath);
+    expect(cfg.database.url).toContain('postgresql://');
+  });
+
+  it('throws a clear error when .js config has no default export', async () => {
+    const configPath = join(tmpDir, 'no-default.js');
+    writeFileSync(configPath, NO_DEFAULT_EXPORT_CONTENT);
+    await expect(loadConfig(configPath)).rejects.toThrow('must have a default export');
+  });
+
+  it('throws a clear error when .js config fails to load', async () => {
+    const configPath = join(tmpDir, 'bad-syntax.js');
+    writeFileSync(configPath, 'THIS IS NOT VALID JS !!!@@@');
+    await expect(loadConfig(configPath)).rejects.toThrow(/Could not load Horus config/);
+  });
+
+  it('throws a readable validation error when .js config is structurally invalid', async () => {
+    const configPath = join(tmpDir, 'invalid-schema.js');
+    writeFileSync(configPath, `export default { notAValidKey: true };\n`);
+    await expect(loadConfig(configPath)).rejects.toThrow(/Invalid Horus config/);
+  });
+
+  it('prefers config/horus.config.js over config/horus.config.ts when both exist', async () => {
+    const configDir = join(tmpDir, 'config');
+    mkdirSync(configDir);
+    writeFileSync(join(configDir, 'horus.config.js'), MINIMAL_JS_CONFIG_CONTENT);
+    // .ts file with a different DB url — if .ts were loaded, this URL would appear
+    writeFileSync(
+      join(configDir, 'horus.config.ts'),
+      `export default { database: { url: "postgresql://should-not-be-loaded/db" }, projects: [] };\n`,
+    );
+    const cfg = await loadConfig(undefined, { cwd: tmpDir });
+    // Should have loaded the .js file, not the .ts file
+    expect(cfg.database.url).toBe('postgresql://horus:horus@localhost:5433/horus');
   });
 });

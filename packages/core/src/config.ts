@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { createJiti } from 'jiti';
 import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import {
   discoverLocalConfig,
   findRepoRoot,
@@ -397,7 +399,7 @@ function parseConfig(raw: unknown, source: string): HorusConfig {
   return parsed.data;
 }
 
-/** Load a config file by absolute path — JSON (`.horus/config.json`) or a TS module. */
+/** Load a config file by absolute path — JSON, native JS/ESM, or a TS module. */
 async function loadConfigFile(target: string): Promise<HorusConfig> {
   if (target.endsWith('.json')) {
     // A local `.horus/config.json` wraps a single project.
@@ -411,7 +413,27 @@ async function loadConfigFile(target: string): Promise<HorusConfig> {
     return parseConfig(raw, target);
   }
 
-  // A TS config module, loaded via jiti so it works under tsx or the bundled binary.
+  // Native JS/ESM/CJS module — use dynamic import(), no jiti needed.
+  // This path works in the built binary without requiring babel.cjs.
+  if (target.endsWith('.js') || target.endsWith('.mjs') || target.endsWith('.cjs')) {
+    let mod: { default?: unknown };
+    try {
+      mod = (await import(pathToFileURL(target).href)) as { default?: unknown };
+    } catch (err) {
+      throw new Error(
+        `Could not load Horus config at ${target}: ${(err as Error).message}`,
+      );
+    }
+    if (!mod.default) {
+      throw new Error(`Horus config at ${target} must have a default export.`);
+    }
+    return parseConfig(mod.default, target);
+  }
+
+  // TypeScript config — use jiti. Works in source mode (tsx / ts-node).
+  // In the built binary, jiti requires babel.cjs to be resolvable from the
+  // config file's directory (i.e. within a project that has jiti in node_modules).
+  // For portable use with the curl-installed binary, prefer horus.config.js instead.
   const jiti = createJiti(import.meta.url);
   let mod: { default?: unknown };
   try {
@@ -433,7 +455,8 @@ async function loadConfigFile(target: string): Promise<HorusConfig> {
  *   2. `opts.name` → the global project registry (`~/.horus/registry.json`)
  *   3. a discovered `.horus/config.json` walking up from `opts.cwd` (git-style)
  *   4. the `HORUS_CONFIG` environment variable
- *   5. `config/horus.config.ts` relative to the current working directory
+ *   5. `config/horus.config.js` relative to cwd (preferred — works with built binary)
+ *   6. `config/horus.config.ts` relative to cwd (source-mode fallback)
  */
 export async function loadConfig(
   configPath?: string,
@@ -455,7 +478,17 @@ export async function loadConfig(
     target = entry.configPath;
   } else {
     const discovered = discoverLocalConfig(cwd);
-    target = discovered ?? resolve(process.env['HORUS_CONFIG'] ?? 'config/horus.config.ts');
+    if (discovered) {
+      target = discovered;
+    } else if (process.env['HORUS_CONFIG']) {
+      target = resolve(process.env['HORUS_CONFIG']);
+    } else {
+      // Prefer .js — native import() works in the built binary without jiti/babel.
+      // Fall back to .ts for source-mode workflows (tsx, ts-node).
+      const jsPath = resolve(cwd, 'config/horus.config.js');
+      const tsPath = resolve(cwd, 'config/horus.config.ts');
+      target = existsSync(jsPath) ? jsPath : tsPath;
+    }
   }
 
   return loadConfigFile(target);
