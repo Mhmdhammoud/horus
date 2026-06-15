@@ -156,7 +156,7 @@ export async function runIndex(opts: {
         // record would cause `horus stop` to try to signal a dead process.
         removeSpawnedHostRecord(root);
         console.error(
-          pc.red(`  Source-intelligence host did not become healthy — see ${root}/.horus/axon-host.log`),
+          pc.red(`  Source-intelligence host did not become healthy — see ${root}/.horus/source-host.log`),
         );
         return 1;
       }

@@ -117,12 +117,12 @@ export function readSpawnedHost(root: string): SpawnedHostRecord | null {
 
 /**
  * Spawn `axon host --port <port>` as a detached background process in `root`,
- * logging to `.horus/axon-host.log`. Records the PID in `.horus/spawned-host.json`
+ * logging to `.horus/source-host.log`. Records the PID in `.horus/spawned-host.json`
  * for safe teardown. Returns immediately — poll `waitForHost`.
  */
 export function startHost(root: string, port: number): void {
   mkdirSync(join(root, '.horus'), { recursive: true });
-  const logPath = join(root, '.horus', 'axon-host.log');
+  const logPath = join(root, '.horus', 'source-host.log');
   const fd = openSync(logPath, 'a');
   const child = spawn('axon', ['host', '--port', String(port)], {
     cwd: root,

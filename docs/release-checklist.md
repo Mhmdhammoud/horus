@@ -52,6 +52,15 @@ node $HORUS_BIN index --help      # exits 0
 node $HORUS_BIN investigate --help # exits 0
 ```
 
+Branding regression check — run before every release to catch accidental Axon copy in
+user-visible CLI output:
+
+```bash
+./scripts/check-branding.sh
+```
+
+Exit 0 = clean. Exit 1 = violations with file:line output. See [scripts/check-branding.sh](../scripts/check-branding.sh) for the allowlist of intentional Axon references.
+
 ---
 
 ## Release
