@@ -76,6 +76,10 @@ check_output  "--help lists index"       "index"       --help
 # setup: must print the "Horus setup" header (prereqs may be absent — non-zero exit allowed)
 check_output  "setup prints header"      "Horus setup" setup
 
+# doctor: must print the readiness header and CLI version (no live services needed)
+check_output  "doctor prints readiness header" "Horus readiness check" doctor
+check_output  "doctor shows CLI version"        "CLI version"            doctor
+
 # JS config loading: built binary must load config/horus.config.js without jiti/babel.cjs errors.
 # Regression guard for HOR-83: previously failed with "Cannot find module '../dist/babel.cjs'".
 JS_CONFIG="$ROOT/config/horus.config.js"

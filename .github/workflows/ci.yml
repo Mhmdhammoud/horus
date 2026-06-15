@@ -27,3 +27,9 @@ jobs:
       - run: pnpm test
 
       - run: pnpm build
+
+      # CLI smoke gate (HOR-96): verify the built artifact starts correctly and
+      # outputs expected content without requiring live Postgres or Axon.
+      # Run with bash to avoid relying on execute permission in CI checkout.
+      - name: CLI smoke test
+        run: bash ./scripts/smoke-test.sh apps/horus/dist/index.cjs
