@@ -11,7 +11,7 @@ Every step is real — no staging, no mocked output.
 |-------------|-----|
 | Node.js 22+ | the Horus binary is a Node executable |
 | Docker (or Postgres 16 running on port 5433) | stores investigations, replay, postmortem |
-| Python 3.11+ with `pip` or `uv` | installs the Axon source-intelligence backend |
+| Python 3.11+ with `pip` or `uv` | installs the Horus source-intelligence backend |
 | A git repo to index | needed for source-intelligence evidence |
 
 ---
@@ -73,7 +73,7 @@ export default {
     repositories: [{
       name: 'my-api',
       path: '/path/to/my-api',           // absolute path to your git repo
-      axon: { hostUrl: 'http://127.0.0.1:8420' },
+      source: { hostUrl: 'http://127.0.0.1:8420' },
     }],
     environments: [{
       name: 'production',
@@ -111,7 +111,7 @@ Horus readiness check
 horus setup --config config/horus.config.js
 ```
 
-Expected output (with Postgres running and Axon installed):
+Expected output (with Postgres running and source-intelligence backend installed):
 
 ```
 Horus setup
@@ -119,12 +119,12 @@ Horus setup
   ✓ Horus source-intelligence backend (1.0.1)
   ✓ Postgres reachable (9 tables present)
   ~ my-api — host not reachable at http://127.0.0.1:8420
-    → start it with: axon host --port 8420 (in /path/to/my-api)
+    → start it with: horus index (in /path/to/my-api)
 
 Ready.
 ```
 
-If the source-intelligence backend (Axon) is not installed:
+If the source-intelligence backend is not installed:
 
 ```bash
 # Install via pip (or uv):
@@ -142,12 +142,8 @@ Run this **inside your git repo** (not the Horus repo):
 ```bash
 cd /path/to/my-api
 
-# Analyze repo (one-time, or after large merges):
-axon analyze .
-
-# Start the host:
-axon host --port 8420
-# Leaves this terminal open — background it or use a separate window.
+# Start the source-intelligence host (analyzes on first run, then starts the host):
+horus index
 ```
 
 Then verify it indexed correctly:
@@ -159,14 +155,13 @@ horus setup --config config/horus.config.js
 
 ---
 
-## 6. Init the repo and run the stitcher
+## 6. Run the stitcher
+
+`horus index` from step 5 already analyzed, started the host, stitched the queue map, and registered the project. To refresh the queue map after code changes:
 
 ```bash
-# From inside your repo (creates .horus/config.json):
+# From inside your repo — refreshes the queue map:
 cd /path/to/my-api
-horus init --name my-api --axon http://127.0.0.1:8420
-
-# Build the queue map (stitcher maps producers → queues → workers):
 horus index --name my-api --config /path/to/horus/config/horus.config.js
 ```
 
@@ -259,13 +254,13 @@ horus hosts
 |---------|-------|----------|
 | `horus --version` / `--help` | ✓ | nothing |
 | `horus doctor` | ✓ | nothing |
-| `horus setup` | ✓ | Postgres + Python/Axon |
+| `horus setup` | ✓ | Postgres + Python/source-intelligence backend |
 | `horus status` | ✓ | Postgres + config |
-| `horus index` | ✓ | Postgres + Axon host running |
-| `horus investigate` | ✓ | Postgres + Axon host (source-only confidence) |
+| `horus index` | ✓ | Postgres + source-intelligence backend |
+| `horus investigate` | ✓ | Postgres + source-intelligence backend (source-only confidence) |
 | `horus investigations` / `replay` | ✓ | Postgres (reads saved record) |
 | `horus postmortem` | ✓ | Postgres (reads saved record) |
-| `horus explain` / `changes` / `architecture` | ✓ | Axon host running |
+| `horus explain` / `changes` / `architecture` | ✓ | source-intelligence backend running |
 | `horus logs` | ✓ | Elasticsearch (`ES_URL` env var) |
 | `horus metrics` | ✓ | Grafana (`GRAFANA_URL` env var) |
 | `horus state` | ✓ | MongoDB (`MONGODB_URL` env var) |
@@ -277,9 +272,9 @@ horus hosts
 
 - **"Horus detected the incident automatically"** — Horus responds to a hint you provide.
 - **"Full confidence, all evidence"** — if runtime connectors are absent, confidence is source-only (0.65).
-- **"Works out of the box after curl install"** — Postgres and Axon must be started first.
+- **"Works out of the box after curl install"** — Postgres must be started first; run `horus index` in your repo for source intelligence.
 - **"Runtime logs/metrics show X"** — only if `ES_URL`/`GRAFANA_URL` are set and the connectors have live data.
-- **"Horus indexes your code automatically"** — `axon analyze .` and `axon host` must be started manually.
+- **"Horus indexes your code automatically"** — run `horus index` in your repo to start and index it.
 
 ---
 

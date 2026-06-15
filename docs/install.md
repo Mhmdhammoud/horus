@@ -39,7 +39,7 @@ horus 0.1.0
 | **Node.js 22+** | The CLI is a self-contained Node.js executable — Node is required at runtime |
 | **curl** | Required only for the one-line installer |
 | **OS** | macOS 12+ or Linux (x86_64 or arm64) |
-| Python 3.11+ (optional) | Enables source-intelligence features (`axoniq` backend) |
+| Python 3.11+ (optional) | Enables source-intelligence features (install via `pip install axoniq`) |
 
 ## Next steps
 
@@ -233,7 +233,7 @@ To test a locally built binary instead of the PATH `horus`:
 
 ### `setup` fails with "source-intelligence host unreachable"
 
-`horus setup` checks that the Axon source-intelligence backend is reachable. This is not
+`horus setup` checks that the Horus source-intelligence backend is reachable. This is not
 required for basic CLI use — only for investigations that need code-level evidence.
 
 To set up source intelligence, see [connector-setup.md](./connector-setup.md).

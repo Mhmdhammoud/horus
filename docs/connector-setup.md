@@ -76,8 +76,8 @@ Horus can investigate incidents using **source intelligence alone**:
 - Git change attribution
 - Ownership estimation
 
-Source intelligence comes from Axon, the indexing backend. Point your config at
-a running Axon host with `--axon`:
+Source intelligence is built into Horus. Point your config at
+a running source-intelligence host with `--axon`:
 
 ```sh
 horus init --name my-service --env production --axon http://127.0.0.1:8420
@@ -341,7 +341,7 @@ environment variables:
       {
         "name": "my-service",
         "path": "/path/to/my-service",
-        "axon": {
+        "source": {
           "hostUrl": "http://127.0.0.1:8420"
         }
       }
@@ -409,7 +409,7 @@ extend the time window with `--since`.
 
 ### Source-intelligence host is unreachable
 
-Check that the Axon process is running on the URL in your config:
+Check that the source-intelligence host is running on the URL in your config:
 
 ```sh
 horus hosts

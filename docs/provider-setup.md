@@ -78,5 +78,5 @@ the implementation checklist.
 ## Source intelligence
 
 Local AI providers are for narrative generation only. Source-intelligence
-(code graph, ownership, impact analysis) is provided by the Axon backend — see
+(code graph, ownership, impact analysis) is provided by the source-intelligence backend — see
 [connector-setup.md](./connector-setup.md).

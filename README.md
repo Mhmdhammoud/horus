@@ -134,7 +134,7 @@ Under active development.
 
 ## Can I use Horus today?
 
-The investigation engine runs end-to-end. Some surfaces require a local setup before they work — Postgres for the audit store, an Axon host for source intelligence, and at least one configured runtime connector for live evidence.
+The investigation engine runs end-to-end. Some surfaces require a local setup before they work — Postgres for the audit store, a source-intelligence host, and at least one configured runtime connector for live evidence.
 
 | Feature | Status | Notes |
 |---|---|---|
@@ -142,7 +142,7 @@ The investigation engine runs end-to-end. Some surfaces require a local setup be
 | `horus init` | Works today | Creates `.horus/config.json` and registers the project |
 | `horus doctor` | Works today | Checks CLI, git root, config, and source-intelligence setup |
 | `horus setup` | Works today | Verifies prerequisites and guides fixes |
-| Source indexing (`horus index`) | Partial | Command works; requires an Axon source-intelligence host running locally |
+| Source indexing (`horus index`) | Partial | Command works; requires a source-intelligence host running locally |
 | `horus investigate` | Works today | Full deterministic report; requires Postgres + at least one connector or git history |
 | `horus replay` | Works today | Re-renders a saved investigation from the audit store; no re-query |
 | `horus postmortem` | Works today | Drafts an editable Markdown postmortem from a saved investigation |
@@ -153,9 +153,9 @@ The investigation engine runs end-to-end. Some surfaces require a local setup be
 **Prerequisites before Horus works end-to-end:**
 - Postgres 16 (audit store) — `docker compose up -d` starts it
 - At least one runtime connector configured via `horus connect <type>`
-- Axon source-intelligence host running locally for source-aware commands (`horus index`, `horus explain`, `horus blast-radius`, `horus architecture`, `horus search`)
+- Source-intelligence host running locally for source-aware commands (`horus index`, `horus explain`, `horus blast-radius`, `horus architecture`, `horus search`)
 
-`horus replay` and `horus postmortem` work from the saved audit store and require neither live connectors nor an Axon host.
+`horus replay` and `horus postmortem` work from the saved audit store and require neither live connectors nor a source-intelligence host.
 
 ---
 
@@ -164,7 +164,7 @@ The investigation engine runs end-to-end. Some surfaces require a local setup be
 Horus is organized in four layers:
 
 **Source Intelligence**
-- **Axon** — the default source-intelligence backend (see below).
+- Built-in source-intelligence backend — code graph, semantic search, impact analysis, ownership (see below).
 
 **Runtime Evidence**
 - **Elasticsearch** — logs → synthesized error-signature evidence
@@ -182,21 +182,21 @@ Horus is organized in four layers:
 - **Deterministic investigation report** — evidence, timeline, hypotheses, gap analysis, next actions
 - **Optional AI narrative** — a later layer on top of the deterministic report
 
-### Axon is the default source-intelligence backend
+### Source intelligence is built into Horus
 
-**Axon is the default and expected source-intelligence layer used by Horus** — not an optional integration. Semantic search, impact analysis, ownership signals, change detection, and the process graph live in Axon; Horus does not duplicate them.
+**Source intelligence is the expected intelligence layer used by Horus** — not an optional integration. Semantic search, impact analysis, ownership signals, change detection, and the process graph live in the source-intelligence backend; Horus does not duplicate them.
 
-The **only** code-intelligence gap Horus owns is **queue-boundary stitching**: Axon's graph terminates around `queue.add(...)` and doesn't connect a producer to the consumer's `@Processor`. The stitcher synthesizes those producer → queue → worker edges.
+The **only** code-intelligence gap Horus owns is **queue-boundary stitching**: the source graph terminates around `queue.add(...)` and doesn't connect a producer to the consumer's `@Processor`. The stitcher synthesizes those producer → queue → worker edges.
 
-> If Axon is unavailable, Horus can still collect runtime evidence, but source context, impact analysis, change analysis, and queue stitching become degraded.
+> If the source-intelligence backend is unavailable, Horus can still collect runtime evidence, but source context, impact analysis, change analysis, and queue stitching become degraded.
 
-Horus talks to Axon over **HTTP/MCP only** (no CLI shell-outs for queries). Each repository points at an `axon host` indexing it.
+Horus talks to the source-intelligence backend over **HTTP/MCP only** (no CLI shell-outs for queries). Run `horus index` in a repository to start and register its source-intelligence host.
 
 ## Configuration
 
 The config model separates **code** from **runtime**:
 
-- **Code belongs to the project** — `repositories[]`, each served by its own Axon host.
+- **Code belongs to the project** — `repositories[]`, each served by its own source-intelligence host.
 - **Runtime belongs to the environment** — `environments[].connectors` (Elasticsearch, MongoDB, Grafana, Redis/BullMQ).
 
 ```ts
@@ -209,7 +209,7 @@ export default defineConfig({
         {
           name: 'atlas-payments',
           path: '/repos/atlas-payments',
-          axon: { hostUrl: 'http://127.0.0.1:8420' },
+          source: { hostUrl: 'http://127.0.0.1:8420' },
         },
       ],
       environments: [
@@ -284,9 +284,8 @@ pnpm install
 docker compose up -d                  # Postgres 16 on localhost:5433
 pnpm build                            # builds apps/horus/dist/index.cjs
 
-# Per repository: start the source-intelligence host
-axon analyze .
-axon host --port 8420
+# Per repository: start the source-intelligence host and stitch queue boundaries
+horus index
 
 source ~/.horus.env
 
@@ -336,14 +335,14 @@ horus investigate --name atlas-payments "checkout latency spike"
 horus projects
 ```
 
-`horus index` reuses an already-running Axon host when one is healthy. Runtime connectors are added to the env block of `.horus/config.json` afterwards.
+`horus index` reuses an already-running source-intelligence host when one is healthy. Runtime connectors are added to the env block of `.horus/config.json` afterwards.
 
 ## Layout
 
 ```
 packages/
   core/         evidence model, config schema + project/env resolution, version pins
-  connectors/   provider contracts + Axon (HTTP/MCP) · Elasticsearch · Grafana · MongoDB · Git
+  connectors/   provider contracts + source intelligence (HTTP/MCP) · Elasticsearch · Grafana · MongoDB · Git
   stitcher/     queue-boundary stitcher
   db/           Drizzle schema + migrations (plain Postgres, no pgvector)
   engine/       deterministic investigation pipeline (timeline, correlation, hypotheses, gaps)
@@ -355,6 +354,6 @@ config/         horus.config.ts
 ## Foundation
 
 - TypeScript monorepo (pnpm + Turborepo)
-- Postgres + Drizzle — semantic search delegated to Axon
-- **Axon** as the default source-intelligence backend, over HTTP/MCP only
+- Postgres + Drizzle — semantic search delegated to source-intelligence backend
+- Built-in **source-intelligence backend**, over HTTP/MCP only
 - Project/environment-scoped connectors; read-only against production

@@ -109,22 +109,21 @@ horus doctor -c horus.config.ts
 
 ```
 Error: source-intelligence host unreachable at http://127.0.0.1:8420
-horus index: axon host not responding
+horus index: source-intelligence host not responding
 explain / blast-radius / architecture / search: failed to connect
 ```
 
 ### Likely cause
 
-The Axon source-intelligence backend is not running. Horus needs a live Axon host for source-aware commands (`horus index`, `horus explain`, `horus blast-radius`, `horus architecture`, `horus search`). It is **not** required for runtime-only investigations.
+The source-intelligence backend is not running. Horus needs a live source-intelligence host for source-aware commands (`horus index`, `horus explain`, `horus blast-radius`, `horus architecture`, `horus search`). It is **not** required for runtime-only investigations.
 
 ### Fix
 
-Start the Axon host for the repository you want to investigate:
+Start the source-intelligence host for the repository you want to investigate:
 
 ```sh
 cd /path/to/your-repo
-axon analyze .        # initial index (only needed once or after large changes)
-axon host --port 8420 # start the host; keep this terminal open
+horus index   # analyzes on first run, then starts the host and stitches the queue map
 ```
 
 Verify it is reachable:
@@ -135,17 +134,17 @@ curl -s http://127.0.0.1:8420/health
 
 Expected: `{"status":"ok"}` or similar JSON.
 
-Then update your `.horus/config.json` so the `axon.hostUrl` points at the running host:
+The `.horus/config.json` created by `horus index` uses `source.hostUrl`. To update an existing config:
 
 ```sh
 horus init --axon http://127.0.0.1:8420
 # or edit .horus/config.json directly:
-#   "axon": { "hostUrl": "http://127.0.0.1:8420" }
+#   "source": { "hostUrl": "http://127.0.0.1:8420" }
 ```
 
 Re-run `horus doctor` to confirm the host is now reachable.
 
-**If you only need runtime evidence** (logs, metrics, queue state) and do not need code-level context, Horus works without the Axon host. Skip this step and proceed to connector configuration.
+**If you only need runtime evidence** (logs, metrics, queue state) and do not need code-level context, Horus works without the source-intelligence host. Skip this step and proceed to connector configuration.
 
 ---
 
@@ -160,7 +159,7 @@ horus queues: no producer→queue→worker edges — index is empty
 
 ### Likely cause
 
-`horus index` has not been run for the project, or the stitcher ran against an Axon host that had not yet finished its analysis pass.
+`horus index` has not been run for the project, or the stitcher ran against a source-intelligence host that had not yet finished its analysis pass.
 
 ### Fix
 
@@ -172,7 +171,7 @@ horus index --name <your-project>
 horus index
 ```
 
-`horus index` requires the Axon host to be running (see §3 above). If the host is healthy but the queue map is still empty after indexing, the codebase may not use BullMQ/queue patterns that the stitcher recognises. Check with:
+`horus index` requires the source-intelligence host to be running (see §3 above). If the host is healthy but the queue map is still empty after indexing, the codebase may not use BullMQ/queue patterns that the stitcher recognises. Check with:
 
 ```sh
 horus queues
@@ -331,7 +330,7 @@ Each gap names the dimension that is blind and the connector that would fill it.
 | Application state | MongoDB (`horus connect mongodb`) |
 | Metrics / latency trends | Grafana (`horus connect grafana`) |
 | Queue backlog / worker starvation | Redis/BullMQ (configured via `horus connect redis`) |
-| Code changes / owner signals | Axon source-intelligence host (see §3) |
+| Code changes / owner signals | source-intelligence host (see §3) |
 
 After adding a connector, re-run the investigation:
 

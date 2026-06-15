@@ -142,23 +142,22 @@ if [ "$DEMO_READY" -eq 0 ]; then
   fi
 fi
 
-# ── 4. Source-intelligence host (Axon) ─────────────────────────────────────────
-printf '\n  %s\n\n' "$(bold 'Source-intelligence host (Axon)')"
+# ── 4. Source-intelligence host ─────────────────────────────────────────────────
+printf '\n  %s\n\n' "$(bold 'Source-intelligence host')"
 
-AXON_OK=0
+SOURCE_OK=0
 if command -v axon &>/dev/null; then
-  pass "axon binary found"
-  # Check if an Axon host is reachable on the default port
+  pass "source-intelligence backend found"
+  # Check if a source-intelligence host is reachable on the default port
   if curl -sf http://127.0.0.1:8420/health >/dev/null 2>&1; then
-    pass "Axon host reachable at http://127.0.0.1:8420"
-    AXON_OK=1
+    pass "source-intelligence host reachable at http://127.0.0.1:8420"
+    SOURCE_OK=1
   else
-    warn "Axon host not running"
-    hint "Start: cd /path/to/your-repo && axon host --port 8420"
-    hint "Then index: horus index (or: axon index .)"
+    warn "source-intelligence host not running"
+    hint "Start: cd /path/to/your-repo && horus index"
   fi
 else
-  warn "axon not installed (source intelligence will be unavailable)"
+  warn "source-intelligence backend not installed (source features will be unavailable)"
   hint "Install: uv tool install axoniq  (Python 3.11+ required)"
   hint "Or: pip install axoniq"
 fi
@@ -180,10 +179,10 @@ fi
 # ── 6. Demo commands ───────────────────────────────────────────────────────────
 printf '\n  %s\n\n' "$(bold 'Demo commands')"
 
-if [ "$AXON_OK" -eq 1 ]; then
+if [ "$SOURCE_OK" -eq 1 ]; then
   INVESTIGATE_HINT='horus investigate "payment service returned 500s for 3 minutes"'
 else
-  INVESTIGATE_HINT='horus investigate "payment service returned 500s for 3 minutes"  # add --axon <url> when Axon is running'
+  INVESTIGATE_HINT='horus investigate "payment service returned 500s for 3 minutes"'
 fi
 
 printf '  %s\n'    "$(dim '# Investigate an incident')"
@@ -201,11 +200,11 @@ printf '  %s\n\n'  'horus doctor'
 if [ "$DEMO_READY" -eq 0 ]; then
   printf '  %s\n\n' "$(green "$(bold 'READY')")"
   printf '  Postgres is up and migrations are applied.\n'
-  if [ "$AXON_OK" -eq 1 ]; then
+  if [ "$SOURCE_OK" -eq 1 ]; then
     printf '  Source-intelligence host is running — run %s then use the demo commands above.\n\n' \
       "$(bold 'horus index')"
   else
-    printf '  Source intelligence is not configured — start an Axon host for richer investigation results.\n\n'
+    printf '  Source intelligence is not configured — run horus index in your repo for richer investigation results.\n\n'
   fi
   exit 0
 else
