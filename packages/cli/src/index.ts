@@ -32,6 +32,7 @@ import { runHosts } from './commands/hosts.js';
 import { runDoctor } from './commands/doctor.js';
 import { runProvidersDoctorCommand } from './commands/providers-doctor.js';
 import { runGenerateConfig } from './commands/generate-config.js';
+import { runReadiness } from './commands/readiness.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -102,6 +103,14 @@ export function buildProgram(): Command {
     .option('--force', 'overwrite an existing config file')
     .action(async (opts: { out?: string; name?: string; repo?: string; force?: boolean }) => {
       process.exitCode = await runGenerateConfig(opts);
+    });
+
+  program
+    .command('readiness')
+    .description('Summarize release/demo readiness: DB, Axon, connectors, and local config (HOR-97)')
+    .option('-c, --config <path>', 'path to horus.config.js')
+    .action(async (opts: { config?: string }) => {
+      process.exitCode = await runReadiness({ config: opts.config });
     });
 
   program
