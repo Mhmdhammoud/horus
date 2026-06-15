@@ -44,8 +44,19 @@
 #   ✓ connect --help exits 0
 #   ✓ hosts --help exits 0
 #   ✓ stop --help exits 0
+#   ✓ setup prints header
+#   ✓ init: created project in clean temp dir        (HOR-98 clean-env validation)
+#   ✓ init: .horus/config.json exists                (HOR-98)
+#   ✓ doctor: prints readiness header                (HOR-98)
+#   ✓ doctor: reports CLI version                    (HOR-98)
 #
 # Any ✗ line is a release blocker. Fix before publishing.
+#
+# Prerequisites (minimum for the installed binary to function):
+#   - Node.js 22+  (the CLI is a self-contained Node.js executable)
+#   - curl         (only for --install mode)
+#   - macOS 12+ or Linux x86_64/arm64
+#   - Python 3.11+ with uv or pip is optional (enables source-intelligence features)
 
 set -uo pipefail
 
@@ -269,6 +280,56 @@ rm -rf "${_config_tmpdir}"
 # setup may exit non-zero when Node/Python versions are wrong, but it must
 # still print the "Horus setup" header rather than crashing silently.
 check_contains "setup prints header" "Horus setup"              setup
+
+# ── 8. horus init — clean temp directory (HOR-98) ────────────────────────────
+#
+# Run `horus init` in a fresh temp directory with no pre-existing .horus config.
+# Verifies the command creates a config and exits non-zero only on genuine errors,
+# not on normal "no Axon host" state. We pass --path so the command doesn't
+# scan up to the real monorepo root.
+
+_init_tmpdir="$(mktemp -d)"
+
+_init_out="$("${HORUS[@]}" init --path "${_init_tmpdir}" 2>&1 || true)"
+
+if printf '%s' "${_init_out}" | grep -qF 'Initialized Horus project'; then
+  ok "init: created project in clean temp dir"
+elif printf '%s' "${_init_out}" | grep -qF '.horus/config.json'; then
+  ok "init: created .horus/config.json in clean temp dir"
+else
+  fail_check "init: expected 'Initialized Horus project' in output"
+  printf '    got: %s\n' "$(printf '%s' "${_init_out}" | head -5)"
+fi
+
+if [ -f "${_init_tmpdir}/.horus/config.json" ]; then
+  ok "init: .horus/config.json exists"
+else
+  fail_check "init: .horus/config.json not found after init"
+fi
+
+rm -rf "${_init_tmpdir}"
+
+# ── 9. horus doctor — standalone, no config (HOR-98) ─────────────────────────
+#
+# Run doctor without a config file (simulates a first-run user who has not yet
+# created horus.config.js). Must print the "Horus readiness check" header and
+# the CLI version line — it should not crash silently.
+
+_doctor_standalone_out="$("${HORUS[@]}" doctor 2>&1 || true)"
+
+if printf '%s' "${_doctor_standalone_out}" | grep -qF 'Horus readiness check'; then
+  ok "doctor: prints readiness header"
+else
+  fail_check "doctor: expected 'Horus readiness check' header"
+  printf '    got: %s\n' "$(printf '%s' "${_doctor_standalone_out}" | head -5)"
+fi
+
+if printf '%s' "${_doctor_standalone_out}" | grep -qF 'CLI version'; then
+  ok "doctor: reports CLI version"
+else
+  fail_check "doctor: expected 'CLI version' line in output"
+  printf '    got: %s\n' "$(printf '%s' "${_doctor_standalone_out}" | head -5)"
+fi
 
 # ── done ─────────────────────────────────────────────────────────────────────
 

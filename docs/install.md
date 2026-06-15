@@ -34,8 +34,12 @@ horus 0.1.0
 
 ## Requirements
 
-- curl
-- macOS 12+ or Linux (x86_64 or arm64)
+| Requirement | Details |
+|-------------|---------|
+| **Node.js 22+** | The CLI is a self-contained Node.js executable — Node is required at runtime |
+| **curl** | Required only for the one-line installer |
+| **OS** | macOS 12+ or Linux (x86_64 or arm64) |
+| Python 3.11+ (optional) | Enables source-intelligence features (`axoniq` backend) |
 
 ## Next steps
 
@@ -142,6 +146,15 @@ To verify a fresh install passes the full acceptance check without production cr
 
 All checks should print `✓`. If any print `✗`, the output includes the expected vs. received
 value and the step that failed.
+
+The acceptance script validates the minimum clean-environment command surface:
+
+```sh
+horus --version      # exits 0, prints "horus <semver>"
+horus --help         # exits 0, lists core commands
+horus init           # creates .horus/config.json in a temp dir
+horus doctor         # prints "Horus readiness check" header and CLI version
+```
 
 To test a locally built binary instead of the PATH `horus`:
 

@@ -3,10 +3,15 @@
 Use this checklist for every version release. The automated release script
 (`scripts/release.sh`) runs most steps — this checklist is the human gate.
 
+> **For v0.1 specifically**, run the product readiness gate first:
+> [`docs/v0.1-readiness-gate.md`](./v0.1-readiness-gate.md)
+> All blocking items there must be checked before proceeding with this checklist.
+
 ---
 
 ## Pre-release
 
+- [ ] **v0.1 readiness gate passed** — all blocking items in `docs/v0.1-readiness-gate.md` checked
 - [ ] Working tree is clean in both `horus` and `horus-landing` repos
 - [ ] `gh auth status` exits 0 (GitHub CLI authenticated)
 - [ ] `horus-landing` checked out at `../horus-landing` relative to this repo
@@ -91,12 +96,16 @@ horus --help            # exits 0, lists investigate / setup / index / connect
 horus setup --help      # exits 0
 horus index --help      # exits 0
 horus investigate --help # exits 0
+horus init --path /tmp  # exits 0, prints "Initialized Horus project"
+horus doctor            # prints "Horus readiness check" header + CLI version
 ```
 
 - [ ] `horus --version` contains the correct version string (not "Axon")
 - [ ] `horus --help` usage line reads `Usage: horus`
-- [ ] All five smoke commands above exit 0
+- [ ] All seven smoke commands above exit 0
 - [ ] Config loading: `horus doctor --config horus.config.js` does not crash with babel.cjs error (HOR-83 regression guard)
+- [ ] `horus init` creates `.horus/config.json` in a clean temp directory (HOR-98)
+- [ ] `horus doctor` (no config) prints readiness header and CLI version (HOR-98)
 
 ---
 
