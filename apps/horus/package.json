@@ -1,5 +1,5 @@
 {
-  "name": "horus",
+  "name": "@merittdev/horus",
   "version": "0.1.0",
   "description": "Local-first, source-aware production-incident investigation engine",
   "type": "module",
@@ -38,9 +38,19 @@
     "cli"
   ],
   "license": "MIT",
+  "author": {
+    "name": "Meritt Dev",
+    "url": "https://horus.sh"
+  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Mhmdhammoud/horus"
+    "url": "https://github.com/meritt-dev/horus"
   },
-  "homepage": "https://horus.sh"
+  "bugs": {
+    "url": "https://github.com/meritt-dev/horus/issues"
+  },
+  "homepage": "https://horus.sh",
+  "publishConfig": {
+    "access": "public"
+  }
 }
