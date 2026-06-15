@@ -6,6 +6,8 @@ this file feeds follow-up tickets (HOR-80, HOR-81).
 
 The migration checklist (tiers, ordering, and follow-up ticket candidates) is in
 `docs/axon-migration-checklist.md` (HOR-80).
+The per-name decision table (current name → proposed name → status) is in
+`docs/source-naming-decision-table.md` (HOR-81).
 
 **Categories**
 - **User-facing** — visible in terminal output, CLI flags, user config, docs

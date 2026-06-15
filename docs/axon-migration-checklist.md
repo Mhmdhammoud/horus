@@ -1,6 +1,7 @@
 # Horus source-intelligence migration checklist (HOR-80)
 
 Based on the surface inventory in `docs/axon-surface-inventory.md` (HOR-79).
+Per-name decision table is in `docs/source-naming-decision-table.md` (HOR-81).
 Companion safety checklist is in `docs/source-compat-checklist.md`.
 
 This checklist is for planning only. **No renames happen in this document.**
