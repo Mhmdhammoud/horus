@@ -219,6 +219,10 @@ const REDACTION_PATTERNS: [RegExp, string][] = [
   [/(authorization\s*[=:]\s*)(basic\s+)[^\s,"')]+/gi, '$1$2[REDACTED]'],
   // Standalone password/token/secret keys in KV strings, query params, JSON
   [/("?(?:password|passwd|secret|token|api[_-]key|apikey|x-api-key)"?\s*[=:]\s*)"?[^"',\s)>]+/gi, '$1[REDACTED]'],
+  // Cookie / set-cookie header values
+  [/((?:cookie|set-cookie)\s*[=:]\s*)[^\s"',;>]{4,}/gi, '$1[REDACTED]'],
+  // Database / service connection strings with embedded credentials
+  [/((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis(?:s)?):\/\/)[^:@/\s]+:[^@\s]+@/gi, '$1[REDACTED]@'],
   // 16-digit card-number-like sequences (PCIDSS)
   [/\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b/g, '[REDACTED-CARD]'],
 ];

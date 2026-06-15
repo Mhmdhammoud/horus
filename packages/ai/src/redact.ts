@@ -24,6 +24,11 @@ const REDACT_RULES: Array<{ pattern: RegExp; replacement: string }> = [
     pattern: /(https?:\/\/)[^:@\s]+:[^@\s]+@/gi,
     replacement: '$1[REDACTED]@',
   },
+  // Database / service connection strings with embedded credentials
+  {
+    pattern: /((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis(?:s)?):\/\/)[^:@\s]+:[^@\s]+@/gi,
+    replacement: '$1[REDACTED]@',
+  },
   // AWS Access Key IDs
   {
     pattern: /AKIA[0-9A-Z]{16}/g,
@@ -33,6 +38,11 @@ const REDACT_RULES: Array<{ pattern: RegExp; replacement: string }> = [
   {
     pattern: /\bBearer\s+[A-Za-z0-9._\-]{8,}/g,
     replacement: 'Bearer [REDACTED]',
+  },
+  // Cookie / set-cookie header values
+  {
+    pattern: /((?:cookie|set-cookie)\s*[=:]\s*)[^\s"',;>]{4,}/gi,
+    replacement: '$1[REDACTED]',
   },
   // key=value / key: value for common credential field names
   // Captures: password, passwd, pwd, token, api_key, apikey, secret, credential
