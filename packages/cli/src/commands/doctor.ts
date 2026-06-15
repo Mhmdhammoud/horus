@@ -139,30 +139,94 @@ export async function runDoctor(opts?: {
     }
   }
 
-  // Elasticsearch connector check — requires a global Horus config to be loadable.
+  // Runtime connector checks — all connector types resolved in one config pass.
   try {
     const globalConfig = await loadConfig(opts?.config, { cwd });
     let anyEs = false;
+    let anyGrafana = false;
+    let anyMongo = false;
+    let anyRedis = false;
 
     for (const project of globalConfig.projects) {
       for (const env of project.environments) {
-        const es = env.connectors.elasticsearch;
-        if (!es) continue;
-        anyEs = true;
+        const ctx = `${project.name}/${env.name}`;
+        const c = env.connectors;
 
-        if (!es.indexPattern) {
-          checks.push({
-            label: 'Elasticsearch',
-            status: 'warn',
-            detail: `${project.name}/${env.name} — indexPattern not set`,
-            next: 'set indexPattern in connectors.elasticsearch',
-          });
-        } else {
-          checks.push({
-            label: 'Elasticsearch',
-            status: 'pass',
-            detail: `${project.name}/${env.name} — ${es.indexPattern} [runtime ingestion pending]`,
-          });
+        // Elasticsearch
+        if (c.elasticsearch) {
+          anyEs = true;
+          if (!c.elasticsearch.indexPattern) {
+            checks.push({
+              label: 'Elasticsearch',
+              status: 'warn',
+              detail: `${ctx} — indexPattern not set`,
+              next: 'set indexPattern in connectors.elasticsearch',
+            });
+          } else {
+            checks.push({
+              label: 'Elasticsearch',
+              status: 'pass',
+              detail: `${ctx} — ${c.elasticsearch.indexPattern} [runtime ingestion pending]`,
+            });
+          }
+        }
+
+        // Grafana (metrics)
+        if (c.grafana) {
+          anyGrafana = true;
+          if (!c.grafana.url) {
+            checks.push({
+              label: 'Grafana',
+              status: 'warn',
+              detail: `${ctx} — URL not set`,
+              next: 'set grafana.url or grafana.urlEnv in your Horus config',
+            });
+          } else {
+            const dashHint = c.grafana.dashboard ? ` (${c.grafana.dashboard})` : '';
+            checks.push({
+              label: 'Grafana',
+              status: 'pass',
+              detail: `${ctx} — URL configured${dashHint} [runtime ingestion pending]`,
+            });
+          }
+        }
+
+        // MongoDB (state)
+        if (c.mongodb) {
+          anyMongo = true;
+          if (!c.mongodb.url) {
+            checks.push({
+              label: 'MongoDB',
+              status: 'warn',
+              detail: `${ctx} — URL not set`,
+              next: 'set mongodb.url or mongodb.urlEnv in your Horus config',
+            });
+          } else {
+            checks.push({
+              label: 'MongoDB',
+              status: 'pass',
+              detail: `${ctx} — ${c.mongodb.database} [runtime ingestion pending]`,
+            });
+          }
+        }
+
+        // Redis / BullMQ (queue state)
+        if (c.redis) {
+          anyRedis = true;
+          if (!c.redis.url) {
+            checks.push({
+              label: 'Redis',
+              status: 'warn',
+              detail: `${ctx} — URL not set`,
+              next: 'set redis.url or redis.urlEnv in your Horus config',
+            });
+          } else {
+            checks.push({
+              label: 'Redis',
+              status: 'pass',
+              detail: `${ctx} — URL configured [runtime ingestion pending]`,
+            });
+          }
         }
       }
     }
@@ -175,8 +239,32 @@ export async function runDoctor(opts?: {
         next: 'add connectors.elasticsearch to an environment in your Horus config for runtime log evidence',
       });
     }
+    if (!anyGrafana) {
+      checks.push({
+        label: 'Grafana',
+        status: 'warn',
+        detail: 'not configured',
+        next: 'add connectors.grafana to an environment for metric evidence',
+      });
+    }
+    if (!anyMongo) {
+      checks.push({
+        label: 'MongoDB',
+        status: 'warn',
+        detail: 'not configured',
+        next: 'add connectors.mongodb to an environment for database state evidence',
+      });
+    }
+    if (!anyRedis) {
+      checks.push({
+        label: 'Redis',
+        status: 'warn',
+        detail: 'not configured',
+        next: 'add connectors.redis to an environment for queue state evidence',
+      });
+    }
   } catch {
-    // No global config loadable — skip ES check silently.
+    // No global config loadable — skip connector checks silently.
   }
 
   write(pc.bold('\nHorus readiness check\n'));

@@ -301,6 +301,17 @@ describe('runDoctor — no global config (HOR-85)', () => {
     expect(output).not.toContain('Elasticsearch');
   });
 
+  it('skips all connector checks when no global config is loadable', async () => {
+    const root = tempDir();
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ cwd: root, _dbCheck: stubDbUnreachable, write }),
+    );
+    const output = lines.join('\n');
+    expect(output).not.toContain('Grafana');
+    expect(output).not.toContain('MongoDB');
+    expect(output).not.toContain('Redis');
+  });
+
   it('still outputs existing checks when global config is absent', async () => {
     const root = tempDir();
     const { lines } = await captureOutput((write) =>
@@ -396,5 +407,376 @@ describe('runDoctor — fix hints (HOR-100)', () => {
       runDoctor({ cwd: root, _dbCheck: stubDbUnreachable, write }),
     );
     expect(code).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-107: Grafana connector checks
+// ---------------------------------------------------------------------------
+
+describe('runDoctor — Grafana present (HOR-107)', () => {
+  it('shows pass and project/env context when Grafana URL is configured', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{
+      name: "production",
+      connectors: { grafana: { url: "https://grafana.internal:3000" } },
+    }],
+  }],
+};
+`);
+    const { lines, code } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    expect(code).toBe(0);
+    const output = lines.join('\n');
+    expect(output).toContain('Grafana');
+    expect(output).toContain('my-api/production');
+  });
+
+  it('shows dashboard name in detail when configured', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{
+      name: "production",
+      connectors: { grafana: { url: "https://grafana.internal:3000", dashboard: "api-overview" } },
+    }],
+  }],
+};
+`);
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    expect(lines.join('\n')).toContain('api-overview');
+  });
+
+  it('does not print Grafana URL, username, or password secrets', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{
+      name: "production",
+      connectors: {
+        grafana: {
+          url: "https://grafana-secret.example.com:3000",
+          username: "grafana-admin",
+          password: "grafana-password-secret",
+        },
+      },
+    }],
+  }],
+};
+`);
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    const output = lines.join('\n');
+    expect(output).not.toContain('grafana-secret.example.com');
+    expect(output).not.toContain('grafana-admin');
+    expect(output).not.toContain('grafana-password-secret');
+  });
+});
+
+describe('runDoctor — Grafana absent (HOR-107)', () => {
+  it('shows "not configured" when no environment has Grafana', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{ name: "production", connectors: {} }],
+  }],
+};
+`);
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    expect(lines.join('\n')).toContain('Grafana');
+    expect(lines.join('\n')).toContain('not configured');
+  });
+
+  it('includes a next-step hint for absent Grafana', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{ name: "production", connectors: {} }],
+  }],
+};
+`);
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    expect(lines.join('\n')).toContain('connectors.grafana');
+  });
+});
+
+describe('runDoctor — Grafana partial (URL missing) (HOR-107)', () => {
+  it('shows warn when grafana is configured without a URL', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{
+      name: "production",
+      connectors: { grafana: { dashboard: "overview" } },
+    }],
+  }],
+};
+`);
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    const output = lines.join('\n');
+    expect(output).toContain('URL not set');
+    expect(output).toContain('grafana.url');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-107: MongoDB connector checks
+// ---------------------------------------------------------------------------
+
+describe('runDoctor — MongoDB present (HOR-107)', () => {
+  it('shows pass and database name when MongoDB URL is configured', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{
+      name: "production",
+      connectors: { mongodb: { url: "mongodb://localhost:27017", database: "my-api-prod" } },
+    }],
+  }],
+};
+`);
+    const { lines, code } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    expect(code).toBe(0);
+    const output = lines.join('\n');
+    expect(output).toContain('MongoDB');
+    expect(output).toContain('my-api-prod');
+  });
+
+  it('does not print MongoDB connection URL secrets', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{
+      name: "production",
+      connectors: {
+        mongodb: {
+          url: "mongodb://secret-user:secret-pass@mongo.internal:27017/mydb",
+          database: "mydb",
+        },
+      },
+    }],
+  }],
+};
+`);
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    const output = lines.join('\n');
+    expect(output).not.toContain('secret-user');
+    expect(output).not.toContain('secret-pass');
+    expect(output).not.toContain('mongo.internal');
+  });
+});
+
+describe('runDoctor — MongoDB absent (HOR-107)', () => {
+  it('shows "not configured" when no environment has MongoDB', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{ name: "production", connectors: {} }],
+  }],
+};
+`);
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    const output = lines.join('\n');
+    expect(output).toContain('MongoDB');
+    expect(output).toContain('not configured');
+  });
+
+  it('includes a next-step hint for absent MongoDB', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{ name: "production", connectors: {} }],
+  }],
+};
+`);
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    expect(lines.join('\n')).toContain('connectors.mongodb');
+  });
+});
+
+describe('runDoctor — MongoDB partial (URL missing) (HOR-107)', () => {
+  it('shows warn when mongodb is configured without a URL', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{
+      name: "production",
+      connectors: { mongodb: { database: "my-api-prod" } },
+    }],
+  }],
+};
+`);
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    const output = lines.join('\n');
+    expect(output).toContain('URL not set');
+    expect(output).toContain('mongodb.url');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-107: Redis connector checks
+// ---------------------------------------------------------------------------
+
+describe('runDoctor — Redis present (HOR-107)', () => {
+  it('shows pass when Redis URL is configured', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{
+      name: "production",
+      connectors: { redis: { url: "redis://localhost:6379" } },
+    }],
+  }],
+};
+`);
+    const { lines, code } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    expect(code).toBe(0);
+    const output = lines.join('\n');
+    expect(output).toContain('Redis');
+    expect(output).toContain('my-api/production');
+  });
+
+  it('does not print Redis URL secrets', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{
+      name: "production",
+      connectors: { redis: { url: "redis://:redis-secret-pass@redis.internal:6379" } },
+    }],
+  }],
+};
+`);
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    const output = lines.join('\n');
+    expect(output).not.toContain('redis-secret-pass');
+    expect(output).not.toContain('redis.internal');
+  });
+});
+
+describe('runDoctor — Redis absent (HOR-107)', () => {
+  it('shows "not configured" when no environment has Redis', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{ name: "production", connectors: {} }],
+  }],
+};
+`);
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    const output = lines.join('\n');
+    expect(output).toContain('Redis');
+    expect(output).toContain('not configured');
+  });
+
+  it('includes a next-step hint for absent Redis', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{ name: "production", connectors: {} }],
+  }],
+};
+`);
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    expect(lines.join('\n')).toContain('connectors.redis');
+  });
+});
+
+describe('runDoctor — Redis partial (URL missing) (HOR-107)', () => {
+  it('shows warn when redis is configured without a URL', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{
+      name: "production",
+      connectors: { redis: {} },
+    }],
+  }],
+};
+`);
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    const output = lines.join('\n');
+    expect(output).toContain('URL not set');
+    expect(output).toContain('redis.url');
   });
 });
