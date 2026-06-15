@@ -19,6 +19,11 @@ import {
   ECS_FIELD_MAPPING,
   type ElasticsearchFieldMapping,
 } from './normalize.js';
+import {
+  MERITT_ERROR_HIT,
+  MERITT_INFO_HIT,
+  MERITT_MSG_ONLY_HIT,
+} from './fixtures/meritt-logger.js';
 
 // ---------------------------------------------------------------------------
 // valueToLevel / levelToValue
@@ -878,5 +883,67 @@ describe('field mapping consistency across query builders', () => {
     // serviceKeyword is false, so 'app' (not 'app.keyword')
     expect((termIn(searchFilters)!['term'] as Record<string, unknown>)['app']).toBe('my-app');
     expect((termIn(aggFilters)!['term'] as Record<string, unknown>)['app']).toBe('my-app');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Meritt logger fixture (HOR-57)
+// Verifies normalizeHit correctly handles the real Meritt pino-based logger
+// shape as observed in live indices (leadcall-api-prod-*, maison-safqa-prod-new-*).
+// ---------------------------------------------------------------------------
+
+describe('Meritt logger fixture — normalizeHit with MERITT_FIELD_MAPPING', () => {
+  it('error hit: level 50 maps to "error"', () => {
+    const rec = normalizeHit(MERITT_ERROR_HIT, MERITT_FIELD_MAPPING);
+    expect(rec.level).toBe('error');
+    expect(rec.levelValue).toBe(50);
+  });
+
+  it('error hit: service_name is extracted', () => {
+    const rec = normalizeHit(MERITT_ERROR_HIT, MERITT_FIELD_MAPPING);
+    expect(rec.service).toBe('leadcall-api-prod');
+  });
+
+  it('error hit: message is extracted from message field', () => {
+    const rec = normalizeHit(MERITT_ERROR_HIT, MERITT_FIELD_MAPPING);
+    expect(rec.message).toBe('Failed to process job: timeout');
+  });
+
+  it('error hit: trace_id is extracted', () => {
+    const rec = normalizeHit(MERITT_ERROR_HIT, MERITT_FIELD_MAPPING);
+    expect(rec.traceId).toBe('11111111-aaaa-bbbb-cccc-000000000001');
+  });
+
+  it('error hit: event_code is extracted as eventCode', () => {
+    const rec = normalizeHit(MERITT_ERROR_HIT, MERITT_FIELD_MAPPING);
+    expect(rec.eventCode).toBe('JOB_PROCESSING_FAILED');
+  });
+
+  it('error hit: timestamp is preserved from the time field', () => {
+    const rec = normalizeHit(MERITT_ERROR_HIT, MERITT_FIELD_MAPPING);
+    expect(rec.timestamp).toBe('2026-06-15T01:00:00.000Z');
+  });
+
+  it('info hit: level 30 maps to "info"', () => {
+    const rec = normalizeHit(MERITT_INFO_HIT, MERITT_FIELD_MAPPING);
+    expect(rec.level).toBe('info');
+    expect(rec.levelValue).toBe(30);
+  });
+
+  it('info hit: service_name and trace_id are extracted', () => {
+    const rec = normalizeHit(MERITT_INFO_HIT, MERITT_FIELD_MAPPING);
+    expect(rec.service).toBe('leadcall-api-prod');
+    expect(rec.traceId).toBe('11111111-aaaa-bbbb-cccc-000000000002');
+  });
+
+  it('msg-only hit: message is read from pino fallback msg field', () => {
+    const rec = normalizeHit(MERITT_MSG_ONLY_HIT, MERITT_FIELD_MAPPING);
+    expect(rec.message).toBe('Queue depth above threshold');
+  });
+
+  it('msg-only hit: level 40 maps to "warn"', () => {
+    const rec = normalizeHit(MERITT_MSG_ONLY_HIT, MERITT_FIELD_MAPPING);
+    expect(rec.level).toBe('warn');
+    expect(rec.levelValue).toBe(40);
   });
 });
