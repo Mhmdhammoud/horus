@@ -3,3 +3,4 @@ export * from './evidence.js';
 export * from './config.js';
 export * from './discovery.js';
 export * from './git.js';
+export * from './codeowners.js';
