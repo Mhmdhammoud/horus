@@ -29,6 +29,7 @@ import { runSetup } from './commands/setup.js';
 import { runConnect } from './commands/connect.js';
 import { runStop } from './commands/stop.js';
 import { runHosts } from './commands/hosts.js';
+import { runDoctor } from './commands/doctor.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -42,6 +43,13 @@ export function buildProgram(): Command {
     .name('horus')
     .description('Local-first, source-aware production-incident investigation engine')
     .version(`horus ${HORUS_VERSION}`, '-V, --version', 'output the version number');
+
+  program
+    .command('doctor')
+    .description('Check local readiness: CLI version, git root, .horus config, and source-intelligence setup')
+    .action(async () => {
+      process.exitCode = await runDoctor();
+    });
 
   program
     .command('setup')
