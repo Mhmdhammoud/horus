@@ -12,7 +12,8 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
-    "test": "tsup && vitest run --passWithNoTests"
+    "test": "tsup && vitest run --passWithNoTests",
+    "prepublishOnly": "tsup"
   },
   "engines": {
     "node": ">=22"
