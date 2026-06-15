@@ -1,7 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -12,6 +14,21 @@ const TSX = resolve(WORKSPACE_ROOT, 'node_modules/.bin/tsx');
 const ENTRYPOINT = resolve(__dirname, 'index.ts');
 // Built release artifact — `tsup && vitest` in package.json ensures this exists.
 const DIST = resolve(__dirname, '../dist/index.cjs');
+
+// Guaranteed-absent config path: a unique temp dir is created, a .json file
+// inside it is referenced but never written. Stays absent for the full suite.
+let tmpDir: string;
+let missingConfig: string;
+
+beforeAll(() => {
+  tmpDir = mkdtempSync(join(tmpdir(), 'horus-smoke-'));
+  missingConfig = join(tmpDir, 'config.json');
+  // Deliberately do NOT create config.json — we want the file to be absent.
+});
+
+afterAll(() => {
+  rmSync(tmpDir, { recursive: true, force: true });
+});
 
 function runCLI(...args: string[]) {
   return spawnSync(TSX, [ENTRYPOINT, ...args], {
@@ -89,10 +106,15 @@ describe('source entrypoint via tsx', () => {
 });
 
 // ── Release artifact (dist/index.cjs) ────────────────────────────────────────
-// Catches bundling, CJS conversion, shebang, or missing-dependency regressions
-// that only surface in the installed product. The tsup build runs before vitest
+// Catches bundling, CJS conversion, and missing-dependency regressions that
+// only surface in the installed product. The tsup build runs before vitest
 // so this file is guaranteed to exist when these tests run.
 describe('release artifact dist/index.cjs', () => {
+  it('starts with the node shebang', () => {
+    const head = readFileSync(DIST, 'utf8').slice(0, 64);
+    expect(head).toContain('#!/usr/bin/env node');
+  });
+
   it('--version exits 0 and prints version', () => {
     const result = runDist('--version');
     expect(result.status).toBe(0);
@@ -122,18 +144,23 @@ describe('release artifact dist/index.cjs', () => {
     expect(runDist('this-command-does-not-exist').status).not.toBe(0);
   });
 
-  // Command-handler routing: invoke a real command without any config and assert
-  // it exits non-zero with output, not a silent crash. A non-existent config path
-  // forces the failure predictably regardless of local machine state.
-  it('status with missing config file exits non-zero', () => {
-    const result = runDist('status', '--config', '/tmp/horus-smoke-nonexistent.json');
+  // Command-handler routing: verify that routing reached the config-loading
+  // path by asserting the output contains the exact config path we passed.
+  // A generic crash would not include the path, so this distinguishes
+  // "handler was reached and reported the error" from "unrelated exception".
+  it('status with missing config exits non-zero and reports the config path', () => {
+    const result = runDist('status', '--config', missingConfig);
     expect(result.status).not.toBe(0);
+    // runStatus catches the ENOENT and prints via console.log to stdout.
     const output = result.stdout + result.stderr;
-    expect(output.length, 'should produce error output, not crash silently').toBeGreaterThan(0);
+    expect(output).toContain(missingConfig);
   });
 
-  it('investigate with missing config file exits non-zero', () => {
-    const result = runDist('investigate', 'test-hint', '--config', '/tmp/horus-smoke-nonexistent.json');
+  it('investigate with missing config exits non-zero and reports the config path', () => {
+    const result = runDist('investigate', 'test-hint', '--config', missingConfig);
     expect(result.status).not.toBe(0);
+    // runInvestigate's outer catch prints via console.error to stderr.
+    const output = result.stdout + result.stderr;
+    expect(output).toContain(missingConfig);
   });
 });
