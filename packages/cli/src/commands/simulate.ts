@@ -47,7 +47,7 @@ export async function runSimulate(
     const health = await code.health();
     if (!health.ok) {
       console.error(
-        pc.red('Source-intelligence host unreachable — start it with: axon host --port 8420'),
+        pc.red('Source-intelligence host unreachable — run: horus index'),
       );
       return 1;
     }

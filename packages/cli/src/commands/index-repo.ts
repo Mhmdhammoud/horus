@@ -21,12 +21,12 @@ import {
   type LocalConfigFile,
 } from '@horus/core';
 import {
-  AxonHttpClient,
-  axonAvailable,
+  SourceHttpClient,
+  sourceAvailable,
   isAnalyzed,
   analyzeRepo,
   isHostHealthy,
-  readAxonHostUrl,
+  readSourceHostUrl,
   findFreePort,
   startHost,
   waitForHost,
@@ -36,7 +36,7 @@ import { createDb } from '@horus/db';
 import { stitch } from '@horus/stitcher';
 
 async function stitchQueueMap(hostUrl: string, dbUrl: string, label: string): Promise<void> {
-  const axon = new AxonHttpClient({ baseUrl: hostUrl });
+  const axon = new SourceHttpClient({ baseUrl: hostUrl });
   const { db, sql } = createDb(dbUrl);
   try {
     const summary = await stitch(axon, db, { project: label });
@@ -59,7 +59,8 @@ function findConfiguredRepo(
   for (const p of config.projects) {
     for (const r of p.repositories) {
       if (resolve(r.path) === target) {
-        return { project: p.name, ...(r.axon ? { hostUrl: r.axon.hostUrl } : {}) };
+        const hostUrl = r.source?.hostUrl ?? r.axon?.hostUrl;
+        return { project: p.name, ...(hostUrl ? { hostUrl } : {}) };
       }
     }
   }
@@ -97,7 +98,7 @@ export async function runIndex(opts: {
         try {
           const renv = resolveEnvironment(config, { project: opts.project, env: opts.env });
           configuredProject = renv.project;
-          configuredHost = renv.repositories[0]?.axonHostUrl;
+          configuredHost = renv.repositories[0]?.sourceHostUrl ?? renv.repositories[0]?.axonHostUrl;
         } catch {
           /* fall through to path match */
         }
@@ -119,7 +120,7 @@ export async function runIndex(opts: {
     // Candidates in priority: the configured host, then Axon's own host.json.
     let hostUrl: string | undefined;
     let spawned = false;
-    for (const candidate of [configuredHost, readAxonHostUrl(root) ?? undefined]) {
+    for (const candidate of [configuredHost, readSourceHostUrl(root) ?? undefined]) {
       if (candidate && (await isHostHealthy(candidate))) {
         hostUrl = candidate;
         break;
@@ -132,8 +133,8 @@ export async function runIndex(opts: {
       spawned = true;
       // No host running for this repo — set one up.
       console.log(pc.bold(`Indexing ${label}`) + pc.dim(`  (${root})`));
-      if (!(await axonAvailable())) {
-        console.error(pc.red('`axon` not found on PATH. Install it (see `horus setup`) and retry.'));
+      if (!(await sourceAvailable())) {
+        console.error(pc.red('Source-intelligence backend not found on PATH. Install it (see `horus setup`) and retry.'));
         return 1;
       }
       if (!isAnalyzed(root)) {
@@ -145,7 +146,7 @@ export async function runIndex(opts: {
           return 1;
         }
       } else {
-        console.log(pc.dim('  already analyzed (.axon present)'));
+        console.log(pc.dim('  already analyzed'));
       }
       const port = await findFreePort();
       hostUrl = `http://127.0.0.1:${port}`;
@@ -173,7 +174,7 @@ export async function runIndex(opts: {
         version: 1,
         project: {
           name,
-          repositories: [{ name, path: root, axon: { hostUrl } }],
+          repositories: [{ name, path: root, source: { hostUrl } }],
           environments: [{ name: opts.env ?? 'production', readOnly: true, connectors: {} }],
         },
       };

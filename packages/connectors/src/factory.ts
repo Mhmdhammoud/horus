@@ -41,8 +41,8 @@ import type { QueueRuntimeProvider } from './bullmq/provider.js';
  * no Axon connector is configured.
  */
 export function codeForEnv(renv: ResolvedEnvironment): CodeProvider | null {
-  // Axon belongs to the project's repositories; use the primary (first) repo.
-  const hostUrl = renv.repositories[0]?.axonHostUrl;
+  const repo = renv.repositories[0];
+  const hostUrl = repo?.sourceHostUrl ?? repo?.axonHostUrl;
   if (!hostUrl) return null;
   return new AxonCodeProvider(new AxonHttpClient({ baseUrl: hostUrl }));
 }
@@ -159,7 +159,8 @@ export function codeForRepo(config: HorusConfig, repoName?: string): CodeProvide
  */
 export function axonHostUrlForRepo(config: HorusConfig, repoName?: string): string {
   const renv = resolveEnvironment(config, { project: repoName });
-  return renv.repositories[0]?.axonHostUrl ?? '';
+  const repo = renv.repositories[0];
+  return repo?.sourceHostUrl ?? repo?.axonHostUrl ?? '';
 }
 
 /** Horus-facing delegate for axonHostUrlForRepo (HOR-136). */

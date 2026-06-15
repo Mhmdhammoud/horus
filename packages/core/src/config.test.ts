@@ -170,11 +170,59 @@ describe('resolveEnvironment', () => {
     expect(renv.readOnly).toBe(true);
   });
 
-  it('resolves the project repositories with their Axon hosts', () => {
+  it('resolves the project repositories with their Axon hosts (compat)', () => {
     const renv = resolveEnvironment(SINGLE_PROJECT_CONFIG);
     expect(renv.repositories).toHaveLength(1);
     expect(renv.repositories[0]?.name).toBe('my-api');
     expect(renv.repositories[0]?.axonHostUrl).toBe('http://127.0.0.1:8420');
+  });
+
+  // HOR-137: source.hostUrl migration shim
+  it('accepts source.hostUrl as the canonical config key (HOR-137)', () => {
+    const cfg = horusConfigSchema.parse({
+      database: DB,
+      projects: [
+        {
+          name: 'my-api',
+          repositories: [
+            { name: 'my-api', path: '/repos/my-api', source: { hostUrl: 'http://127.0.0.1:8420' } },
+          ],
+          environments: [{ name: 'production', connectors: {} }],
+        },
+      ],
+    });
+    const renv = resolveEnvironment(cfg);
+    expect(renv.repositories[0]?.sourceHostUrl).toBe('http://127.0.0.1:8420');
+    expect(renv.repositories[0]?.axonHostUrl).toBe('http://127.0.0.1:8420');
+  });
+
+  it('promotes axon.hostUrl to sourceHostUrl for backwards compatibility (HOR-137)', () => {
+    const renv = resolveEnvironment(SINGLE_PROJECT_CONFIG);
+    // axon.hostUrl (legacy) sets both sourceHostUrl and axonHostUrl.
+    expect(renv.repositories[0]?.sourceHostUrl).toBe('http://127.0.0.1:8420');
+    expect(renv.repositories[0]?.axonHostUrl).toBe('http://127.0.0.1:8420');
+  });
+
+  it('source.hostUrl takes priority over axon.hostUrl when both are present (HOR-137)', () => {
+    const cfg = horusConfigSchema.parse({
+      database: DB,
+      projects: [
+        {
+          name: 'my-api',
+          repositories: [
+            {
+              name: 'my-api',
+              path: '/repos/my-api',
+              source: { hostUrl: 'http://127.0.0.1:9000' },
+              axon: { hostUrl: 'http://127.0.0.1:8420' },
+            },
+          ],
+          environments: [{ name: 'production', connectors: {} }],
+        },
+      ],
+    });
+    const renv = resolveEnvironment(cfg);
+    expect(renv.repositories[0]?.sourceHostUrl).toBe('http://127.0.0.1:9000');
   });
 
   it('throws when project is unknown', () => {

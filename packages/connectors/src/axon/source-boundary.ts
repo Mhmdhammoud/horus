@@ -1,11 +1,14 @@
 /**
- * Horus source-intelligence boundary (HOR-136).
+ * Horus source-intelligence boundary (HOR-136, HOR-137).
  *
  * Exposes Horus-owned names for the source-intelligence layer so the rest of
  * Horus can depend on these abstractions instead of Axon-named identifiers.
  * Each name delegates to the Axon-compatible implementation; the backing names
  * are preserved until the directory rename in HOR-139.
  */
+
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 export { AxonHttpClient as SourceHttpClient } from './client.js';
 export { AxonHttpError as SourceHttpError } from './client.js';
@@ -24,7 +27,22 @@ export function getSourceVersion(): Promise<string | null> {
   return getAxonVersion();
 }
 
-/** Return the host URL the source-intelligence backend recorded for `root`, or null. */
+/**
+ * Return the host URL for the source-intelligence backend serving `root`, or null.
+ *
+ * Resolution order (HOR-137):
+ * 1. `.horus/source/host.json` — Horus-owned canonical path (future binary writes here).
+ * 2. `.axon/host.json` — legacy path written by the Axon binary (backwards compat).
+ */
 export function readSourceHostUrl(root: string): string | null {
+  const horusPath = join(root, '.horus', 'source', 'host.json');
+  if (existsSync(horusPath)) {
+    try {
+      const j = JSON.parse(readFileSync(horusPath, 'utf8')) as { host_url?: unknown };
+      if (typeof j.host_url === 'string') return j.host_url;
+    } catch {
+      // Corrupt file — fall through to legacy path.
+    }
+  }
   return readAxonHostUrl(root);
 }

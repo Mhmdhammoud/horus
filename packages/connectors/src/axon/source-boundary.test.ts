@@ -5,7 +5,10 @@
  * identical to the Axon-compatible implementation. All tests are offline —
  * no network or binary is required.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   SourceHttpClient,
   SourceHttpError,
@@ -63,5 +66,48 @@ describe('source-boundary — lifecycle delegates (HOR-136)', () => {
   it('readSourceHostUrl returns null for a non-existent root', () => {
     const result = readSourceHostUrl('/nonexistent/path/horus-test-xyz');
     expect(result).toBeNull();
+  });
+
+  describe('readSourceHostUrl — path resolution order (HOR-137)', () => {
+    let tmp: string;
+
+    afterEach(() => {
+      try { rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
+    });
+
+    it('reads from .horus/source/host.json when present', () => {
+      tmp = join(tmpdir(), `horus-test-${process.pid}`);
+      mkdirSync(join(tmp, '.horus', 'source'), { recursive: true });
+      writeFileSync(
+        join(tmp, '.horus', 'source', 'host.json'),
+        JSON.stringify({ host_url: 'http://127.0.0.1:9000' }),
+      );
+      expect(readSourceHostUrl(tmp)).toBe('http://127.0.0.1:9000');
+    });
+
+    it('falls back to .axon/host.json when .horus/source/host.json is absent', () => {
+      tmp = join(tmpdir(), `horus-test-${process.pid}`);
+      mkdirSync(join(tmp, '.axon'), { recursive: true });
+      writeFileSync(
+        join(tmp, '.axon', 'host.json'),
+        JSON.stringify({ host_url: 'http://127.0.0.1:8420' }),
+      );
+      expect(readSourceHostUrl(tmp)).toBe('http://127.0.0.1:8420');
+    });
+
+    it('prefers .horus/source/host.json over .axon/host.json when both are present', () => {
+      tmp = join(tmpdir(), `horus-test-${process.pid}`);
+      mkdirSync(join(tmp, '.horus', 'source'), { recursive: true });
+      mkdirSync(join(tmp, '.axon'), { recursive: true });
+      writeFileSync(
+        join(tmp, '.horus', 'source', 'host.json'),
+        JSON.stringify({ host_url: 'http://127.0.0.1:9000' }),
+      );
+      writeFileSync(
+        join(tmp, '.axon', 'host.json'),
+        JSON.stringify({ host_url: 'http://127.0.0.1:8420' }),
+      );
+      expect(readSourceHostUrl(tmp)).toBe('http://127.0.0.1:9000');
+    });
   });
 });

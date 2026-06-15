@@ -22,7 +22,7 @@ import { promisify } from 'node:util';
 import { join } from 'node:path';
 import pc from 'picocolors';
 import { findRepoRoot, readRegistry, HORUS_DIR } from '@horus/core';
-import { readAxonHostUrl, isHostHealthy, readSpawnedHost, type SpawnedHostRecord } from '@horus/connectors';
+import { readSourceHostUrl, isHostHealthy, readSpawnedHost, type SpawnedHostRecord } from '@horus/connectors';
 
 const execFileAsync = promisify(execFile);
 const unlinkAsync = promisify(unlink);
@@ -42,9 +42,9 @@ export async function runStop(opts: StopOpts): Promise<number> {
     }
     const cwd = process.cwd();
     const root = findRepoRoot(cwd) ?? cwd;
-    const hostUrl = readAxonHostUrl(root);
+    const hostUrl = readSourceHostUrl(root);
     if (!hostUrl) {
-      console.log(pc.dim('No source-intelligence host found for this repo (.axon/host.json absent).'));
+      console.log(pc.dim('No source-intelligence host found for this repo (.horus/source/host.json absent).'));
       return 0;
     }
     return await stopHost(root, hostUrl);
@@ -188,7 +188,7 @@ async function stopAll(): Promise<number> {
   let stopped = 0;
   let failed = 0;
   for (const [name, entry] of projects) {
-    const hostUrl = readAxonHostUrl(entry.root);
+    const hostUrl = readSourceHostUrl(entry.root);
     if (!hostUrl) continue;
     const alive = await isHostHealthy(hostUrl);
     if (!alive) continue;

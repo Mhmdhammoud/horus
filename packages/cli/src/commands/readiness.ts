@@ -18,10 +18,10 @@ import {
   HORUS_VERSION,
   discoverLocalConfig,
   loadConfig,
-  PINNED_AXON_VERSION,
+  PINNED_SOURCE_VERSION,
 } from '@horus/core';
 import { checkDatabase, type DbHealth } from '@horus/db';
-import { getAxonVersion } from '@horus/connectors';
+import { getSourceVersion } from '@horus/connectors';
 
 const DEFAULT_DB_URL = 'postgresql://horus:horus@localhost:5433/horus';
 
@@ -48,15 +48,15 @@ export async function runReadiness(opts?: {
   write?: (line: string) => void;
   /** Injectable for tests — defaults to the real checkDatabase. */
   _dbCheck?: (url: string) => Promise<DbHealth>;
-  /** Injectable for tests — defaults to the real getAxonVersion. */
-  _axonVersion?: () => Promise<string | null>;
+  /** Injectable for tests — defaults to the real getSourceVersion. */
+  _sourceVersion?: () => Promise<string | null>;
   /** Injectable for tests — defaults to the real loadConfig. */
   _loadConfig?: typeof loadConfig;
 }): Promise<number> {
   const cwd = opts?.cwd ?? process.cwd();
   const write = opts?.write ?? ((line: string) => console.log(line));
   const dbChecker = opts?._dbCheck ?? checkDatabase;
-  const axonVersionFn = opts?._axonVersion ?? getAxonVersion;
+  const sourceVersionFn = opts?._sourceVersion ?? getSourceVersion;
   const configLoader = opts?._loadConfig ?? loadConfig;
   const checks: ReadinessCheck[] = [];
 
@@ -122,30 +122,30 @@ export async function runReadiness(opts?: {
         },
   );
 
-  // ── Axon source-intelligence backend — OPTIONAL ───────────────────────────
-  const axonVersion = await axonVersionFn();
-  if (axonVersion === null) {
+  // ── Source-intelligence backend — OPTIONAL ────────────────────────────────
+  const sourceVersion = await sourceVersionFn();
+  if (sourceVersion === null) {
     checks.push({
       label: 'Source intelligence',
       status: 'warn',
       blocking: false,
       detail: 'not installed — source intelligence unavailable',
-      next: `uv tool install axoniq==${PINNED_AXON_VERSION}`,
+      next: `uv tool install axoniq==${PINNED_SOURCE_VERSION}`,
     });
-  } else if (axonVersion !== PINNED_AXON_VERSION) {
+  } else if (sourceVersion !== PINNED_SOURCE_VERSION) {
     checks.push({
       label: 'Source intelligence',
       status: 'warn',
       blocking: false,
-      detail: `version mismatch (installed: ${axonVersion}, required: ${PINNED_AXON_VERSION})`,
-      next: `uv tool install axoniq==${PINNED_AXON_VERSION}`,
+      detail: `version mismatch (installed: ${sourceVersion}, required: ${PINNED_SOURCE_VERSION})`,
+      next: `uv tool install axoniq==${PINNED_SOURCE_VERSION}`,
     });
   } else {
     checks.push({
       label: 'Source intelligence',
       status: 'pass',
       blocking: false,
-      detail: `${axonVersion} — ready`,
+      detail: `${sourceVersion} — ready`,
     });
   }
 
@@ -167,7 +167,7 @@ export async function runReadiness(opts?: {
 
     for (const project of globalConfig.projects) {
       for (const repo of project.repositories) {
-        if (repo.axon?.hostUrl) anyRepoConfigured = true;
+        if (repo.source?.hostUrl ?? repo.axon?.hostUrl) anyRepoConfigured = true;
       }
       for (const env of project.environments) {
         const c = env.connectors;
@@ -186,7 +186,7 @@ export async function runReadiness(opts?: {
             status: 'warn',
             blocking: false,
             detail: 'no source host URL in any project',
-            next: 'run `horus init --axon <url>` or set axon.hostUrl in horus.config.js',
+            next: 'set source.hostUrl in horus.config.js for this repository',
           },
     );
 

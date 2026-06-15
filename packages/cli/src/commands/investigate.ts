@@ -74,11 +74,11 @@ export async function runInvestigate(
 
     const health = await code.health();
     if (!health.ok) {
-      const axonUrl = renv.repositories[0]?.axonHostUrl;
+      const sourceUrl = renv.repositories[0]?.sourceHostUrl ?? renv.repositories[0]?.axonHostUrl;
       console.error(
         pc.red(
           `Source-intelligence host unreachable for ${renv.project}/${renv.env}` +
-            (axonUrl ? ` — start it with: axon host (${axonUrl})` : ''),
+            (sourceUrl ? ` (${sourceUrl}) — run: horus index` : ' — run: horus index'),
         ),
       );
       return 1;

@@ -11,7 +11,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { runReadiness } from './readiness.js';
-import { PINNED_AXON_VERSION } from '@horus/core';
+import { PINNED_SOURCE_VERSION } from '@horus/core';
 import type { DbHealth } from '@horus/db';
 import type { loadConfig } from '@horus/core';
 
@@ -80,7 +80,7 @@ describe('horus readiness — fully ready', () => {
     const code = await runReadiness({
       write,
       _dbCheck: async () => DB_PASS,
-      _axonVersion: async () => PINNED_AXON_VERSION,
+      _sourceVersion: async () => PINNED_SOURCE_VERSION,
       _loadConfig: async () => makeConfig({ axonUrl: 'http://localhost:8420', elasticsearch: true }),
     });
     expect(code).toBe(0);
@@ -92,7 +92,7 @@ describe('horus readiness — fully ready', () => {
     await runReadiness({
       write,
       _dbCheck: async () => DB_PASS,
-      _axonVersion: async () => PINNED_AXON_VERSION,
+      _sourceVersion: async () => PINNED_SOURCE_VERSION,
       _loadConfig: async () => makeConfig({}),
     });
     expect(lines(out)).toContain('CLI');
@@ -103,7 +103,7 @@ describe('horus readiness — fully ready', () => {
     await runReadiness({
       write,
       _dbCheck: async () => DB_PASS,
-      _axonVersion: async () => null,
+      _sourceVersion: async () => null,
       _loadConfig: async () => { throw new Error('no config'); },
     });
     const output = lines(out);
@@ -116,7 +116,7 @@ describe('horus readiness — fully ready', () => {
     await runReadiness({
       write,
       _dbCheck: async () => DB_PASS,
-      _axonVersion: async () => PINNED_AXON_VERSION,
+      _sourceVersion: async () => PINNED_SOURCE_VERSION,
       _loadConfig: async () => { throw new Error('no config'); },
     });
     const output = lines(out);
@@ -129,7 +129,7 @@ describe('horus readiness — fully ready', () => {
     await runReadiness({
       write,
       _dbCheck: async () => DB_PASS,
-      _axonVersion: async () => PINNED_AXON_VERSION,
+      _sourceVersion: async () => PINNED_SOURCE_VERSION,
       _loadConfig: async () => makeConfig({ elasticsearch: true }),
     });
     expect(lines(out)).toContain('Elasticsearch');
@@ -149,7 +149,7 @@ describe('horus readiness — partial (DB pass, optional items missing)', () => 
     const code = await runReadiness({
       write,
       _dbCheck: async () => DB_PASS,
-      _axonVersion: async () => null,
+      _sourceVersion: async () => null,
       _loadConfig: async () => { throw new Error('no config'); },
     });
     expect(code).toBe(0);
@@ -160,7 +160,7 @@ describe('horus readiness — partial (DB pass, optional items missing)', () => 
     await runReadiness({
       write,
       _dbCheck: async () => DB_PASS,
-      _axonVersion: async () => null,
+      _sourceVersion: async () => null,
       _loadConfig: async () => { throw new Error('no config'); },
     });
     expect(lines(out)).toContain('optional item');
@@ -171,12 +171,12 @@ describe('horus readiness — partial (DB pass, optional items missing)', () => 
     await runReadiness({
       write,
       _dbCheck: async () => DB_PASS,
-      _axonVersion: async () => '0.0.1',
+      _sourceVersion: async () => '0.0.1',
       _loadConfig: async () => { throw new Error('no config'); },
     });
     const output = lines(out);
     expect(output).toContain('version mismatch');
-    expect(output).toContain(PINNED_AXON_VERSION);
+    expect(output).toContain(PINNED_SOURCE_VERSION);
   });
 
   it('Axon not installed — shows install hint', async () => {
@@ -184,7 +184,7 @@ describe('horus readiness — partial (DB pass, optional items missing)', () => 
     await runReadiness({
       write,
       _dbCheck: async () => DB_PASS,
-      _axonVersion: async () => null,
+      _sourceVersion: async () => null,
       _loadConfig: async () => { throw new Error('no config'); },
     });
     expect(lines(out)).toContain('uv tool install axoniq');
@@ -195,7 +195,7 @@ describe('horus readiness — partial (DB pass, optional items missing)', () => 
     await runReadiness({
       write,
       _dbCheck: async () => DB_PASS,
-      _axonVersion: async () => null,
+      _sourceVersion: async () => null,
       _loadConfig: async () => { throw new Error('no config'); },
     });
     expect(lines(out)).toContain('generate-config');
@@ -206,7 +206,7 @@ describe('horus readiness — partial (DB pass, optional items missing)', () => 
     await runReadiness({
       write,
       _dbCheck: async () => DB_PASS,
-      _axonVersion: async () => PINNED_AXON_VERSION,
+      _sourceVersion: async () => PINNED_SOURCE_VERSION,
       _loadConfig: async () => makeConfig({}),
     });
     const output = lines(out);
@@ -219,7 +219,7 @@ describe('horus readiness — partial (DB pass, optional items missing)', () => 
     await runReadiness({
       write,
       _dbCheck: async () => DB_PASS,
-      _axonVersion: async () => PINNED_AXON_VERSION,
+      _sourceVersion: async () => PINNED_SOURCE_VERSION,
       _loadConfig: async () => makeConfig({}),
     });
     const output = lines(out);
@@ -240,7 +240,7 @@ describe('horus readiness — blocking (DB failure)', () => {
     const code = await runReadiness({
       write,
       _dbCheck: async () => DB_NOT_REACHABLE,
-      _axonVersion: async () => null,
+      _sourceVersion: async () => null,
       _loadConfig: async () => { throw new Error('no config'); },
     });
     expect(code).toBe(1);
@@ -251,7 +251,7 @@ describe('horus readiness — blocking (DB failure)', () => {
     await runReadiness({
       write,
       _dbCheck: async () => DB_NOT_REACHABLE,
-      _axonVersion: async () => null,
+      _sourceVersion: async () => null,
       _loadConfig: async () => { throw new Error('no config'); },
     });
     expect(lines(out)).toContain('Not ready');
@@ -262,7 +262,7 @@ describe('horus readiness — blocking (DB failure)', () => {
     await runReadiness({
       write,
       _dbCheck: async () => DB_NOT_REACHABLE,
-      _axonVersion: async () => null,
+      _sourceVersion: async () => null,
       _loadConfig: async () => { throw new Error('no config'); },
     });
     expect(lines(out)).toContain('docker run');
@@ -273,7 +273,7 @@ describe('horus readiness — blocking (DB failure)', () => {
     const code = await runReadiness({
       write,
       _dbCheck: async () => DB_SCHEMA_MISSING,
-      _axonVersion: async () => PINNED_AXON_VERSION,
+      _sourceVersion: async () => PINNED_SOURCE_VERSION,
       _loadConfig: async () => makeConfig({}),
     });
     expect(code).toBe(1);
@@ -284,7 +284,7 @@ describe('horus readiness — blocking (DB failure)', () => {
     await runReadiness({
       write,
       _dbCheck: async () => DB_SCHEMA_MISSING,
-      _axonVersion: async () => null,
+      _sourceVersion: async () => null,
       _loadConfig: async () => { throw new Error('no config'); },
     });
     expect(lines(out)).toContain('pnpm db migrate');
@@ -295,7 +295,7 @@ describe('horus readiness — blocking (DB failure)', () => {
     await runReadiness({
       write,
       _dbCheck: async () => DB_NOT_REACHABLE,
-      _axonVersion: async () => null,
+      _sourceVersion: async () => null,
       _loadConfig: async () => { throw new Error('no config'); },
     });
     const output = lines(out);
@@ -308,7 +308,7 @@ describe('horus readiness — blocking (DB failure)', () => {
     await runReadiness({
       write,
       _dbCheck: async () => DB_NOT_REACHABLE,
-      _axonVersion: async () => null,
+      _sourceVersion: async () => null,
       _loadConfig: async () => { throw new Error('no config'); },
     });
     expect(lines(out)).toContain('Re-run');

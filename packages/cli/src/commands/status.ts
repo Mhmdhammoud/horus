@@ -1,7 +1,7 @@
 import pc from 'picocolors';
 import {
   HORUS_VERSION,
-  PINNED_AXON_VERSION,
+  PINNED_SOURCE_VERSION,
   loadConfig,
   listEnvironments,
   resolveEnvironment,
@@ -9,7 +9,7 @@ import {
   type ResolvedEnvironment,
 } from '@horus/core';
 import {
-  AxonHttpClient,
+  SourceHttpClient,
   checkAxonCompatibility,
   codeForEnv,
   logsForEnv,
@@ -44,14 +44,14 @@ async function checkEnv(renv: ResolvedEnvironment): Promise<boolean> {
     console.log(`    ${mark('pending')} ${pc.bold('Source')}          ${pc.dim('no repositories configured')}`);
   }
   for (const repo of renv.repositories) {
-    const axonHostUrl = repo.axonHostUrl;
+    const axonHostUrl = repo.sourceHostUrl ?? repo.axonHostUrl;
     if (!axonHostUrl) {
       console.log(
         `    ${mark('pending')} ${pc.bold('Source')}          ${pc.dim(`${repo.name}: not configured`)}`,
       );
       continue;
     }
-    const axon = new AxonHttpClient({ baseUrl: axonHostUrl });
+    const axon = new SourceHttpClient({ baseUrl: axonHostUrl });
     const [health, compat] = await Promise.all([
       axon.health(),
       checkAxonCompatibility(axon),
@@ -137,7 +137,7 @@ export async function runStatus(
   opts?: { name?: string; project?: string; env?: string },
 ): Promise<number> {
   console.log(pc.bold(`\nHorus ${HORUS_VERSION}`));
-  console.log(pc.dim(`pinned backend: ${PINNED_AXON_VERSION} · transport: HTTP/MCP only\n`));
+  console.log(pc.dim(`pinned backend: ${PINNED_SOURCE_VERSION} · transport: HTTP/MCP only\n`));
 
   let config: HorusConfig | undefined;
   const checks: Check[] = [];

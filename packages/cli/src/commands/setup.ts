@@ -5,10 +5,9 @@
  */
 
 import pc from 'picocolors';
-import { loadConfig } from '@horus/core';
-import { getAxonVersion, AxonHttpClient } from '@horus/connectors';
+import { loadConfig, PINNED_SOURCE_VERSION } from '@horus/core';
+import { getSourceVersion, SourceHttpClient } from '@horus/connectors';
 import { checkDatabase } from '@horus/db';
-import { PINNED_AXON_VERSION } from '@horus/core';
 
 const DEFAULT_DB_URL = 'postgresql://horus:horus@localhost:5433/horus';
 
@@ -22,29 +21,29 @@ export async function runSetup(opts: {
   write(pc.bold('\nHorus setup\n'));
 
   // 1. Source-intelligence backend — presence and version.
-  const backendVersion = await getAxonVersion();
+  const backendVersion = await getSourceVersion();
   if (backendVersion === null) {
     ok = false;
     write(`  ${pc.red('●')} Horus source-intelligence backend not found`);
     write(
       pc.dim(
         `      install it (Python 3.11+ required):\n` +
-        `        uv tool install axoniq==${PINNED_AXON_VERSION}\n` +
-        `      or: pip install axoniq==${PINNED_AXON_VERSION}\n` +
+        `        uv tool install axoniq==${PINNED_SOURCE_VERSION}\n` +
+        `      or: pip install axoniq==${PINNED_SOURCE_VERSION}\n` +
         `      ensure ~/.local/bin is on your PATH`,
       ),
     );
-  } else if (backendVersion !== PINNED_AXON_VERSION) {
+  } else if (backendVersion !== PINNED_SOURCE_VERSION) {
     ok = false;
     write(
       `  ${pc.yellow('●')} Horus source-intelligence backend version mismatch` +
-      pc.dim(` (installed: ${backendVersion}, required: ${PINNED_AXON_VERSION})`),
+      pc.dim(` (installed: ${backendVersion}, required: ${PINNED_SOURCE_VERSION})`),
     );
     write(
       pc.dim(
         `      update it:\n` +
-        `        uv tool install axoniq==${PINNED_AXON_VERSION}\n` +
-        `      or: pip install axoniq==${PINNED_AXON_VERSION}`,
+        `        uv tool install axoniq==${PINNED_SOURCE_VERSION}\n` +
+        `      or: pip install axoniq==${PINNED_SOURCE_VERSION}`,
       ),
     );
   } else {
@@ -90,21 +89,16 @@ export async function runSetup(opts: {
     );
   }
 
-  // 3. Axon host reachability and repo indexing — per configured repository.
+  // 3. Source intelligence host reachability and repo indexing — per configured repository.
   if (config && config.projects.length > 0) {
     for (const project of config.projects) {
       for (const repo of project.repositories) {
-        if (!repo.axon?.hostUrl) {
+        const repoHostUrl = repo.source?.hostUrl ?? repo.axon?.hostUrl;
+        if (!repoHostUrl) {
           continue;
         }
-        let port = '';
-        try {
-          port = new URL(repo.axon.hostUrl).port;
-        } catch {
-          port = '8420';
-        }
-        const client = new AxonHttpClient({
-          baseUrl: repo.axon.hostUrl,
+        const client = new SourceHttpClient({
+          baseUrl: repoHostUrl,
           timeoutMs: 3000,
           maxRetries: 0,
         });
@@ -113,13 +107,13 @@ export async function runSetup(opts: {
           ok = false;
           write(
             `  ${pc.red('●')} Source intelligence host unreachable for ${pc.bold(repo.name)} ` +
-            pc.dim(`(${repo.axon.hostUrl})`),
+            pc.dim(`(${repoHostUrl})`),
           );
           write(
             pc.dim(
-              `      start a source intelligence host for this repo:\n` +
+              `      start the source intelligence host:\n` +
               `        cd ${repo.path}\n` +
-              `        axon host --port ${port}`,
+              `        horus index`,
             ),
           );
         } else {
@@ -133,13 +127,13 @@ export async function runSetup(opts: {
               pc.dim(
                 `      index the repo:\n` +
                 `        cd ${repo.path}\n` +
-                `        axon index .`,
+                `        horus index`,
               ),
             );
           } else {
             write(
               `  ${pc.green('●')} ${pc.bold(repo.name)} — ${count} nodes indexed ` +
-              pc.dim(`(${repo.axon.hostUrl})`),
+              pc.dim(`(${repoHostUrl})`),
             );
           }
         }

@@ -22,16 +22,22 @@ const DEFAULT_DB_URL = 'postgresql://horus:horus@localhost:5433/horus';
  */
 
 // ---------------------------------------------------------------------------
-// Repository schema (CODE — belongs to the PROJECT, served by Axon)
+// Repository schema (CODE — belongs to the PROJECT, served by source-intelligence backend)
 // ---------------------------------------------------------------------------
 
 const repositorySchema = z.object({
   name: z.string().min(1),
   path: z.string().min(1),
   /**
-   * Axon is the default source-intelligence backend. Each repository points at
-   * the `axon host` indexing it. When absent/unreachable, source context, impact,
-   * change analysis, and queue stitching degrade — runtime evidence still works.
+   * Horus source-intelligence backend host for this repository.
+   * `source.hostUrl` is the canonical key (HOR-137).
+   * When absent/unreachable, source context, impact, change analysis, and queue
+   * stitching degrade — runtime evidence still works.
+   */
+  source: z.object({ hostUrl: z.string().url() }).optional(),
+  /**
+   * @deprecated Use `source.hostUrl` instead (HOR-137 migration shim).
+   * Accepted for backwards compatibility; silently promoted to `source.hostUrl`.
    */
   axon: z.object({ hostUrl: z.string().url() }).optional(),
 });
@@ -138,7 +144,7 @@ const environmentSchema = z.object({
 
 const projectSchema = z.object({
   name: z.string().min(1),
-  /** Code repositories (with their Axon hosts) — code belongs to the project. */
+  /** Code repositories (with their source-intelligence hosts) — code belongs to the project. */
   repositories: z.array(repositorySchema).min(1),
   /** Runtime environments — runtime systems belong to the environment. */
   environments: z.array(environmentSchema).min(1),
@@ -179,6 +185,9 @@ export type ConnectorsConfig = z.infer<typeof connectorsSchema>;
 export interface ResolvedRepository {
   name: string;
   path: string;
+  /** Canonical Horus-owned source-intelligence host URL (HOR-137). */
+  sourceHostUrl?: string;
+  /** @deprecated Use sourceHostUrl. Preserved for backwards compatibility (HOR-137). */
   axonHostUrl?: string;
 }
 
@@ -217,7 +226,7 @@ export interface ResolvedEnvironment {
   project: string;
   env: string;
   readOnly: boolean;
-  /** Code repositories for the project (with their Axon hosts). */
+  /** Code repositories for the project (with their source-intelligence hosts). */
   repositories: ResolvedRepository[];
   /** Primary repository path (first repo) — convenience for git-based commands. */
   path: string;
@@ -315,12 +324,16 @@ export function resolveEnvironment(
     }
   }
 
-  // --- resolve repositories (code/Axon belong to the project) ---
-  const repositories: ResolvedRepository[] = project.repositories.map((r) => ({
-    name: r.name,
-    path: r.path,
-    ...(r.axon ? { axonHostUrl: r.axon.hostUrl } : {}),
-  }));
+  // --- resolve repositories ---
+  // `source.hostUrl` is canonical; `axon.hostUrl` is the compat alias (HOR-137).
+  const repositories: ResolvedRepository[] = project.repositories.map((r) => {
+    const hostUrl = r.source?.hostUrl ?? r.axon?.hostUrl;
+    return {
+      name: r.name,
+      path: r.path,
+      ...(hostUrl ? { sourceHostUrl: hostUrl, axonHostUrl: hostUrl } : {}),
+    };
+  });
   const primary = repositories[0];
 
   // --- resolve connectors (runtime belongs to the environment) ---
@@ -399,8 +412,10 @@ const CONFIG_EXAMPLES: Record<string, string> = {
   'projects.*.repositories': 'e.g. [{ name: "my-api", path: "/path/to/repo" }]',
   'projects.*.repositories.*.name': 'e.g. name: "my-api"',
   'projects.*.repositories.*.path': 'e.g. path: "/absolute/path/to/repo"',
-  'projects.*.repositories.*.axon.hostUrl':
+  'projects.*.repositories.*.source.hostUrl':
     'e.g. "http://127.0.0.1:8420"  (start one with: axon host --port 8420)',
+  'projects.*.repositories.*.axon.hostUrl':
+    'e.g. "http://127.0.0.1:8420"  (deprecated: use source.hostUrl instead)',
   'projects.*.environments': 'e.g. [{ name: "production", connectors: {} }]',
   'projects.*.environments.*.name': 'e.g. name: "production"',
   'projects.*.environments.*.connectors.elasticsearch.indexPattern':

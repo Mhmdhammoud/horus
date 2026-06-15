@@ -1,11 +1,11 @@
 /**
- * `horus hosts` — list running Axon hosts across all registered projects (HOR-41).
+ * `horus hosts` — list running source-intelligence hosts across all registered projects (HOR-41).
  * Shows port, repo path, and live health status.
  */
 
 import pc from 'picocolors';
 import { readRegistry } from '@horus/core';
-import { readAxonHostUrl, isHostHealthy } from '@horus/connectors';
+import { readSourceHostUrl, isHostHealthy } from '@horus/connectors';
 
 export async function runHosts(): Promise<number> {
   const registry = readRegistry();
@@ -20,7 +20,7 @@ export async function runHosts(): Promise<number> {
 
   await Promise.all(
     projects.map(async ([name, entry]) => {
-      const hostUrl = readAxonHostUrl(entry.root);
+      const hostUrl = readSourceHostUrl(entry.root);
       const healthy = hostUrl ? await isHostHealthy(hostUrl) : false;
       rows.push({ name, hostUrl: hostUrl ?? null, healthy, root: entry.root });
     }),

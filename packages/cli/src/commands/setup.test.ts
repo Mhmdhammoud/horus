@@ -17,8 +17,8 @@ function captureOutput(
 // ---------------------------------------------------------------------------
 
 vi.mock('@horus/connectors', () => ({
-  getAxonVersion: vi.fn(),
-  AxonHttpClient: vi.fn(),
+  getSourceVersion: vi.fn(),
+  SourceHttpClient: vi.fn(),
 }));
 
 vi.mock('@horus/db', () => ({
@@ -30,18 +30,18 @@ vi.mock('@horus/core', async (importOriginal) => {
   return {
     ...actual,
     loadConfig: vi.fn(),
-    PINNED_AXON_VERSION: '1.0.1',
+    PINNED_SOURCE_VERSION: '1.0.1',
   };
 });
 
-import { getAxonVersion, AxonHttpClient } from '@horus/connectors';
+import { getSourceVersion, SourceHttpClient } from '@horus/connectors';
 import { checkDatabase } from '@horus/db';
 import { loadConfig } from '@horus/core';
 
-const mockGetAxonVersion = vi.mocked(getAxonVersion);
+const mockGetSourceVersion = vi.mocked(getSourceVersion);
 const mockCheckDatabase = vi.mocked(checkDatabase);
 const mockLoadConfig = vi.mocked(loadConfig);
-const MockAxonHttpClient = vi.mocked(AxonHttpClient as unknown as new (...args: unknown[]) => {
+const MockSourceHttpClient = vi.mocked(SourceHttpClient as unknown as new (...args: unknown[]) => {
   health: () => Promise<{ ok: boolean; status: number }>;
   nodeCount: () => Promise<number>;
 });
@@ -55,7 +55,7 @@ const PASSING_DB = { reachable: true, schemaReady: true, schemaDetail: '8 tables
 const REPO_AXON_CONFIG = {
   name: 'my-repo',
   path: '/repos/my-repo',
-  axon: { hostUrl: 'http://127.0.0.1:8420' },
+  source: { hostUrl: 'http://127.0.0.1:8420' },
 };
 
 const MINIMAL_CONFIG = {
@@ -65,7 +65,7 @@ const MINIMAL_CONFIG = {
   models: { reasoning: 'claude-opus-4-8', extraction: 'claude-haiku-4-5' },
 } as unknown as Awaited<ReturnType<typeof loadConfig>>;
 
-function makeAxonClient(health: { ok: boolean }, nodeCount = 42) {
+function makeSourceClient(health: { ok: boolean }, nodeCount = 42) {
   return {
     health: vi.fn().mockResolvedValue(health),
     nodeCount: vi.fn().mockResolvedValue(nodeCount),
@@ -75,11 +75,11 @@ function makeAxonClient(health: { ok: boolean }, nodeCount = 42) {
 beforeEach(() => {
   vi.clearAllMocks();
   // Default happy-path mocks
-  mockGetAxonVersion.mockResolvedValue('1.0.1');
+  mockGetSourceVersion.mockResolvedValue('1.0.1');
   mockCheckDatabase.mockResolvedValue(PASSING_DB);
   mockLoadConfig.mockResolvedValue(MINIMAL_CONFIG);
-  MockAxonHttpClient.mockImplementation(
-    () => makeAxonClient({ ok: true }) as ReturnType<typeof makeAxonClient>,
+  MockSourceHttpClient.mockImplementation(
+    () => makeSourceClient({ ok: true }) as ReturnType<typeof makeSourceClient>,
   );
 });
 
@@ -117,7 +117,7 @@ describe('runSetup — all prerequisites met', () => {
 
 describe('runSetup — Axon binary not found', () => {
   beforeEach(() => {
-    mockGetAxonVersion.mockResolvedValue(null);
+    mockGetSourceVersion.mockResolvedValue(null);
   });
 
   it('exits 1', async () => {
@@ -139,7 +139,7 @@ describe('runSetup — Axon binary not found', () => {
 
 describe('runSetup — Axon binary version mismatch', () => {
   beforeEach(() => {
-    mockGetAxonVersion.mockResolvedValue('0.9.0');
+    mockGetSourceVersion.mockResolvedValue('0.9.0');
   });
 
   it('exits 1', async () => {
@@ -209,8 +209,8 @@ describe('runSetup — Postgres reachable but schema missing', () => {
 
 describe('runSetup — Axon host unreachable', () => {
   beforeEach(() => {
-    MockAxonHttpClient.mockImplementation(
-      () => makeAxonClient({ ok: false }, 0) as ReturnType<typeof makeAxonClient>,
+    MockSourceHttpClient.mockImplementation(
+      () => makeSourceClient({ ok: false }, 0) as ReturnType<typeof makeSourceClient>,
     );
   });
 
@@ -219,11 +219,11 @@ describe('runSetup — Axon host unreachable', () => {
     expect(code).toBe(1);
   });
 
-  it('output includes repo name and axon host start command', async () => {
+  it('output includes repo name and horus index command', async () => {
     const { lines } = await captureOutput((write) => runSetup({ write }));
     const output = lines.join('\n');
     expect(output).toContain('my-repo');
-    expect(output).toContain('axon host --port');
+    expect(output).toContain('horus index');
     expect(output).toContain('8420');
   });
 
@@ -239,8 +239,8 @@ describe('runSetup — Axon host unreachable', () => {
 
 describe('runSetup — Axon host running but repo not indexed', () => {
   beforeEach(() => {
-    MockAxonHttpClient.mockImplementation(
-      () => makeAxonClient({ ok: true }, 0) as ReturnType<typeof makeAxonClient>,
+    MockSourceHttpClient.mockImplementation(
+      () => makeSourceClient({ ok: true }, 0) as ReturnType<typeof makeSourceClient>,
     );
   });
 
@@ -249,10 +249,10 @@ describe('runSetup — Axon host running but repo not indexed', () => {
     expect(code).toBe(1);
   });
 
-  it('output includes axon index command', async () => {
+  it('output includes horus index command', async () => {
     const { lines } = await captureOutput((write) => runSetup({ write }));
     const output = lines.join('\n');
-    expect(output).toContain('axon index .');
+    expect(output).toContain('horus index');
     expect(output).toContain('/repos/my-repo');
   });
 });
@@ -299,8 +299,8 @@ describe('runSetup — repo without axon config', () => {
     expect(code).toBe(0);
   });
 
-  it('AxonHttpClient is never instantiated', async () => {
+  it('SourceHttpClient is never instantiated', async () => {
     await captureOutput((write) => runSetup({ write }));
-    expect(MockAxonHttpClient).not.toHaveBeenCalled();
+    expect(MockSourceHttpClient).not.toHaveBeenCalled();
   });
 });
