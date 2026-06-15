@@ -271,7 +271,7 @@ sudo mv horus /usr/local/bin/horus
 horus --version
 ```
 
-Homebrew tap is planned but not yet available.
+Homebrew tap is planned — the packaging archive contract is documented in [docs/homebrew-archive-contract.md](./docs/homebrew-archive-contract.md).
 
 To **update** to a newer version, re-run the installer — it overwrites the binary and leaves your config untouched. To **uninstall**, see **[docs/install.md#uninstall](./docs/install.md#uninstall)** for what to remove and what to keep.
 
