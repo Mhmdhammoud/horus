@@ -127,7 +127,7 @@ export async function runIndex(opts: {
     }
 
     if (hostUrl) {
-      console.log(pc.dim(`Reusing Axon host for ${label} at ${hostUrl}`));
+      console.log(pc.dim(`Reusing source-intelligence host for ${label} at ${hostUrl}`));
     } else {
       spawned = true;
       // No host running for this repo — set one up.
@@ -137,11 +137,11 @@ export async function runIndex(opts: {
         return 1;
       }
       if (!isAnalyzed(root)) {
-        console.log(pc.dim('  analyzing with Axon (first time — this can take a while)…'));
+        console.log(pc.dim('  analyzing with source-intelligence backend (first time — this can take a while)…'));
         try {
           await analyzeRepo(root);
         } catch (err) {
-          console.error(pc.red(`  axon analyze failed: ${(err as Error).message}`));
+          console.error(pc.red(`  source analysis failed: ${(err as Error).message}`));
           return 1;
         }
       } else {
@@ -149,14 +149,14 @@ export async function runIndex(opts: {
       }
       const port = await findFreePort();
       hostUrl = `http://127.0.0.1:${port}`;
-      console.log(pc.dim(`  starting Axon host on port ${port}…`));
+      console.log(pc.dim(`  starting source-intelligence host on port ${port}…`));
       startHost(root, port);
       if (!(await waitForHost(hostUrl))) {
         // Remove the ownership record — the host never became healthy, so the
         // record would cause `horus stop` to try to signal a dead process.
         removeSpawnedHostRecord(root);
         console.error(
-          pc.red(`  Axon host did not become healthy — see ${root}/.horus/axon-host.log`),
+          pc.red(`  Source-intelligence host did not become healthy — see ${root}/.horus/axon-host.log`),
         );
         return 1;
       }

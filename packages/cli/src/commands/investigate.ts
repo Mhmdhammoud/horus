@@ -37,7 +37,7 @@ export async function runInvestigate(
     if (!code) {
       console.error(
         pc.red(
-          `No Axon connector configured for project "${renv.project}" / env "${renv.env}".`,
+          `No source-intelligence connector configured for project "${renv.project}" / env "${renv.env}".`,
         ),
       );
       return 1;
@@ -48,7 +48,7 @@ export async function runInvestigate(
       const axonUrl = renv.repositories[0]?.axonHostUrl;
       console.error(
         pc.red(
-          `Axon host unreachable for ${renv.project}/${renv.env}` +
+          `Source-intelligence host unreachable for ${renv.project}/${renv.env}` +
             (axonUrl ? ` — start it with: axon host (${axonUrl})` : ''),
         ),
       );

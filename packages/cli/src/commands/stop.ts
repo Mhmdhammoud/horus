@@ -44,7 +44,7 @@ export async function runStop(opts: StopOpts): Promise<number> {
     const root = findRepoRoot(cwd) ?? cwd;
     const hostUrl = readAxonHostUrl(root);
     if (!hostUrl) {
-      console.log(pc.dim('No Axon host found for this repo (.axon/host.json absent).'));
+      console.log(pc.dim('No source-intelligence host found for this repo (.axon/host.json absent).'));
       return 0;
     }
     return await stopHost(root, hostUrl);
@@ -154,7 +154,7 @@ async function stopHost(root: string, hostUrl: string): Promise<number> {
   try {
     process.kill(spawned.pid, 'SIGTERM');
     console.log(
-      `${pc.green('✓')} Stopped Axon host ` +
+      `${pc.green('✓')} Stopped source-intelligence host ` +
         pc.dim(`(pid ${spawned.pid}, port ${port})`) +
         ` for ${root}`,
     );
@@ -199,7 +199,7 @@ async function stopAll(): Promise<number> {
   }
 
   if (stopped === 0 && failed === 0) {
-    console.log(pc.dim('No running Axon hosts found.'));
+    console.log(pc.dim('No running source-intelligence hosts found.'));
   } else {
     console.log(
       `\nStopped ${stopped} host(s)${failed > 0 ? pc.red(`, ${failed} failed`) : ''}.`,

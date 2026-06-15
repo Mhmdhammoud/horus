@@ -46,7 +46,7 @@ export async function runInit(opts: {
     console.log(pc.dim(`  registered: horus investigate --name ${name} "<hint>"`));
     if (!opts.axon) {
       console.log(
-        pc.dim('  no Axon host set — run `horus index` to analyze + host, or pass --axon <url>'),
+        pc.dim('  no source-intelligence host set — run `horus index` to analyze + host, or pass --axon <url>'),
       );
     }
     console.log(

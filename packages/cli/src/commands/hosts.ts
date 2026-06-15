@@ -34,7 +34,7 @@ export async function runHosts(): Promise<number> {
 
   const anyHost = rows.some((r) => r.hostUrl !== null);
   if (!anyHost) {
-    console.log(pc.dim('No Axon hosts found. Run `horus index` to start one.'));
+    console.log(pc.dim('No source-intelligence hosts found. Run `horus index` to start one.'));
     return 0;
   }
 

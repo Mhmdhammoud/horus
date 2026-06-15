@@ -147,7 +147,7 @@ export function codeForRepo(config: HorusConfig, repoName?: string): CodeProvide
   const c = codeForEnv(renv);
   if (!c) {
     throw new Error(
-      `No Axon connector configured for project "${renv.project}" / env "${renv.env}".`,
+      `No source-intelligence connector configured for project "${renv.project}" / env "${renv.env}".`,
     );
   }
   return c;

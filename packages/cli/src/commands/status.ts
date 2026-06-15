@@ -41,13 +41,13 @@ async function checkEnv(renv: ResolvedEnvironment): Promise<boolean> {
 
   // Axon — code intelligence, belongs to the project's repositories.
   if (renv.repositories.length === 0) {
-    console.log(`    ${mark('pending')} ${pc.bold('Axon')}            ${pc.dim('no repositories configured')}`);
+    console.log(`    ${mark('pending')} ${pc.bold('Source')}          ${pc.dim('no repositories configured')}`);
   }
   for (const repo of renv.repositories) {
     const axonHostUrl = repo.axonHostUrl;
     if (!axonHostUrl) {
       console.log(
-        `    ${mark('pending')} ${pc.bold('Axon')}            ${pc.dim(`${repo.name}: not configured`)}`,
+        `    ${mark('pending')} ${pc.bold('Source')}          ${pc.dim(`${repo.name}: not configured`)}`,
       );
       continue;
     }
@@ -69,7 +69,7 @@ async function checkEnv(renv: ResolvedEnvironment): Promise<boolean> {
     const axonDetail = health.ok
       ? `${repo.name} · responded ${health.status} · ${versionPart} at ${axonHostUrl}`
       : `${repo.name} · unreachable at ${axonHostUrl}`;
-    console.log(`    ${mark(health.ok)} ${pc.bold('Axon')}            ${pc.dim(axonDetail)}`);
+    console.log(`    ${mark(health.ok)} ${pc.bold('Source')}          ${pc.dim(axonDetail)}`);
     if (!health.ok) allOk = false;
   }
 
@@ -137,7 +137,7 @@ export async function runStatus(
   opts?: { name?: string; project?: string; env?: string },
 ): Promise<number> {
   console.log(pc.bold(`\nHorus ${HORUS_VERSION}`));
-  console.log(pc.dim(`pinned Axon: ${PINNED_AXON_VERSION} · transport: HTTP/MCP only\n`));
+  console.log(pc.dim(`pinned backend: ${PINNED_AXON_VERSION} · transport: HTTP/MCP only\n`));
 
   let config: HorusConfig | undefined;
   const checks: Check[] = [];

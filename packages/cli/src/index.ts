@@ -56,7 +56,7 @@ export function buildProgram(): Command {
     .description('Create a local .horus/config.json for this repo and register it')
     .option('--name <name>', 'project name (default: repo directory name)')
     .option('--env <name>', 'environment name (default: production)')
-    .option('--axon <url>', 'Axon host URL for this repo (e.g. http://127.0.0.1:8420)')
+    .option('--axon <url>', 'Source-intelligence host URL for this repo (e.g. http://127.0.0.1:8420)')
     .option('--path <dir>', 'repository root (default: nearest git root, else cwd)')
     .action(
       async (opts: { name?: string; env?: string; axon?: string; path?: string }) => {
@@ -119,15 +119,15 @@ export function buildProgram(): Command {
 
   program
     .command('stop')
-    .description('Stop the Axon host for the current repo (or --all to stop every host)')
-    .option('--all', 'stop all registered Axon hosts')
+    .description('Stop the source-intelligence host for the current repo (or --all to stop every host)')
+    .option('--all', 'stop all registered source-intelligence hosts')
     .action(async (opts: { all?: boolean }) => {
       process.exitCode = await runStop(opts);
     });
 
   program
     .command('hosts')
-    .description('List registered Axon hosts and their live status (port, repo, running/stopped)')
+    .description('List registered source-intelligence hosts and their live status (port, repo, running/stopped)')
     .action(async () => {
       process.exitCode = await runHosts();
     });
@@ -157,7 +157,7 @@ export function buildProgram(): Command {
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('-d, --depth <n>', 'impact depth', (v) => parseInt(v, 10))
-    .option('--repo <name>', 'repository name to scope the Axon lookup to')
+    .option('--repo <name>', 'repository name to scope the source lookup to')
     .option('--json', 'output JSON')
     .action(
       async (
@@ -175,7 +175,7 @@ export function buildProgram(): Command {
 
   program
     .command('index')
-    .description('Build the queue map for a project (run the stitcher against its Axon host)')
+    .description('Build the queue map for a project (run the stitcher against its source-intelligence host)')
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--name <name>', 'registered project name (resolves via the registry)')
     .option('--project <name>', 'project name')
@@ -242,7 +242,7 @@ export function buildProgram(): Command {
   program
     .command('changes <base> [compare]')
     .description(
-      'Show what changed between two git refs and which flows are affected (Axon change-impact)',
+      'Show what changed between two git refs and which flows are affected (source change-impact)',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--json', 'output JSON')
@@ -343,7 +343,7 @@ export function buildProgram(): Command {
 
   program
     .command('repos')
-    .description('List configured repositories and their Axon host health')
+    .description('List configured repositories and their source-intelligence host health')
     .option('-c, --config <path>', 'path to horus.config.ts')
     .action(async (opts: { config?: string }) => {
       process.exitCode = await runRepos({ config: opts.config });
