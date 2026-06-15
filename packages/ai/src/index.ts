@@ -52,3 +52,9 @@ export {
   lookupLocalProvider,
   DEFAULT_LOCAL_PROVIDER_REGISTRY,
 } from './local-providers.js';
+
+export {
+  DETECTION_FIXTURES_READY,
+  DETECTION_FIXTURES_INSTALLED,
+  DETECTION_FIXTURES_UNAVAILABLE,
+} from './detection-fixtures.js';
