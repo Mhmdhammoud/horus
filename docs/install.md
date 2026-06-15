@@ -37,6 +37,12 @@ horus 0.1.0
 - curl
 - macOS 12+ or Linux (x86_64 or arm64)
 
+## Next steps
+
+- **Runtime connectors** (Elasticsearch, MongoDB, Grafana) — see [connector-setup.md](./connector-setup.md)
+- **Local AI providers** (Codex, Claude CLI, Gemini, etc.) — see [provider-setup.md](./provider-setup.md)
+- **Source intelligence** (code graph, ownership) — see [connector-setup.md](./connector-setup.md#source-intelligence)
+
 ## Uninstall
 
 ```sh
