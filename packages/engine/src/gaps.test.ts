@@ -209,3 +209,97 @@ describe('detectMissingEvidence', () => {
     expect(result.confidenceCeiling).toBeGreaterThanOrEqual(0.3);
   });
 });
+
+// ---------------------------------------------------------------------------
+// HOR-58 — Evidence gap regression tests
+//
+// Explicitly covers the three connector × evidence states and guards against
+// stale implementation-ticket references appearing in any gap text field.
+// ---------------------------------------------------------------------------
+
+describe('HOR-58 evidence gap regression', () => {
+  // ── State 1: no connector configured → gap present ──────────────────────
+
+  it('logs: no connector configured → gap present and references connector setup', () => {
+    const report = makeMinimalReport({ evidence: [] });
+    const result = detectMissingEvidence(report, { elasticsearch: false });
+    const gap = result.gaps.find((g) => g.dimension === 'logs');
+    expect(gap).toBeDefined();
+    expect(gap?.why).toContain('connector');
+  });
+
+  it('metrics: no connector configured → gap present and references connector setup', () => {
+    const report = makeMinimalReport({ evidence: [] });
+    const result = detectMissingEvidence(report, { grafana: false });
+    const gap = result.gaps.find((g) => g.dimension === 'metrics');
+    expect(gap).toBeDefined();
+    expect(gap?.why).toContain('connector');
+  });
+
+  // ── State 2: connector configured but no evidence returned → gap present ─
+
+  it('logs: connector configured, collection failed → gap present', () => {
+    const report = makeMinimalReport({ evidence: [] });
+    const result = detectMissingEvidence(report, { elasticsearch: true, logsCollected: false });
+    const gap = result.gaps.find((g) => g.dimension === 'logs');
+    expect(gap).toBeDefined();
+    expect(gap?.why).toContain('failed');
+  });
+
+  it('metrics: connector configured, collection failed → gap present', () => {
+    const report = makeMinimalReport({ evidence: [] });
+    const result = detectMissingEvidence(report, { grafana: true, metricsCollected: false });
+    const gap = result.gaps.find((g) => g.dimension === 'metrics');
+    expect(gap).toBeDefined();
+  });
+
+  // ── State 3: connector configured and evidence returned → no gap ─────────
+
+  it('logs: connector configured + log evidence in report → no logs gap', () => {
+    const report = makeMinimalReport({ evidence: [makeEvidence('log')] });
+    const result = detectMissingEvidence(report, { elasticsearch: true, logsCollected: true });
+    const gap = result.gaps.find((g) => g.dimension === 'logs');
+    expect(gap).toBeUndefined();
+  });
+
+  it('metrics: connector configured + metric evidence in report → no metrics gap', () => {
+    const report = makeMinimalReport({ evidence: [makeEvidence('metric')] });
+    const result = detectMissingEvidence(report, { grafana: true, metricsCollected: true });
+    const gap = result.gaps.find((g) => g.dimension === 'metrics');
+    expect(gap).toBeUndefined();
+  });
+
+  // Negative-evidence case: collection ran + found nothing is NOT a gap.
+  it('metrics: connector configured, collection succeeded but empty → no metrics gap (negative evidence)', () => {
+    const report = makeMinimalReport({ evidence: [] });
+    const result = detectMissingEvidence(report, { grafana: true, metricsCollected: true });
+    const gap = result.gaps.find((g) => g.dimension === 'metrics');
+    expect(gap).toBeUndefined();
+  });
+
+  // ── No stale ticket-name references anywhere in gap text ─────────────────
+
+  it('gap text never references implementation ticket IDs (HOR-xx) in any connector state', () => {
+    const stalePattern = /HOR-\d+/;
+
+    const states = [
+      { elasticsearch: false, grafana: false },
+      { elasticsearch: true, logsCollected: false, grafana: true, metricsCollected: false },
+      { elasticsearch: true, logsCollected: true, grafana: true, metricsCollected: true },
+      { elasticsearch: true, logsCompatibilityError: "Field 'time' not found" },
+    ];
+
+    const emptyReport = makeMinimalReport({ evidence: [] });
+
+    for (const connectors of states) {
+      const result = detectMissingEvidence(emptyReport, connectors);
+      for (const gap of result.gaps) {
+        expect(gap.why, `gap "${gap.dimension}" why field contains a ticket ref`).not.toMatch(stalePattern);
+        expect(gap.nextSource, `gap "${gap.dimension}" nextSource field contains a ticket ref`).not.toMatch(stalePattern);
+      }
+      for (const blind of result.blindSpots) {
+        expect(blind, `blindSpot contains a ticket ref`).not.toMatch(stalePattern);
+      }
+    }
+  });
+});
