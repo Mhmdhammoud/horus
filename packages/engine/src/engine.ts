@@ -169,7 +169,7 @@ export function queueFindingConfidence(opts: {
 }
 
 /** Does `since` look like a range or a concrete ref worth diffing? */
-function looksDiffable(since: string): boolean {
+export function looksDiffable(since: string): boolean {
   const s = since.trim();
   if (s.length === 0) return false;
   if (s.includes('..')) return true;

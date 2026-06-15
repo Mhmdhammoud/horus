@@ -106,4 +106,23 @@ describe('CLI program structure', () => {
     const longs = stop.options.map((o) => o.long);
     expect(longs).toContain('--all');
   });
+
+  it('investigate command has --since option (HOR-86)', () => {
+    const investigate = buildProgram().commands.find((c) => c.name() === 'investigate')!;
+    const longs = investigate.options.map((o) => o.long);
+    expect(longs).toContain('--since');
+  });
+
+  it('investigate --since accepts a value argument (not a boolean flag)', () => {
+    const investigate = buildProgram().commands.find((c) => c.name() === 'investigate')!;
+    const sinceOpt = investigate.options.find((o) => o.long === '--since');
+    // A value option has required=true (mandatory arg) or optional=true (optional arg)
+    expect(sinceOpt?.required || sinceOpt?.optional).toBe(true);
+  });
+
+  it('doctor command has --config option (HOR-85)', () => {
+    const doctor = buildProgram().commands.find((c) => c.name() === 'doctor')!;
+    const longs = doctor.options.map((o) => o.long);
+    expect(longs).toContain('--config');
+  });
 });

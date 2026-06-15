@@ -1,5 +1,110 @@
 import { describe, it, expect } from 'vitest';
-import { queueFindingConfidence } from './engine.js';
+import { queueFindingConfidence, logWindowFrom, looksDiffable } from './engine.js';
+
+// ---------------------------------------------------------------------------
+// logWindowFrom — duration parsing for --since (HOR-86)
+// ---------------------------------------------------------------------------
+
+describe('logWindowFrom', () => {
+  it('parses hours: 2h subtracts 2 hours from now', () => {
+    const before = Date.now();
+    const result = new Date(logWindowFrom('2h')).getTime();
+    const after = Date.now();
+    const expected = before - 2 * 3_600_000;
+    expect(result).toBeGreaterThanOrEqual(expected - 100);
+    expect(result).toBeLessThanOrEqual(after - 2 * 3_600_000 + 100);
+  });
+
+  it('parses days: 7d subtracts 7 days from now', () => {
+    const before = Date.now();
+    const result = new Date(logWindowFrom('7d')).getTime();
+    expect(result).toBeGreaterThanOrEqual(before - 7 * 86_400_000 - 100);
+    expect(result).toBeLessThanOrEqual(Date.now() - 7 * 86_400_000 + 100);
+  });
+
+  it('parses minutes: 30m subtracts 30 minutes from now', () => {
+    const before = Date.now();
+    const result = new Date(logWindowFrom('30m')).getTime();
+    expect(result).toBeGreaterThanOrEqual(before - 30 * 60_000 - 100);
+  });
+
+  it('parses seconds: 90s subtracts 90 seconds from now', () => {
+    const before = Date.now();
+    const result = new Date(logWindowFrom('90s')).getTime();
+    expect(result).toBeGreaterThanOrEqual(before - 90_000 - 100);
+  });
+
+  it('returns an ISO-8601 string', () => {
+    const result = logWindowFrom('24h');
+    expect(result).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+  });
+
+  it('defaults to 7 days ago when since is undefined', () => {
+    const before = Date.now();
+    const result = new Date(logWindowFrom(undefined)).getTime();
+    expect(result).toBeGreaterThanOrEqual(before - 7 * 86_400_000 - 100);
+    expect(result).toBeLessThanOrEqual(Date.now() - 7 * 86_400_000 + 100);
+  });
+
+  it('defaults to 7 days ago for a non-duration string (falls through to default)', () => {
+    const before = Date.now();
+    // A ref like HEAD~5 is not a duration — should fall back to 7d default
+    const result = new Date(logWindowFrom('HEAD~5')).getTime();
+    expect(result).toBeGreaterThanOrEqual(before - 7 * 86_400_000 - 100);
+    expect(result).toBeLessThanOrEqual(Date.now() - 7 * 86_400_000 + 100);
+  });
+
+  it('defaults to 7 days ago for an ISO date string', () => {
+    const before = Date.now();
+    const result = new Date(logWindowFrom('2026-01-01T00:00:00Z')).getTime();
+    expect(result).toBeGreaterThanOrEqual(before - 7 * 86_400_000 - 100);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// looksDiffable — ref/range detection for --since (HOR-86)
+// ---------------------------------------------------------------------------
+
+describe('looksDiffable', () => {
+  it('returns true for a range notation (..)', () => {
+    expect(looksDiffable('HEAD~5..HEAD')).toBe(true);
+  });
+
+  it('returns true for a commit sha', () => {
+    expect(looksDiffable('abc1234')).toBe(true);
+  });
+
+  it('returns false for HEAD~N notation (~ not in allowed char set)', () => {
+    // Use HEAD~N..HEAD range notation or a bare sha instead
+    expect(looksDiffable('HEAD~3')).toBe(false);
+  });
+
+  it('returns true for a tag name', () => {
+    expect(looksDiffable('v1.2.3')).toBe(true);
+  });
+
+  it('returns true for a branch name', () => {
+    expect(looksDiffable('main')).toBe(true);
+  });
+
+  it('returns true for duration strings (alphanumeric — tried as ref, fails gracefully)', () => {
+    // Duration strings match the alphanumeric char set; detectChanges catches the failure.
+    expect(looksDiffable('2h')).toBe(true);
+    expect(looksDiffable('7d')).toBe(true);
+  });
+
+  it('returns false for an empty string', () => {
+    expect(looksDiffable('')).toBe(false);
+  });
+
+  it('returns false for a whitespace-only string', () => {
+    expect(looksDiffable('   ')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// queueFindingConfidence
+// ---------------------------------------------------------------------------
 
 describe('queueFindingConfidence', () => {
   it('returns 0.65 when only starvation signals are present', () => {
