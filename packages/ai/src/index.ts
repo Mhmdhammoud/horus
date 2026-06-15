@@ -23,3 +23,11 @@ export type {
 } from './contract.js';
 
 export { validateNarrative, renderNarrative } from './contract.js';
+
+export {
+  FIXTURE_INPUT,
+  FIXTURE_VALID_OUTPUT,
+  FIXTURE_UNKNOWN_CITATION,
+  FIXTURE_CONFIDENCE_INFLATION,
+  FIXTURE_HALLUCINATED_SERVICE,
+} from './fixtures.js';
