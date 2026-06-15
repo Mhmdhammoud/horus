@@ -1,0 +1,164 @@
+name: Release
+
+# Triggers on every push to master. Reads the version from apps/horus/package.json
+# and skips if a GitHub Release for that version already exists — making each step
+# idempotent. To release a new version: bump the version in apps/horus/package.json
+# and packages/core/src/version.ts, commit, and push to master.
+#
+# Required secrets:
+#   npm_token          — npm publish token (access: public)
+#   HOMEBREW_TAP_TOKEN — GitHub PAT with write access to meritt-dev/homebrew-tap
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org/
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(node -e "const p=JSON.parse(require('fs').readFileSync('apps/horus/package.json','utf8')); process.stdout.write(p.version)")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check if release already exists
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" &>/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Release $RELEASE_TAG already published — skipping."
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Typecheck
+        if: steps.check.outputs.exists == 'false'
+        run: pnpm typecheck
+
+      - name: Test
+        if: steps.check.outputs.exists == 'false'
+        run: pnpm test
+
+      - name: Build CLI
+        if: steps.check.outputs.exists == 'false'
+        run: pnpm --filter ./apps/horus build
+
+      - name: Smoke test
+        if: steps.check.outputs.exists == 'false'
+        run: bash ./scripts/smoke-test.sh apps/horus/dist/index.cjs
+
+      - name: Build platform archives (Homebrew)
+        if: steps.check.outputs.exists == 'false'
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: bash ./scripts/homebrew/build-archives.sh "$RELEASE_VERSION" apps/horus/dist/index.cjs
+
+      - name: Prepare install.sh artifact
+        if: steps.check.outputs.exists == 'false'
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          cp apps/horus/dist/index.cjs "apps/horus/dist/horus-${RELEASE_TAG}"
+          chmod +x "apps/horus/dist/horus-${RELEASE_TAG}"
+          sha256sum "apps/horus/dist/horus-${RELEASE_TAG}" | awk '{print $1}' \
+            > "apps/horus/dist/horus-${RELEASE_TAG}.sha256"
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          REPO="meritt-dev/horus"
+
+          gh release create "$RELEASE_TAG" \
+            --title "Horus ${RELEASE_TAG}" \
+            --notes "## Install
+
+\`\`\`bash
+curl -fsSL https://horus.sh/install.sh | bash
+\`\`\`
+
+## Requirements
+
+- Node.js 22+ (self-contained executable)
+- Python 3.11+ with uv or pip (optional — source-intelligence features)
+
+## Also available via
+
+\`\`\`bash
+npm install -g @merittdev/horus
+brew install meritt-dev/tap/horus
+\`\`\`
+
+## Direct download (Linux / macOS)
+
+\`\`\`bash
+curl -fsSL https://github.com/${REPO}/releases/download/${RELEASE_TAG}/horus-${RELEASE_TAG} -o horus
+chmod +x horus && sudo mv horus /usr/local/bin/horus
+horus --version
+\`\`\`" \
+            "apps/horus/dist/horus-${RELEASE_TAG}" \
+            "apps/horus/dist/horus-${RELEASE_TAG}.sha256" \
+            ".homebrew-archives/horus-${RELEASE_TAG}-darwin-arm64.tar.gz" \
+            ".homebrew-archives/horus-${RELEASE_TAG}-darwin-arm64.tar.gz.sha256" \
+            ".homebrew-archives/horus-${RELEASE_TAG}-darwin-x86_64.tar.gz" \
+            ".homebrew-archives/horus-${RELEASE_TAG}-darwin-x86_64.tar.gz.sha256" \
+            ".homebrew-archives/horus-${RELEASE_TAG}-linux-arm64.tar.gz" \
+            ".homebrew-archives/horus-${RELEASE_TAG}-linux-arm64.tar.gz.sha256" \
+            ".homebrew-archives/horus-${RELEASE_TAG}-linux-x86_64.tar.gz" \
+            ".homebrew-archives/horus-${RELEASE_TAG}-linux-x86_64.tar.gz.sha256"
+
+      - name: Publish to npm
+        if: steps.check.outputs.exists == 'false'
+        working-directory: apps/horus
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.npm_token }}
+
+      - name: Update Homebrew formula
+        if: steps.check.outputs.exists == 'false'
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: bash ./scripts/homebrew/update-formula.sh "$RELEASE_VERSION"
+
+      - name: Push Homebrew formula to tap
+        if: steps.check.outputs.exists == 'false'
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git clone \
+            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/meritt-dev/homebrew-tap.git" \
+            /tmp/homebrew-tap
+          cp homebrew-tap/Formula/horus.rb /tmp/homebrew-tap/Formula/horus.rb
+          cd /tmp/homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/horus.rb
+          git diff --cached --quiet \
+            || git commit -m "chore: horus ${RELEASE_TAG}"
+          git push origin master
