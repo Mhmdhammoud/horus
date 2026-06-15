@@ -1,0 +1,231 @@
+/**
+ * HOR-91 — Mocked tests for ElasticsearchLogsProvider.queryEvidence().
+ * No live Elasticsearch instance required.
+ */
+
+import { describe, it, expect } from 'vitest';
+import { ElasticsearchClient } from './client.js';
+import { ElasticsearchLogsProvider } from './provider.js';
+import { redactSensitiveString } from './analyze.js';
+
+// ---------------------------------------------------------------------------
+// Mock client factory
+// ---------------------------------------------------------------------------
+
+function makeClient(...responses: unknown[]): ElasticsearchClient {
+  const client = new ElasticsearchClient({ baseUrl: 'http://mock' });
+  let idx = 0;
+  client.search = async () => responses[idx++] ?? {};
+  return client;
+}
+
+function makeProvider(client: ElasticsearchClient): ElasticsearchLogsProvider {
+  return new ElasticsearchLogsProvider(client, { indexPattern: 'test-*' });
+}
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const ANALYSIS_RESPONSE = {
+  hits: { total: { value: 12 } },
+  aggregations: {
+    by_sig: {
+      buckets: [
+        {
+          key: 'AUTH001',
+          doc_count: 10,
+          first_seen: { value_as_string: '2026-06-13T10:00:00Z' },
+          last_seen: { value_as_string: '2026-06-13T11:00:00Z' },
+          services: { buckets: [{ key: 'my-api' }] },
+          sample: {
+            hits: { hits: [{ _source: { message: 'Token expired' } }] },
+          },
+        },
+      ],
+    },
+    affected_services: { buckets: [{ key: 'my-api' }] },
+  },
+};
+
+const EMPTY_RESPONSE = {
+  hits: { total: { value: 0 } },
+  aggregations: {
+    by_sig: { buckets: [] },
+    affected_services: { buckets: [] },
+  },
+};
+
+const SENSITIVE_RESPONSE = {
+  hits: { total: { value: 1 } },
+  aggregations: {
+    by_sig: {
+      buckets: [
+        {
+          key: 'LEAK001',
+          doc_count: 1,
+          first_seen: { value_as_string: '2026-06-13T10:00:00Z' },
+          last_seen: { value_as_string: '2026-06-13T10:00:01Z' },
+          services: { buckets: [] },
+          sample: {
+            hits: {
+              hits: [
+                {
+                  _source: {
+                    message: 'Request failed: Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.secret',
+                  },
+                },
+              ],
+            },
+          },
+        },
+      ],
+    },
+    affected_services: { buckets: [] },
+  },
+};
+
+// ---------------------------------------------------------------------------
+// queryEvidence — success
+// ---------------------------------------------------------------------------
+
+describe('queryEvidence — success', () => {
+  it('returns Evidence[] from a mocked analysis response', async () => {
+    // analyzeErrors makes 2 calls (current + baseline); provide both
+    const client = makeClient(ANALYSIS_RESPONSE, EMPTY_RESPONSE);
+    const provider = makeProvider(client);
+    const evidence = await provider.queryEvidence({ service: 'my-api' }, '2026-06-13T12:00:00Z');
+    expect(evidence.length).toBeGreaterThan(0);
+    expect(evidence[0]!.source).toBe('logs');
+    expect(evidence[0]!.kind).toBe('log');
+  });
+
+  it('includes the signature key in the evidence title', async () => {
+    const client = makeClient(ANALYSIS_RESPONSE, EMPTY_RESPONSE);
+    const provider = makeProvider(client);
+    const evidence = await provider.queryEvidence({ service: 'my-api' });
+    const titles = evidence.map((e) => e.title);
+    expect(titles.some((t) => t.includes('AUTH001'))).toBe(true);
+  });
+
+  it('sets provenance.collectedAt to the provided timestamp', async () => {
+    const client = makeClient(ANALYSIS_RESPONSE, EMPTY_RESPONSE);
+    const provider = makeProvider(client);
+    const evidence = await provider.queryEvidence({}, '2026-06-13T09:00:00Z');
+    expect(evidence[0]!.provenance.collectedAt).toBe('2026-06-13T09:00:00Z');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// queryEvidence — no results
+// ---------------------------------------------------------------------------
+
+describe('queryEvidence — no results', () => {
+  it('returns empty array when no errors are found', async () => {
+    const client = makeClient(EMPTY_RESPONSE, EMPTY_RESPONSE);
+    const provider = makeProvider(client);
+    const evidence = await provider.queryEvidence({ service: 'quiet-api' });
+    expect(evidence).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// queryEvidence — connection failure
+// ---------------------------------------------------------------------------
+
+describe('queryEvidence — connection failure', () => {
+  it('returns empty array when the client throws', async () => {
+    const client = new ElasticsearchClient({ baseUrl: 'http://mock' });
+    client.search = async () => { throw new Error('ECONNREFUSED'); };
+    const provider = makeProvider(client);
+    const evidence = await provider.queryEvidence({ service: 'my-api' });
+    expect(evidence).toEqual([]);
+  });
+
+  it('does not throw to the caller on network error', async () => {
+    const client = new ElasticsearchClient({ baseUrl: 'http://mock' });
+    client.search = async () => { throw new Error('timeout'); };
+    const provider = makeProvider(client);
+    await expect(provider.queryEvidence({})).resolves.toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// queryEvidence — malformed response
+// ---------------------------------------------------------------------------
+
+describe('queryEvidence — malformed response', () => {
+  it('returns empty array for a completely empty object', async () => {
+    const client = makeClient({});
+    const provider = makeProvider(client);
+    const evidence = await provider.queryEvidence({});
+    expect(evidence).toEqual([]);
+  });
+
+  it('returns empty array when aggregations block is null', async () => {
+    const client = makeClient({ hits: { total: { value: 0 } }, aggregations: null });
+    const provider = makeProvider(client);
+    const evidence = await provider.queryEvidence({});
+    expect(evidence).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// queryEvidence — redaction
+// ---------------------------------------------------------------------------
+
+describe('queryEvidence — redaction', () => {
+  it('redacts Bearer tokens from sampleMessage in payload', async () => {
+    const client = makeClient(SENSITIVE_RESPONSE, EMPTY_RESPONSE);
+    const provider = makeProvider(client);
+    const evidence = await provider.queryEvidence({}, '2026-06-13T10:00:00Z');
+    const sigEv = evidence.find((e) => (e.payload as Record<string, unknown>)?.['key'] === 'LEAK001');
+    expect(sigEv).toBeDefined();
+    const msg = (sigEv!.payload as Record<string, unknown>)['sampleMessage'] as string;
+    expect(msg).not.toContain('eyJhbGciOiJIUzI1NiJ9');
+    expect(msg).toContain('[REDACTED]');
+  });
+
+  it('does not redact the evidence title (only payload)', async () => {
+    const client = makeClient(SENSITIVE_RESPONSE, EMPTY_RESPONSE);
+    const provider = makeProvider(client);
+    const evidence = await provider.queryEvidence({});
+    const sigEv = evidence.find((e) => (e.payload as Record<string, unknown>)?.['key'] === 'LEAK001');
+    expect(sigEv!.title).toContain('LEAK001');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// redactSensitiveString — unit tests
+// ---------------------------------------------------------------------------
+
+describe('redactSensitiveString', () => {
+  it('redacts Bearer token', () => {
+    const result = redactSensitiveString('Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.secret');
+    expect(result).toContain('[REDACTED]');
+    expect(result).not.toContain('eyJhbGciOiJIUzI1NiJ9');
+  });
+
+  it('redacts password= key-value pairs', () => {
+    const result = redactSensitiveString('login failed: password=SuperSecret123');
+    expect(result).toContain('[REDACTED]');
+    expect(result).not.toContain('SuperSecret123');
+  });
+
+  it('redacts JSON "token" field', () => {
+    const result = redactSensitiveString('payload: {"token": "abc123xyz"}');
+    expect(result).toContain('[REDACTED]');
+    expect(result).not.toContain('abc123xyz');
+  });
+
+  it('does not modify strings with no sensitive content', () => {
+    const clean = 'User login failed: invalid email format';
+    expect(redactSensitiveString(clean)).toBe(clean);
+  });
+
+  it('redacts 16-digit card numbers', () => {
+    const result = redactSensitiveString('charge failed for card 4111 1111 1111 1111');
+    expect(result).toContain('[REDACTED-CARD]');
+    expect(result).not.toContain('4111');
+  });
+});

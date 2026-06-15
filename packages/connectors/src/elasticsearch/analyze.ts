@@ -211,6 +211,39 @@ export function annotateAgainstBaseline(
   return current;
 }
 
+// ── Sensitive-field redaction (HOR-91) ───────────────────────────────────────
+
+const REDACTION_PATTERNS: [RegExp, string][] = [
+  // Authorization headers (Bearer / Basic / API-key tokens)
+  [/(authorization\s*[=:]\s*)(bearer\s+)[^\s,"')]+/gi, '$1$2[REDACTED]'],
+  [/(authorization\s*[=:]\s*)(basic\s+)[^\s,"')]+/gi, '$1$2[REDACTED]'],
+  // Standalone password/token/secret keys in KV strings, query params, JSON
+  [/("?(?:password|passwd|secret|token|api[_-]key|apikey|x-api-key)"?\s*[=:]\s*)"?[^"',\s)>]+/gi, '$1[REDACTED]'],
+  // 16-digit card-number-like sequences (PCIDSS)
+  [/\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b/g, '[REDACTED-CARD]'],
+];
+
+/**
+ * Scrub common sensitive patterns (tokens, passwords, card numbers) from a
+ * single string. Applied to sampleMessage before evidence reaches reports or
+ * AI input. Purposely conservative — only known-bad patterns are removed.
+ */
+export function redactSensitiveString(s: string): string {
+  let out = s;
+  for (const [pattern, replacement] of REDACTION_PATTERNS) {
+    out = out.replace(pattern, replacement);
+  }
+  return out;
+}
+
+/**
+ * Return a copy of an ErrorSignature with sampleMessage redacted.
+ */
+export function redactErrorSignature(sig: ErrorSignature): ErrorSignature {
+  if (sig.sampleMessage === undefined) return sig;
+  return { ...sig, sampleMessage: redactSensitiveString(sig.sampleMessage) };
+}
+
 /**
  * Convert a LogAnalysis into Evidence records (one per signature + an
  * affected-services summary). Synthesized signals, never raw log dumps.

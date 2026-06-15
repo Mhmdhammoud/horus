@@ -204,6 +204,9 @@ const fakeLogs: LogsProvider = {
   toEvidence(_records) {
     return [];
   },
+  async queryEvidence(_q, _collectedAt?) {
+    return [];
+  },
 };
 
 // ---------------------------------------------------------------------------

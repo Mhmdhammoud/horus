@@ -22,10 +22,13 @@ import {
   logsToEvidence,
 } from './normalize.js';
 import {
+  type ErrorSignature,
   type LogAnalysis,
   buildErrorAnalysisBody,
   parseErrorAnalysis,
   annotateAgainstBaseline,
+  analysisToEvidence,
+  redactErrorSignature,
 } from './analyze.js';
 import {
   type CompatibilityOptions,
@@ -57,6 +60,12 @@ export interface LogsProvider extends Provider {
    */
   checkCompatibility(opts?: CompatibilityOptions): Promise<CompatibilityReport>;
   toEvidence(records: LogRecord[]): Evidence[];
+  /**
+   * Bounded evidence query: run analyzeErrors, convert to Evidence[], redact
+   * sensitive fields from payloads, and degrade gracefully on failure.
+   * Preferred entry point for investigation evidence collection (HOR-91).
+   */
+  queryEvidence(q: LogQuery, collectedAt?: string): Promise<Evidence[]>;
 }
 
 export class ElasticsearchLogsProvider implements LogsProvider {
@@ -162,6 +171,23 @@ export class ElasticsearchLogsProvider implements LogsProvider {
 
   toEvidence(records: LogRecord[]): Evidence[] {
     return logsToEvidence(records, 'searchLogs', new Date().toISOString());
+  }
+
+  async queryEvidence(q: LogQuery, collectedAt?: string): Promise<Evidence[]> {
+    try {
+      const analysis = await this.analyzeErrors(q);
+      const at = collectedAt ?? new Date().toISOString();
+      const label = [q.service, q.from].filter(Boolean).join(' from ') || 'investigate';
+      const raw = analysisToEvidence(analysis, label, at);
+      return raw.map((ev) => {
+        const p = ev.payload as Record<string, unknown> | undefined;
+        // Only ErrorSignature payloads have a 'key' field — apply redaction to those.
+        if (p === undefined || typeof p['key'] !== 'string') return ev;
+        return { ...ev, payload: redactErrorSignature(p as unknown as ErrorSignature) };
+      });
+    } catch {
+      return [];
+    }
   }
 
   async health(): Promise<HealthStatus> {
