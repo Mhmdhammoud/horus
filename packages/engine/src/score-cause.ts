@@ -247,21 +247,26 @@ function factorRuntimeSignals(items: Evidence[], now: string): ScoreExplanation 
 
   const newestTs = timestamps[0];
   if (newestTs !== undefined) {
-    const ageMs = nowMs - newestTs;
-    if (ageMs <= 3_600_000) {           // ≤ 1 hour
-      recencyDelta = 0.05;
-      recencyReason = 'Evidence from within the last hour';
-    } else if (ageMs <= 86_400_000) {   // ≤ 24 hours
-      recencyDelta = 0.02;
-      recencyReason = 'Evidence from within the last 24 hours';
-    } else if (ageMs <= 259_200_000) {  // 24 h – 3 days: neutral
-      // no contribution either way
-    } else if (ageMs <= 604_800_000) {  // 3 – 7 days: stale
-      recencyDelta = -0.02;
-      recencyReason = 'Most recent evidence is 3–7 days old — may predate this incident';
-    } else {                            // > 7 days: very stale
-      recencyDelta = -0.05;
-      recencyReason = 'Most recent evidence is over 7 days old — likely predates this incident';
+    const rawAgeMs = nowMs - newestTs;
+    // Future timestamps: within 5 min tolerance → treat as "just now";
+    // further in the future → skip recency (cannot trust the timestamp).
+    const ageMs = rawAgeMs < 0 ? (rawAgeMs >= -300_000 ? 0 : null) : rawAgeMs;
+    if (ageMs !== null) {
+      if (ageMs <= 3_600_000) {           // ≤ 1 hour
+        recencyDelta = 0.05;
+        recencyReason = 'Evidence from within the last hour';
+      } else if (ageMs <= 86_400_000) {   // ≤ 24 hours
+        recencyDelta = 0.02;
+        recencyReason = 'Evidence from within the last 24 hours';
+      } else if (ageMs <= 259_200_000) {  // 24 h – 3 days: neutral
+        // no contribution either way
+      } else if (ageMs <= 604_800_000) {  // 3 – 7 days: stale
+        recencyDelta = -0.02;
+        recencyReason = 'Most recent evidence is 3–7 days old — may predate this incident';
+      } else {                            // > 7 days: very stale
+        recencyDelta = -0.05;
+        recencyReason = 'Most recent evidence is over 7 days old — likely predates this incident';
+      }
     }
   }
 

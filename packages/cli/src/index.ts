@@ -460,14 +460,18 @@ Examples:
     .description('Re-render a saved investigation from the audit store (no re-query)')
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--format <fmt>', 'text | markdown | json', 'text')
-    .action(async (id: string, opts: { config?: string; format?: string }) => {
-      process.exitCode = await runReplay(id, { config: opts.config, format: opts.format });
+    .option('--ai', 'enrich report with AI narrative (requires ANTHROPIC_API_KEY; falls back to deterministic on failure)')
+    .option('--ai-model <model>', 'AI model for --ai (default: claude-opus-4-8)')
+    .action(async (id: string, opts: { config?: string; format?: string; ai?: boolean; aiModel?: string }) => {
+      process.exitCode = await runReplay(id, { config: opts.config, format: opts.format, ai: opts.ai, aiModel: opts.aiModel });
     })
     .addHelpText('after', `
 Examples:
   horus replay <id>
   horus replay <id> --format markdown
   horus replay <id> --format json
+  horus replay <id> --ai
+  horus replay <id> --ai --ai-model claude-sonnet-4-6
 
   (Use 'horus investigations' to list saved investigation ids.)
 `);
@@ -478,14 +482,18 @@ Examples:
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--output <path>', 'write Markdown to a file instead of printing to stdout')
     .option('--force', 'overwrite the output file if it already exists')
-    .action(async (id: string, opts: { config?: string; output?: string; force?: boolean }) => {
-      process.exitCode = await runPostmortem(id, { config: opts.config, output: opts.output, force: opts.force });
+    .option('--ai-summary', 'append an AI-generated summary section (requires ANTHROPIC_API_KEY; falls back gracefully)')
+    .option('--ai-model <model>', 'AI model for --ai-summary (default: claude-opus-4-8)')
+    .action(async (id: string, opts: { config?: string; output?: string; force?: boolean; aiSummary?: boolean; aiModel?: string }) => {
+      process.exitCode = await runPostmortem(id, { config: opts.config, output: opts.output, force: opts.force, aiSummary: opts.aiSummary, aiModel: opts.aiModel });
     })
     .addHelpText('after', `
 Examples:
   horus postmortem <id>
   horus postmortem <id> --output ./postmortem.md
   horus postmortem <id> --output ./postmortem.md --force
+  horus postmortem <id> --ai-summary
+  horus postmortem <id> --output ./postmortem.md --ai-summary --ai-model claude-sonnet-4-6
 
   (Use 'horus investigations' to list saved investigation ids.)
 `);
