@@ -54,7 +54,13 @@ export function buildProgram(): Command {
     .option('--json', 'output machine-readable JSON instead of human-readable text')
     .action(async (opts: { config?: string; json?: boolean }) => {
       process.exitCode = await runDoctor({ config: opts.config, json: opts.json });
-    });
+    })
+    .addHelpText('after', `
+Examples:
+  horus doctor
+  horus doctor --json
+  horus doctor --config ./horus.config.js
+`);
 
   const providers = program
     .command('providers')
@@ -86,7 +92,13 @@ export function buildProgram(): Command {
       async (opts: { name?: string; env?: string; axon?: string; path?: string }) => {
         process.exitCode = await runInit(opts);
       },
-    );
+    )
+    .addHelpText('after', `
+Examples:
+  horus init
+  horus init --name atlas-payments
+  horus init --name atlas-payments --env staging
+`);
 
   program
     .command('projects')
@@ -286,7 +298,14 @@ export function buildProgram(): Command {
           aiModel: opts.aiModel,
         });
       },
-    );
+    )
+    .addHelpText('after', `
+Examples:
+  horus investigate "checkout latency spike"
+  horus investigate --project atlas-payments --env production "checkout timeout"
+  horus investigate --name atlas-payments "queue backlog"
+  horus investigate --ai "payment failures"
+`);
 
   program
     .command('changes <base> [compare]')
@@ -423,7 +442,12 @@ export function buildProgram(): Command {
     .option('-n, --limit <n>', 'max rows', (v) => parseInt(v, 10))
     .action(async (opts: { config?: string; limit?: number }) => {
       process.exitCode = await runInvestigations({ config: opts.config, limit: opts.limit });
-    });
+    })
+    .addHelpText('after', `
+Examples:
+  horus investigations
+  horus investigations -n 20
+`);
 
   program
     .command('replay <id>')
@@ -432,7 +456,15 @@ export function buildProgram(): Command {
     .option('--format <fmt>', 'text | markdown | json', 'text')
     .action(async (id: string, opts: { config?: string; format?: string }) => {
       process.exitCode = await runReplay(id, { config: opts.config, format: opts.format });
-    });
+    })
+    .addHelpText('after', `
+Examples:
+  horus replay <id>
+  horus replay <id> --format markdown
+  horus replay <id> --format json
+
+  (Use 'horus investigations' to list saved investigation ids.)
+`);
 
   program
     .command('postmortem <id>')
@@ -442,7 +474,15 @@ export function buildProgram(): Command {
     .option('--force', 'overwrite the output file if it already exists')
     .action(async (id: string, opts: { config?: string; output?: string; force?: boolean }) => {
       process.exitCode = await runPostmortem(id, { config: opts.config, output: opts.output, force: opts.force });
-    });
+    })
+    .addHelpText('after', `
+Examples:
+  horus postmortem <id>
+  horus postmortem <id> --output ./postmortem.md
+  horus postmortem <id> --output ./postmortem.md --force
+
+  (Use 'horus investigations' to list saved investigation ids.)
+`);
 
   program
     .command('owner <query>')

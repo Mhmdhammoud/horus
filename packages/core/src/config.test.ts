@@ -667,3 +667,147 @@ describe('parseConfig — actionable validation errors (HOR-102)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// HOR-131 — config path precedence
+//
+// Resolution order (highest → lowest priority):
+//   1. explicit configPath argument (--config CLI flag)
+//   2. opts.name  →  global project registry (~/.horus/registry.json)
+//   3. .horus/config.json  discovered by walking up from cwd
+//   4. HORUS_CONFIG environment variable
+//   5. config/horus.config.js  relative to cwd
+//   6. config/horus.config.ts  relative to cwd (source-mode fallback)
+// ---------------------------------------------------------------------------
+
+const MARKER_JS = (marker: string) =>
+  `export default { database: { url: "postgresql://${marker}/db" }, projects: [] };\n`;
+
+describe('loadConfig — path precedence (HOR-131)', () => {
+  let tmpDir: string;
+  const ORIG = { ...process.env };
+
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `horus-prec-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tmpDir, { recursive: true });
+    delete process.env['HORUS_CONFIG'];
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    for (const key of ['HORUS_CONFIG']) {
+      if (key in ORIG) process.env[key] = ORIG[key];
+      else delete process.env[key];
+    }
+  });
+
+  // ── 1. Explicit path ───────────────────────────────────────────────────────
+
+  it('(1) explicit configPath is used and bypasses all discovery', async () => {
+    const explicit = join(tmpDir, 'explicit.js');
+    writeFileSync(explicit, MARKER_JS('explicit-host'));
+    // Also put a .horus/config.json and HORUS_CONFIG to confirm they are ignored
+    mkdirSync(join(tmpDir, '.horus'));
+    writeFileSync(
+      join(tmpDir, '.horus', 'config.json'),
+      JSON.stringify({ version: 1, project: { name: 'local', repositories: [{ name: 'local', path: tmpDir }], environments: [{ name: 'prod', connectors: {} }] }, database: { url: 'postgresql://local-host/db' } }),
+    );
+    process.env['HORUS_CONFIG'] = join(tmpDir, 'env-config.js');
+    writeFileSync(join(tmpDir, 'env-config.js'), MARKER_JS('env-host'));
+    const cfg = await loadConfig(explicit, { cwd: tmpDir });
+    expect(cfg.database.url).toContain('explicit-host');
+  });
+
+  // ── 3. .horus/config.json discovered from cwd ────────────────────────────
+
+  it('(3) .horus/config.json discovered from cwd takes precedence over HORUS_CONFIG', async () => {
+    // Write a local .horus/config.json
+    mkdirSync(join(tmpDir, '.horus'));
+    writeFileSync(
+      join(tmpDir, '.horus', 'config.json'),
+      JSON.stringify({
+        version: 1,
+        project: {
+          name: 'local-proj',
+          repositories: [{ name: 'local-proj', path: tmpDir }],
+          environments: [{ name: 'prod', connectors: {} }],
+        },
+        database: { url: 'postgresql://local-host/db' },
+      }),
+    );
+    // Also set HORUS_CONFIG to a different file
+    const envFile = join(tmpDir, 'env.js');
+    writeFileSync(envFile, MARKER_JS('env-host'));
+    process.env['HORUS_CONFIG'] = envFile;
+    const cfg = await loadConfig(undefined, { cwd: tmpDir });
+    expect(cfg.database.url).toBe('postgresql://local-host/db');
+  });
+
+  it('(3) .horus/config.json is discovered by walking up from a subdirectory', async () => {
+    mkdirSync(join(tmpDir, '.horus'));
+    writeFileSync(
+      join(tmpDir, '.horus', 'config.json'),
+      JSON.stringify({
+        version: 1,
+        project: {
+          name: 'walk-proj',
+          repositories: [{ name: 'walk-proj', path: tmpDir }],
+          environments: [{ name: 'prod', connectors: {} }],
+        },
+        database: { url: 'postgresql://walked-host/db' },
+      }),
+    );
+    const deep = join(tmpDir, 'src', 'subpackage');
+    mkdirSync(deep, { recursive: true });
+    const cfg = await loadConfig(undefined, { cwd: deep });
+    expect(cfg.database.url).toBe('postgresql://walked-host/db');
+  });
+
+  // ── 4. HORUS_CONFIG env var ───────────────────────────────────────────────
+
+  it('(4) HORUS_CONFIG env var is used when no local config is found', async () => {
+    const envFile = join(tmpDir, 'via-env.js');
+    writeFileSync(envFile, MARKER_JS('env-marker'));
+    process.env['HORUS_CONFIG'] = envFile;
+    // cwd has no .horus/config.json
+    const cfg = await loadConfig(undefined, { cwd: tmpDir });
+    expect(cfg.database.url).toContain('env-marker');
+  });
+
+  it('(4) HORUS_CONFIG takes precedence over config/horus.config.js', async () => {
+    // Write config/horus.config.js
+    const configDir = join(tmpDir, 'config');
+    mkdirSync(configDir);
+    writeFileSync(join(configDir, 'horus.config.js'), MARKER_JS('file-marker'));
+    // HORUS_CONFIG points to a different file
+    const envFile = join(tmpDir, 'env.js');
+    writeFileSync(envFile, MARKER_JS('env-marker'));
+    process.env['HORUS_CONFIG'] = envFile;
+    const cfg = await loadConfig(undefined, { cwd: tmpDir });
+    expect(cfg.database.url).toContain('env-marker');
+  });
+
+  // ── 5. config/horus.config.js fallback ───────────────────────────────────
+
+  it('(5) config/horus.config.js is used when no higher-priority source is available', async () => {
+    const configDir = join(tmpDir, 'config');
+    mkdirSync(configDir);
+    writeFileSync(join(configDir, 'horus.config.js'), MARKER_JS('js-fallback'));
+    const cfg = await loadConfig(undefined, { cwd: tmpDir });
+    expect(cfg.database.url).toContain('js-fallback');
+  });
+
+  // ── Missing config — error messages ───────────────────────────────────────
+
+  it('throws a "Could not load" error when explicit config path does not exist', async () => {
+    await expect(loadConfig('/nonexistent/path/horus.config.js')).rejects.toThrow(
+      /Could not load Horus config/,
+    );
+  });
+
+  it('error message for explicit path includes the attempted path', async () => {
+    const missing = '/nonexistent/horus-131-test.js';
+    const err = await loadConfig(missing).catch((e: Error) => e);
+    expect((err as Error).message).toContain(missing);
+  });
+});
