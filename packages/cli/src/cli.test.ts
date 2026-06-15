@@ -126,3 +126,54 @@ describe('CLI program structure', () => {
     expect(longs).toContain('--config');
   });
 });
+
+describe('CLI help text examples (HOR-133)', () => {
+  function captureHelp(name: string): string {
+    const cmd = buildProgram().commands.find((c) => c.name() === name)!;
+    let out = '';
+    cmd.configureOutput({ writeOut: (s) => { out += s; }, writeErr: (s) => { out += s; } });
+    cmd.outputHelp();
+    return out;
+  }
+
+  it('init help includes usage examples', () => {
+    const help = captureHelp('init');
+    expect(help).toContain('Examples:');
+    expect(help).toContain('horus init');
+    expect(help).toContain('--name');
+  });
+
+  it('doctor help includes usage examples', () => {
+    const help = captureHelp('doctor');
+    expect(help).toContain('Examples:');
+    expect(help).toContain('horus doctor');
+    expect(help).toContain('--json');
+  });
+
+  it('investigate help includes usage examples', () => {
+    const help = captureHelp('investigate');
+    expect(help).toContain('Examples:');
+    expect(help).toContain('horus investigate');
+    expect(help).toContain('--project');
+  });
+
+  it('investigations help includes usage examples', () => {
+    const help = captureHelp('investigations');
+    expect(help).toContain('Examples:');
+    expect(help).toContain('horus investigations');
+  });
+
+  it('replay help includes usage examples and refers to investigations command', () => {
+    const help = captureHelp('replay');
+    expect(help).toContain('Examples:');
+    expect(help).toContain('horus replay');
+    expect(help).toContain('horus investigations');
+  });
+
+  it('postmortem help includes usage examples and refers to investigations command', () => {
+    const help = captureHelp('postmortem');
+    expect(help).toContain('Examples:');
+    expect(help).toContain('horus postmortem');
+    expect(help).toContain('horus investigations');
+  });
+});
