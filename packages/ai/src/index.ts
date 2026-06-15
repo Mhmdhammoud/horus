@@ -31,3 +31,6 @@ export {
   FIXTURE_CONFIDENCE_INFLATION,
   FIXTURE_HALLUCINATED_SERVICE,
 } from './fixtures.js';
+
+export { AnthropicNarrativeProvider } from './anthropic.js';
+export type { AnthropicProviderOptions } from './anthropic.js';
