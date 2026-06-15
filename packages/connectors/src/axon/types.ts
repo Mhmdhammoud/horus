@@ -62,3 +62,14 @@ export interface AxonHealth {
   ok: boolean;
   status: number;
 }
+
+// Horus-facing aliases for the source-intelligence boundary (HOR-64).
+// These sit in front of the Axon wire types; the implementation is unchanged.
+export type SourceNode = AxonNode;
+export type SourceSearchResult = AxonSearchResult;
+export type SourceCypherResult = AxonCypherResult;
+export type SourceImpactResult = AxonImpactResult;
+export type SourceDiffResult = AxonDiffResult;
+export type SourceOverview = AxonOverview;
+export type SourceHostInfo = AxonHostInfo;
+export type SourceHealth = AxonHealth;

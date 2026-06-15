@@ -13,3 +13,6 @@ export async function checkAxonCompatibility(
   const version = await client.version();
   return { version, pinned: PINNED_AXON_VERSION, matches: version === PINNED_AXON_VERSION };
 }
+
+// Horus-facing alias (HOR-64); implementation unchanged.
+export type SourceCompatibility = AxonCompatibility;
