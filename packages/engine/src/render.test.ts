@@ -675,3 +675,80 @@ describe('reportToMarkdown — why confidence is not higher (HOR-105)', () => {
     expect(bulletLines.length).toBeGreaterThan(0);
   });
 });
+
+// ── Recent changes rendering (HOR-94) ────────────────────────────────────────
+
+import type { BoundedGitChange } from './git-collector.js';
+
+function makeGitChange(overrides: Partial<BoundedGitChange> = {}): BoundedGitChange {
+  return {
+    commits: [],
+    fileStats: [],
+    changedFiles: [],
+    totalInsertions: 0,
+    totalDeletions: 0,
+    window: { since: '24 hours ago', until: undefined },
+    truncated: false,
+    ...overrides,
+  };
+}
+
+describe('renderReport — Recent changes section (HOR-94)', () => {
+  it('omits Recent changes section when recentChanges is absent', () => {
+    const output = renderReport(makeReport());
+    expect(output).not.toContain('## Recent changes');
+  });
+
+  it('omits Recent changes section when commits array is empty', () => {
+    const output = renderReport(makeReport({ recentChanges: makeGitChange({ commits: [] }) }));
+    expect(output).not.toContain('## Recent changes');
+  });
+
+  it('renders Recent changes section with commits', () => {
+    const rc = makeGitChange({
+      commits: [
+        { sha: 'abc1234def5', shortSha: 'abc1234', author: 'Alice', dateIso: '2026-06-15T12:00:00Z', subject: 'fix: payment timeout', files: [] },
+        { sha: 'def5678abc1', shortSha: 'def5678', author: 'Bob',   dateIso: '2026-06-15T10:00:00Z', subject: 'chore: update deps',   files: [] },
+      ],
+    });
+    const output = renderReport(makeReport({ recentChanges: rc }));
+    expect(output).toContain('## Recent changes');
+    expect(output).toContain('abc1234 fix: payment timeout');
+    expect(output).toContain('def5678 chore: update deps');
+    expect(output).toContain('Window: 24 hours ago..HEAD');
+    expect(output).toContain('Commits: 2');
+  });
+
+  it('renders file stats when present', () => {
+    const rc = makeGitChange({
+      commits: [{ sha: 'abc1234def5', shortSha: 'abc1234', author: 'Alice', dateIso: '', subject: 'fix: x', files: [] }],
+      fileStats: [{ path: 'src/payment.ts', insertions: 3, deletions: 1 }],
+      changedFiles: ['src/payment.ts'],
+    });
+    const output = renderReport(makeReport({ recentChanges: rc }));
+    expect(output).toContain('+3 -1 src/payment.ts');
+    expect(output).toContain('Files: 1');
+  });
+
+  it('shows truncation note when truncated', () => {
+    const rc = makeGitChange({
+      commits: [{ sha: 'abc1234def5', shortSha: 'abc1234', author: 'Alice', dateIso: '', subject: 'fix: x', files: [] }],
+      truncated: true,
+      truncatedReason: 'commits capped at 50',
+    });
+    const output = renderReport(makeReport({ recentChanges: rc }));
+    expect(output).toContain('truncated: commits capped at 50');
+    expect(output).toContain('Commits: 1+');
+  });
+
+  it('Recent changes section appears before Next actions', () => {
+    const rc = makeGitChange({
+      commits: [{ sha: 'abc1234def5', shortSha: 'abc1234', author: 'Alice', dateIso: '', subject: 'fix: x', files: [] }],
+    });
+    const output = renderReport(makeReport({ recentChanges: rc }));
+    const rcIdx = output.indexOf('## Recent changes');
+    const nextIdx = output.indexOf('## Next actions');
+    expect(rcIdx).toBeGreaterThan(-1);
+    expect(nextIdx).toBeGreaterThan(rcIdx);
+  });
+});

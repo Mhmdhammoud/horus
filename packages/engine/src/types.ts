@@ -13,6 +13,7 @@ import type { InvestigationGraph } from './graph.js';
 import type { CauseCandidate } from './score-cause.js';
 import type { OwnershipEstimate } from './ownership.js';
 import type { RuntimeSourceReport } from './source-status.js';
+import type { BoundedGitChange } from './git-collector.js';
 
 export type { CauseCandidate };
 
@@ -70,6 +71,8 @@ export interface InvestigationReport {
   ownership?: OwnershipEstimate | null;
   /** Per-source runtime contribution summary (HOR-70). */
   sourceStatus?: RuntimeSourceReport;
+  /** Bounded git change summary collected near the incident window (HOR-94). */
+  recentChanges?: BoundedGitChange;
 }
 
 /** Re-exported for convenience so callers can type flow steps without @horus/core. */

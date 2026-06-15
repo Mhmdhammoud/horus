@@ -59,6 +59,8 @@ import { correlate } from './correlate.js';
 import { rankSeeds } from './seeds.js';
 import { normalizeEvidence } from './normalize.js';
 import { computeWeightedEvidenceConfidence } from './confidence.js';
+import { collectGitChanges } from './git-collector.js';
+import type { BoundedGitChange } from './git-collector.js';
 
 /** Dependencies the engine needs: a code provider and a database handle. */
 export interface EngineDeps {
@@ -939,6 +941,17 @@ export async function investigate(
     ? `Investigation of "${hint}" resolved to ${label} (${area}). Top suspected cause: ${topCause.title}.`
     : `Investigation of "${hint}" resolved to ${label} (${area}). No dominant suspected cause emerged from the available structural evidence.`;
 
+  // HOR-94 — bounded git change summary for the incident window.
+  // Collected when repoPath + since are available; never throws.
+  let recentChanges: BoundedGitChange | undefined;
+  if (deps.repoPath && input.since) {
+    try {
+      recentChanges = await collectGitChanges({ repoPath: deps.repoPath, since: input.since });
+    } catch {
+      // Best-effort; skip on error
+    }
+  }
+
   // i. nextActions
   const nextActions = buildNextActions(top, ctx, impact, queueHits, changes, input);
 
@@ -966,6 +979,7 @@ export async function investigate(
     confidence,
     nextActions,
     ownership: ownershipEstimate,
+    ...(recentChanges !== undefined ? { recentChanges } : {}),
   };
 
   // HOR-19 — compute gap analysis and cap confidence BEFORE persisting so the

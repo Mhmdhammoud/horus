@@ -349,6 +349,28 @@ export function renderReport(r: InvestigationReport): string {
     lines.push('');
   }
 
+  const rc = r.recentChanges;
+  if (rc && rc.commits.length > 0) {
+    const until = rc.window.until ? `..${rc.window.until}` : '..HEAD';
+    lines.push('## Recent changes');
+    lines.push(`  Window: ${rc.window.since}${until}`);
+    lines.push(`  Commits: ${rc.commits.length}${rc.truncated ? '+' : ''}`);
+    for (const c of rc.commits.slice(0, 10)) {
+      lines.push(`  ${c.shortSha} ${c.subject}`);
+    }
+    if (rc.fileStats.length > 0) {
+      const fileCount = rc.changedFiles.length;
+      lines.push(`  Files: ${fileCount}${rc.truncated ? '+' : ''}`);
+      for (const f of rc.fileStats.slice(0, 8)) {
+        lines.push(`    +${f.insertions} -${f.deletions} ${f.path}`);
+      }
+    }
+    if (rc.truncated && rc.truncatedReason) {
+      lines.push(`  (truncated: ${rc.truncatedReason})`);
+    }
+    lines.push('');
+  }
+
   lines.push('## Next actions');
   if (r.nextActions.length === 0) {
     lines.push('(none)');
