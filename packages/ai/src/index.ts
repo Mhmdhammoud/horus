@@ -33,6 +33,7 @@ export {
 } from './fixtures.js';
 
 export { AnthropicNarrativeProvider } from './anthropic.js';
+export { createFakeNarrativeProvider } from './fake-provider.js';
 export type { AnthropicProviderOptions } from './anthropic.js';
 
 export { redactString, redactNarrativeInput } from './redact.js';
