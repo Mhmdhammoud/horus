@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Evidence } from '@horus/core';
 import type { InvestigationReport, CauseCandidate } from './types.js';
-import { renderReport, reportToMarkdown, groupQueueEvidence, runtimeSourceCaveat } from './render.js';
+import { renderReport, reportToMarkdown, groupQueueEvidence, runtimeSourceCaveat, explainLowConfidence, CONFIDENCE_EXPLAIN_THRESHOLD } from './render.js';
 import type { RuntimeSourceReport } from './source-status.js';
 
 function makeCause(title: string, finalScore: number, sourceEvidenceIds: string[]): CauseCandidate {
@@ -468,5 +468,210 @@ describe('reportToMarkdown — runtime source caveat (HOR-89)', () => {
     expect(output).toContain(
       '**Confidence:** 0.65 _(source-only — logs, metrics, state, queue not configured)_',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// explainLowConfidence — HOR-105
+// ---------------------------------------------------------------------------
+
+describe('explainLowConfidence', () => {
+  it('returns null when confidence is at the threshold', () => {
+    const r = makeReport({ confidence: CONFIDENCE_EXPLAIN_THRESHOLD });
+    expect(explainLowConfidence(r)).toBeNull();
+  });
+
+  it('returns null when confidence is above the threshold', () => {
+    const r = makeReport({ confidence: 0.95 });
+    expect(explainLowConfidence(r)).toBeNull();
+  });
+
+  it('returns null when confidence is low but nothing explains it', () => {
+    const r = makeReport({ confidence: 0.4 });
+    expect(explainLowConfidence(r)).toBeNull();
+  });
+
+  it('includes unconfigured runtime sources when sourceStatus present', () => {
+    const r = makeReport({
+      confidence: 0.4,
+      sourceStatus: makeSourceStatus([
+        { source: 'logs', status: 'not-configured' },
+        { source: 'metrics', status: 'not-configured' },
+        { source: 'state', status: 'not-configured' },
+        { source: 'queue', status: 'not-configured' },
+      ]),
+    });
+    const reasons = explainLowConfidence(r)!;
+    expect(reasons).not.toBeNull();
+    expect(reasons.some((r) => r.includes('no runtime data'))).toBe(true);
+    expect(reasons.some((r) => r.includes('logs'))).toBe(true);
+  });
+
+  it('includes top gap by confidence impact', () => {
+    const r = makeReport({
+      confidence: 0.5,
+      gapAnalysis: {
+        gaps: [
+          { dimension: 'metrics', why: 'Grafana not configured.', nextSource: 'connect grafana', confidenceImpact: 0.1 },
+          { dimension: 'logs', why: 'Elasticsearch not configured.', nextSource: 'connect elasticsearch', confidenceImpact: 0.25 },
+        ],
+        blindSpots: [],
+        confidenceCeiling: 0.75,
+      },
+    });
+    const reasons = explainLowConfidence(r)!;
+    expect(reasons).not.toBeNull();
+    const gapLine = reasons.find((r) => r.startsWith('top gap:'))!;
+    expect(gapLine).toBeDefined();
+    expect(gapLine).toContain('logs');
+    expect(gapLine).toContain('−0.25 conf');
+  });
+
+  it('includes confidence ceiling when below 1.0', () => {
+    const r = makeReport({
+      confidence: 0.5,
+      gapAnalysis: {
+        gaps: [{ dimension: 'logs', why: 'Not configured.', nextSource: 'n/a', confidenceImpact: 0.2 }],
+        blindSpots: [],
+        confidenceCeiling: 0.7,
+      },
+    });
+    const reasons = explainLowConfidence(r)!;
+    expect(reasons.some((r) => r.includes('confidence ceiling: 0.7'))).toBe(true);
+  });
+
+  it('omits confidence ceiling when it is 1.0', () => {
+    const r = makeReport({
+      confidence: 0.5,
+      gapAnalysis: {
+        gaps: [{ dimension: 'logs', why: 'Not configured.', nextSource: 'n/a', confidenceImpact: 0.2 }],
+        blindSpots: [],
+        confidenceCeiling: 1.0,
+      },
+    });
+    const reasons = explainLowConfidence(r)!;
+    expect(reasons.every((r) => !r.includes('confidence ceiling'))).toBe(true);
+  });
+
+  it('includes first correlation missing-evidence note', () => {
+    const r = makeReport({
+      confidence: 0.45,
+      correlation: {
+        groups: [],
+        chains: [],
+        missing: [
+          { kind: 'change', note: 'No recent commit evidence for the affected file.' },
+          { kind: 'change', note: 'Second note should be omitted.' },
+        ],
+      },
+    });
+    const reasons = explainLowConfidence(r)!;
+    expect(reasons.some((r) => r.includes('No recent commit evidence'))).toBe(true);
+    expect(reasons.filter((r) => r.includes('missing evidence:')).length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderReport — Why confidence is not higher section (HOR-105)
+// ---------------------------------------------------------------------------
+
+describe('renderReport — why confidence is not higher (HOR-105)', () => {
+  it('omits section when confidence is at threshold', () => {
+    const r = makeReport({
+      confidence: CONFIDENCE_EXPLAIN_THRESHOLD,
+      gapAnalysis: {
+        gaps: [{ dimension: 'logs', why: 'Not configured.', nextSource: 'n/a', confidenceImpact: 0.2 }],
+        blindSpots: [],
+        confidenceCeiling: 0.8,
+      },
+    });
+    expect(renderReport(r)).not.toContain('Why confidence is not higher');
+  });
+
+  it('omits section when confidence is high and no explanations', () => {
+    const r = makeReport({ confidence: 0.95 });
+    expect(renderReport(r)).not.toContain('Why confidence is not higher');
+  });
+
+  it('includes section when confidence is low and gaps exist', () => {
+    const r = makeReport({
+      confidence: 0.45,
+      gapAnalysis: {
+        gaps: [{ dimension: 'logs', why: 'Elasticsearch not configured.', nextSource: 'connect elasticsearch', confidenceImpact: 0.2 }],
+        blindSpots: [],
+        confidenceCeiling: 0.75,
+      },
+    });
+    const output = renderReport(r);
+    expect(output).toContain('## Why confidence is not higher');
+    expect(output).toContain('logs');
+    expect(output).toContain('confidence ceiling: 0.75');
+  });
+
+  it('section appears after Summary and before Similar past incidents', () => {
+    const r = makeReport({
+      confidence: 0.4,
+      gapAnalysis: {
+        gaps: [{ dimension: 'metrics', why: 'Grafana missing.', nextSource: 'n/a', confidenceImpact: 0.15 }],
+        blindSpots: [],
+        confidenceCeiling: 0.8,
+      },
+    });
+    const output = renderReport(r);
+    const whyIdx = output.indexOf('## Why confidence is not higher');
+    const summaryIdx = output.indexOf('## Summary');
+    const similarIdx = output.indexOf('## Similar past incidents');
+    expect(whyIdx).toBeGreaterThan(summaryIdx);
+    expect(whyIdx).toBeLessThan(similarIdx);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reportToMarkdown — Why confidence is not higher section (HOR-105)
+// ---------------------------------------------------------------------------
+
+describe('reportToMarkdown — why confidence is not higher (HOR-105)', () => {
+  it('omits section when confidence meets threshold', () => {
+    const r = makeReport({
+      confidence: CONFIDENCE_EXPLAIN_THRESHOLD,
+      gapAnalysis: {
+        gaps: [{ dimension: 'logs', why: 'Not configured.', nextSource: 'n/a', confidenceImpact: 0.2 }],
+        blindSpots: [],
+        confidenceCeiling: 0.8,
+      },
+    });
+    expect(reportToMarkdown(r)).not.toContain('Why confidence is not higher');
+  });
+
+  it('includes section for low confidence with sources not configured', () => {
+    const r = makeReport({
+      confidence: 0.35,
+      sourceStatus: makeSourceStatus([
+        { source: 'logs', status: 'not-configured' },
+        { source: 'metrics', status: 'not-configured' },
+        { source: 'state', status: 'not-configured' },
+        { source: 'queue', status: 'not-configured' },
+      ]),
+    });
+    const output = reportToMarkdown(r);
+    expect(output).toContain('## Why confidence is not higher');
+    expect(output).toContain('no runtime data');
+  });
+
+  it('renders reasons as bullet list', () => {
+    const r = makeReport({
+      confidence: 0.4,
+      gapAnalysis: {
+        gaps: [{ dimension: 'logs', why: 'Not configured.', nextSource: 'n/a', confidenceImpact: 0.2 }],
+        blindSpots: [],
+        confidenceCeiling: 0.75,
+      },
+    });
+    const output = reportToMarkdown(r);
+    const lines = output.split('\n');
+    const whyIdx = lines.findIndex((l) => l === '## Why confidence is not higher');
+    expect(whyIdx).toBeGreaterThan(-1);
+    const bulletLines = lines.slice(whyIdx + 1).filter((l) => l.startsWith('- '));
+    expect(bulletLines.length).toBeGreaterThan(0);
   });
 });

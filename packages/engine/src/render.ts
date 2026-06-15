@@ -76,6 +76,53 @@ function queueEvidenceIds(evidence: Evidence[]): Set<string> {
   return ids;
 }
 
+/** Confidence at or above this value suppresses the "why not higher" section. */
+export const CONFIDENCE_EXPLAIN_THRESHOLD = 0.80;
+
+/**
+ * Returns a list of human-readable reasons why confidence is below
+ * CONFIDENCE_EXPLAIN_THRESHOLD, or null when confidence meets the bar.
+ * Draws from gapAnalysis, sourceStatus, and correlation.missing — no duplication
+ * of the full gap detail section, just the top-priority signal per category.
+ */
+export function explainLowConfidence(r: InvestigationReport): string[] | null {
+  if (r.confidence >= CONFIDENCE_EXPLAIN_THRESHOLD) return null;
+
+  const reasons: string[] = [];
+
+  // Missing runtime sources
+  if (r.sourceStatus) {
+    const notConfigured = r.sourceStatus.sources
+      .filter((s) => s.status === 'not-configured')
+      .map((s) => s.source);
+    if (notConfigured.length > 0) {
+      reasons.push(`no runtime data — ${notConfigured.join(', ')} not configured`);
+    }
+  }
+
+  // Top gap by confidence impact
+  if (r.gapAnalysis.gaps.length > 0) {
+    const top = [...r.gapAnalysis.gaps].sort((a, b) => b.confidenceImpact - a.confidenceImpact)[0]!;
+    reasons.push(
+      `top gap: ${top.dimension} (−${top.confidenceImpact.toFixed(2)} conf) — ${top.why}`,
+    );
+  }
+
+  // First missing-evidence note from correlation
+  if (r.correlation.missing.length > 0) {
+    reasons.push(`missing evidence: ${r.correlation.missing[0]!.note}`);
+  }
+
+  // Confidence ceiling
+  if (r.gapAnalysis.confidenceCeiling < 1.0) {
+    reasons.push(
+      `confidence ceiling: ${r.gapAnalysis.confidenceCeiling} — filling gaps above would raise it`,
+    );
+  }
+
+  return reasons.length > 0 ? reasons : null;
+}
+
 /**
  * Returns a short caveat string when no runtime source contributed evidence,
  * listing which dimensions were not configured. Returns null when runtime data
@@ -110,6 +157,15 @@ export function renderReport(r: InvestigationReport): string {
   lines.push('## Summary');
   lines.push(r.summary);
   lines.push('');
+
+  const explainLines = explainLowConfidence(r);
+  if (explainLines) {
+    lines.push('## Why confidence is not higher');
+    for (const reason of explainLines) {
+      lines.push(`  - ${reason}`);
+    }
+    lines.push('');
+  }
 
   lines.push('## Similar past incidents');
   if (r.similarIncidents.length === 0) {
@@ -329,6 +385,15 @@ export function reportToMarkdown(r: InvestigationReport): string {
   out.push('## Summary');
   out.push(r.summary);
   out.push('');
+
+  const mdExplain = explainLowConfidence(r);
+  if (mdExplain) {
+    out.push('## Why confidence is not higher');
+    for (const reason of mdExplain) {
+      out.push(`- ${reason}`);
+    }
+    out.push('');
+  }
 
   out.push('## Similar past incidents');
   if (r.similarIncidents.length === 0) {
