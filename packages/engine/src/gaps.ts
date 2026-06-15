@@ -15,6 +15,18 @@ export interface ConnectorFlags {
   mongodb?: boolean;
   redis?: boolean;
   /**
+   * True when log collection ran to completion (even with zero signatures).
+   * False/absent + elasticsearch:true means collection failed or was blocked.
+   * Lets the gap detector distinguish "no matching logs" from "collection failed".
+   */
+  logsCollected?: boolean;
+  /**
+   * Set when collection was blocked by a field-mapping incompatibility.
+   * Short human-readable summary of the error(s). Takes precedence over the
+   * generic "collection failed" gap text.
+   */
+  logsCompatibilityError?: string;
+  /**
    * True when metrics collection ran to completion (even with zero anomalies).
    * False/absent + grafana:true means collection was attempted but failed.
    * Lets the gap detector distinguish "no anomalies" from "collection failed".
@@ -69,14 +81,30 @@ export function detectMissingEvidence(
   // ── Candidate gaps — text reflects what's actually CONFIGURED, not tickets ──
 
   if (!hasLog) {
+    let logWhy: string;
+    let logNextSource: string;
+    if (!connectors.elasticsearch) {
+      logWhy = 'No Elasticsearch connector configured for this environment — no runtime logs.';
+      logNextSource = 'Add an `elasticsearch` connector to the project/environment';
+    } else if (connectors.logsCompatibilityError) {
+      logWhy =
+        `Elasticsearch field mapping is incompatible with the index — log collection was blocked. ` +
+        connectors.logsCompatibilityError;
+      logNextSource =
+        'Fix fields.* overrides in your connector config or choose the correct preset (meritt / ecs)';
+    } else if (!connectors.logsCollected) {
+      logWhy =
+        'Log collection failed or timed out — cannot confirm the actual error signatures.';
+      logNextSource =
+        'Check Elasticsearch connectivity, then run `horus logs <service>` manually';
+    } else {
+      logWhy = 'No error logs matched in the window — cannot confirm the actual error signatures.';
+      logNextSource = 'Widen the window (--since) or inspect `horus logs <service>`';
+    }
     gaps.push({
       dimension: 'logs',
-      why: connectors.elasticsearch
-        ? 'No error logs matched in the window — cannot confirm the actual error signatures.'
-        : 'No Elasticsearch connector configured for this environment — no runtime logs.',
-      nextSource: connectors.elasticsearch
-        ? 'Widen the window (--since) or inspect `horus logs <service>`'
-        : 'Add an `elasticsearch` connector to the project/environment',
+      why: logWhy,
+      nextSource: logNextSource,
       confidenceImpact: 0.1,
     });
     blindSpots.push('Cannot see the real error.');

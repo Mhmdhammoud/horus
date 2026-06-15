@@ -44,6 +44,38 @@ const connectorsSchema = z
       .object({
         indexPattern: z.string(),
         serviceName: z.string().optional(),
+        /**
+         * Log schema preset. Controls which Elasticsearch field names Horus
+         * queries for timestamps, levels, service names, and event codes.
+         *
+         * - 'meritt' (default): pino-based Meritt shared logger
+         *   (time, level numeric, service_name, event_code)
+         * - 'ecs': Elastic Common Schema
+         *   (@timestamp, log.level string, service.name, event.code)
+         *
+         * Use `fields` to override individual field names when neither preset
+         * matches your schema (Pino with custom keys, legacy formats, etc.).
+         */
+        preset: z.enum(['meritt', 'ecs']).default('meritt'),
+        /**
+         * Per-field overrides merged on top of the selected preset.
+         * Only the fields you specify are changed; the rest come from the preset.
+         */
+        fields: z
+          .object({
+            timestamp: z.string().optional(),
+            level: z.string().optional(),
+            levelFormat: z.enum(['numeric', 'string']).optional(),
+            service: z.string().optional(),
+            serviceKeyword: z.boolean().optional(),
+            message: z.string().optional(),
+            messageFallback: z.string().optional(),
+            traceId: z.string().optional(),
+            requestId: z.string().optional(),
+            eventCode: z.string().optional(),
+            eventCodeKeyword: z.boolean().optional(),
+          })
+          .optional(),
         /** Direct URL value (takes priority over urlEnv). */
         url: z.string().optional(),
         /** Name of the env var holding the ES base URL. Defaults to "ES_URL". */
@@ -148,6 +180,20 @@ export interface ResolvedRepository {
   axonHostUrl?: string;
 }
 
+export interface ResolvedElasticsearchFields {
+  timestamp?: string;
+  level?: string;
+  levelFormat?: 'numeric' | 'string';
+  service?: string;
+  serviceKeyword?: boolean;
+  message?: string;
+  messageFallback?: string;
+  traceId?: string;
+  requestId?: string;
+  eventCode?: string;
+  eventCodeKeyword?: boolean;
+}
+
 export interface ResolvedConnectors {
   elasticsearch?: {
     url: string;
@@ -155,6 +201,10 @@ export interface ResolvedConnectors {
     password?: string;
     indexPattern: string;
     serviceName?: string;
+    /** Log schema preset forwarded from config. */
+    preset: 'meritt' | 'ecs';
+    /** Per-field overrides merged on top of the preset. */
+    fields?: ResolvedElasticsearchFields;
   };
   mongodb?: { url?: string; database: string; collections: string[] };
   grafana?: { url?: string; username?: string; password?: string; dashboard?: string };
@@ -285,6 +335,8 @@ export function resolveEnvironment(
       password: es.password ?? process.env[es.passwordEnv ?? 'ES_PASSWORD'],
       indexPattern: es.indexPattern,
       serviceName: es.serviceName,
+      preset: es.preset,
+      ...(es.fields !== undefined ? { fields: es.fields } : {}),
     };
   }
 

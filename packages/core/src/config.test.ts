@@ -266,3 +266,193 @@ describe('resolveEnvironment', () => {
     expect(renv.connectors.elasticsearch).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// HOR-47: elasticsearch preset and fields block
+// ---------------------------------------------------------------------------
+
+describe('horusConfigSchema — elasticsearch preset + fields (HOR-47)', () => {
+  it('defaults preset to meritt', () => {
+    const cfg = horusConfigSchema.parse({
+      database: DB,
+      projects: [
+        {
+          name: 'x',
+          repositories: [{ name: 'x', path: '/x', axon: { hostUrl: 'http://localhost' } }],
+          environments: [
+            {
+              name: 'production',
+              connectors: { elasticsearch: { indexPattern: 'logs-*' } },
+            },
+          ],
+        },
+      ],
+    });
+    expect(cfg.projects[0]!.environments[0]!.connectors.elasticsearch!.preset).toBe('meritt');
+  });
+
+  it('accepts preset:ecs', () => {
+    const cfg = horusConfigSchema.parse({
+      database: DB,
+      projects: [
+        {
+          name: 'x',
+          repositories: [{ name: 'x', path: '/x', axon: { hostUrl: 'http://localhost' } }],
+          environments: [
+            {
+              name: 'production',
+              connectors: {
+                elasticsearch: { indexPattern: 'logs-*', preset: 'ecs' },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    expect(cfg.projects[0]!.environments[0]!.connectors.elasticsearch!.preset).toBe('ecs');
+  });
+
+  it('rejects unknown preset values', () => {
+    expect(() =>
+      horusConfigSchema.parse({
+        database: DB,
+        projects: [
+          {
+            name: 'x',
+            repositories: [{ name: 'x', path: '/x', axon: { hostUrl: 'http://localhost' } }],
+            environments: [
+              {
+                name: 'production',
+                connectors: {
+                  elasticsearch: { indexPattern: 'logs-*', preset: 'logstash' },
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('accepts partial fields block and omits unset fields', () => {
+    const cfg = horusConfigSchema.parse({
+      database: DB,
+      projects: [
+        {
+          name: 'x',
+          repositories: [{ name: 'x', path: '/x', axon: { hostUrl: 'http://localhost' } }],
+          environments: [
+            {
+              name: 'production',
+              connectors: {
+                elasticsearch: {
+                  indexPattern: 'logs-*',
+                  preset: 'meritt',
+                  fields: { timestamp: '@timestamp', eventCode: 'error_code' },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const f = cfg.projects[0]!.environments[0]!.connectors.elasticsearch!.fields;
+    expect(f?.timestamp).toBe('@timestamp');
+    expect(f?.eventCode).toBe('error_code');
+    expect(f?.level).toBeUndefined();
+  });
+
+  it('accepts a complete custom fields block', () => {
+    const cfg = horusConfigSchema.parse({
+      database: DB,
+      projects: [
+        {
+          name: 'x',
+          repositories: [{ name: 'x', path: '/x', axon: { hostUrl: 'http://localhost' } }],
+          environments: [
+            {
+              name: 'production',
+              connectors: {
+                elasticsearch: {
+                  indexPattern: 'logs-*',
+                  preset: 'meritt',
+                  fields: {
+                    timestamp: 'ts',
+                    level: 'severity',
+                    levelFormat: 'string',
+                    service: 'app_name',
+                    serviceKeyword: false,
+                    message: 'log_msg',
+                    messageFallback: 'msg',
+                    traceId: 'correlation_id',
+                    requestId: 'req_id',
+                    eventCode: 'error_code',
+                    eventCodeKeyword: true,
+                  },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const f = cfg.projects[0]!.environments[0]!.connectors.elasticsearch!.fields;
+    expect(f?.timestamp).toBe('ts');
+    expect(f?.levelFormat).toBe('string');
+    expect(f?.serviceKeyword).toBe(false);
+    expect(f?.eventCodeKeyword).toBe(true);
+  });
+});
+
+describe('resolveEnvironment — elasticsearch fields forwarded (HOR-47)', () => {
+  it('forwards preset and fields into resolved connector', () => {
+    const cfg = horusConfigSchema.parse({
+      database: DB,
+      projects: [
+        {
+          name: 'x',
+          repositories: [{ name: 'x', path: '/x', axon: { hostUrl: 'http://localhost' } }],
+          environments: [
+            {
+              name: 'production',
+              connectors: {
+                elasticsearch: {
+                  url: 'http://localhost:9200',
+                  indexPattern: 'logs-*',
+                  preset: 'ecs',
+                  fields: { timestamp: '@timestamp', eventCode: 'event.code' },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const renv = resolveEnvironment(cfg);
+    expect(renv.connectors.elasticsearch?.preset).toBe('ecs');
+    expect(renv.connectors.elasticsearch?.fields?.timestamp).toBe('@timestamp');
+    expect(renv.connectors.elasticsearch?.fields?.eventCode).toBe('event.code');
+  });
+
+  it('omits fields from resolved connector when not provided', () => {
+    const cfg = horusConfigSchema.parse({
+      database: DB,
+      projects: [
+        {
+          name: 'x',
+          repositories: [{ name: 'x', path: '/x', axon: { hostUrl: 'http://localhost' } }],
+          environments: [
+            {
+              name: 'production',
+              connectors: {
+                elasticsearch: { url: 'http://localhost:9200', indexPattern: 'logs-*' },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const renv = resolveEnvironment(cfg);
+    expect(renv.connectors.elasticsearch?.fields).toBeUndefined();
+  });
+});

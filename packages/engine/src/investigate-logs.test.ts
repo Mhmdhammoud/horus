@@ -198,6 +198,9 @@ const fakeLogs: LogsProvider = {
   async analyzeErrors(_q, _field?) {
     return FAKE_ANALYSIS;
   },
+  async checkCompatibility() {
+    return { ok: true, indexCount: 1, issues: [] };
+  },
   toEvidence(_records) {
     return [];
   },
@@ -390,6 +393,184 @@ describe('investigate() WITHOUT logs provider (regression guard)', () => {
 
     const logsGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'logs');
     expect(logsGap).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: incompatible mapping → gap with compatibility error text
+// ---------------------------------------------------------------------------
+
+describe('investigate() with INCOMPATIBLE compat report (HOR-47)', () => {
+  const incompatLogs: LogsProvider = {
+    ...fakeLogs,
+    async checkCompatibility() {
+      return {
+        ok: false,
+        indexCount: 0,
+        issues: [
+          {
+            severity: 'error' as const,
+            field: 'time',
+            message: "Timestamp field 'time' not found. Available date fields: @timestamp.",
+          },
+        ],
+      };
+    },
+  };
+
+  it('produces no log evidence when compat has errors', async () => {
+    const report = await investigate(
+      { hint: 'zoho' },
+      { code: fakeCode, db: fakeDb, logs: incompatLogs },
+    );
+
+    const logEv = report.evidence.filter((e) => e.kind === 'log');
+    expect(logEv).toHaveLength(0);
+  });
+
+  it('logs gap is present with mapping-incompatibility reason', async () => {
+    const report = await investigate(
+      { hint: 'zoho' },
+      { code: fakeCode, db: fakeDb, logs: incompatLogs },
+    );
+
+    const logsGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'logs');
+    expect(logsGap).toBeDefined();
+    expect(logsGap?.why).toContain('incompatible');
+    expect(logsGap?.why).toContain("'time'");
+  });
+
+  it('confidence ceiling is reduced by the logs gap', async () => {
+    const reportIncompat = await investigate(
+      { hint: 'zoho' },
+      { code: fakeCode, db: fakeDb, logs: incompatLogs },
+    );
+    const reportNoLogs = await investigate(
+      { hint: 'zoho' },
+      { code: fakeCode, db: fakeDb },
+    );
+    expect(reportIncompat.gapAnalysis.confidenceCeiling).toBe(
+      reportNoLogs.gapAnalysis.confidenceCeiling,
+    );
+  });
+});
+
+describe('investigate() with MISSING event-code aggregation field (HOR-47)', () => {
+  // Simulates an index where errors exist but event_code.keyword is absent:
+  // the compat check must block analyzeErrors before it can return empty buckets.
+  const missingEcLogs: LogsProvider = {
+    ...fakeLogs,
+    async checkCompatibility() {
+      return {
+        ok: false,
+        indexCount: 3,
+        issues: [
+          {
+            severity: 'error' as const,
+            field: 'event_code.keyword',
+            message:
+              "eventCodeKeyword is true but 'event_code.keyword' not found — signature aggregation blocked.",
+          },
+        ],
+      };
+    },
+  };
+
+  it('produces no log evidence when event-code is non-aggregatable', async () => {
+    const report = await investigate(
+      { hint: 'zoho' },
+      { code: fakeCode, db: fakeDb, logs: missingEcLogs },
+    );
+    expect(report.evidence.filter((e) => e.kind === 'log')).toHaveLength(0);
+  });
+
+  it('logs gap carries mapping-incompatibility reason (not "no matching logs")', async () => {
+    const report = await investigate(
+      { hint: 'zoho' },
+      { code: fakeCode, db: fakeDb, logs: missingEcLogs },
+    );
+    const logsGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'logs');
+    expect(logsGap).toBeDefined();
+    expect(logsGap?.why).toContain('incompatible');
+    expect(logsGap?.why).not.toContain('No error logs matched');
+  });
+});
+
+describe('investigate() with THROWING checkCompatibility', () => {
+  const throwingLogs: LogsProvider = {
+    ...fakeLogs,
+    async checkCompatibility() {
+      throw new Error('network timeout');
+    },
+  };
+
+  it('produces no log evidence and does not throw', async () => {
+    const report = await investigate(
+      { hint: 'zoho' },
+      { code: fakeCode, db: fakeDb, logs: throwingLogs },
+    );
+
+    const logEv = report.evidence.filter((e) => e.kind === 'log');
+    expect(logEv).toHaveLength(0);
+  });
+
+  it('logs gap is present (collection failed) without compatibility error text', async () => {
+    const report = await investigate(
+      { hint: 'zoho' },
+      { code: fakeCode, db: fakeDb, logs: throwingLogs },
+    );
+
+    const logsGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'logs');
+    expect(logsGap).toBeDefined();
+    expect(logsGap?.why).toContain('failed');
+    expect(logsGap?.why).not.toContain('incompatible');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: non-aggregatable service field → engine blocks analysis (HOR-47)
+// ---------------------------------------------------------------------------
+
+describe('investigate() with NON-AGGREGATABLE service keyword field (HOR-47)', () => {
+  // Simulates service_name.keyword having aggregatable:false — analyzeErrors()
+  // runs two service terms aggregations so Elasticsearch may reject the query.
+  // The compat check with requiresServiceAggregation:true must block collection.
+  const nonAggSvcLogs: LogsProvider = {
+    ...fakeLogs,
+    async checkCompatibility() {
+      return {
+        ok: false,
+        indexCount: 2,
+        issues: [
+          {
+            severity: 'error' as const,
+            field: 'service_name.keyword',
+            message:
+              "Service field 'service_name.keyword' is not aggregatable — analyzeErrors() runs service terms aggregations that Elasticsearch may reject — collection blocked.",
+          },
+        ],
+      };
+    },
+  };
+
+  it('produces no log evidence when service agg field is non-aggregatable', async () => {
+    const report = await investigate(
+      { hint: 'zoho' },
+      { code: fakeCode, db: fakeDb, logs: nonAggSvcLogs },
+    );
+    expect(report.evidence.filter((e) => e.kind === 'log')).toHaveLength(0);
+  });
+
+  it('logs gap carries mapping-incompatibility reason (not generic failure)', async () => {
+    const report = await investigate(
+      { hint: 'zoho' },
+      { code: fakeCode, db: fakeDb, logs: nonAggSvcLogs },
+    );
+    const logsGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'logs');
+    expect(logsGap).toBeDefined();
+    expect(logsGap?.why).toContain('incompatible');
+    expect(logsGap?.why).toContain('service_name.keyword');
+    expect(logsGap?.why).not.toContain('No error logs matched');
   });
 });
 

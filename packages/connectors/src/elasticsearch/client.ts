@@ -52,6 +52,19 @@ export class ElasticsearchClient {
     return this.request('POST', `/${index}/_search`, body, signal);
   }
 
+  async fieldCaps(index: string, fields: string[], signal?: AbortSignal): Promise<unknown> {
+    const encoded = fields.map(encodeURIComponent).join(',');
+    // allow_no_indices + ignore_unavailable: return empty response instead of 404
+    // when the index pattern matches nothing — lets validateMappingAgainstCaps
+    // produce the actionable "no indices" diagnostic rather than throwing.
+    return this.request(
+      'GET',
+      `/${index}/_field_caps?fields=${encoded}&allow_no_indices=true&ignore_unavailable=true`,
+      undefined,
+      signal,
+    );
+  }
+
   async count(index: string, body: unknown, signal?: AbortSignal): Promise<number> {
     const res = await this.request('POST', `/${index}/_count`, body, signal);
     const typed = res as Record<string, unknown>;

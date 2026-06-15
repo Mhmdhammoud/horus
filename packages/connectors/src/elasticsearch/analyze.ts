@@ -8,7 +8,16 @@
  */
 
 import type { Evidence } from '@horus/core';
-import { levelToValue, type LogQuery } from './normalize.js';
+import {
+  levelToValue,
+  buildLevelFilter,
+  getField,
+  serviceTermField,
+  signatureTermField,
+  MERITT_FIELD_MAPPING,
+  type ElasticsearchFieldMapping,
+  type LogQuery,
+} from './normalize.js';
 
 export interface ErrorSignature {
   /** The error key (event_code), or '(none)' when absent. */
@@ -48,30 +57,39 @@ export function shortTs(iso: string): string {
  * Build the error-analysis aggregation body: per-signature count, first/last
  * occurrence, affected services, and a representative sample message; plus the
  * overall affected-services breakdown. `field` keys the signature (event_code).
+ * All field names are driven by `mapping` so the same config used for search
+ * is also used for analysis (HOR-47).
  */
 export function buildErrorAnalysisBody(
   q: LogQuery,
   field = 'event_code',
+  mapping: ElasticsearchFieldMapping = MERITT_FIELD_MAPPING,
 ): Record<string, unknown> {
   const filters: unknown[] = [];
 
   const minLevel =
-    q.level !== undefined && levelToValue(q.level) > 50 ? levelToValue(q.level) : 50;
-  filters.push({ range: { level: { gte: minLevel } } });
+    q.level !== undefined && levelToValue(q.level) > 50 ? q.level : 'error';
+  filters.push(buildLevelFilter(mapping, minLevel));
 
   if (q.from !== undefined || q.to !== undefined) {
     const rangeClause: Record<string, string> = {};
     if (q.from !== undefined) rangeClause['gte'] = q.from;
     if (q.to !== undefined) rangeClause['lte'] = q.to;
-    filters.push({ range: { time: rangeClause } });
+    filters.push({ range: { [mapping.timestampField]: rangeClause } });
   }
 
   if (q.service !== undefined) {
-    filters.push({ term: { 'service_name.keyword': q.service } });
+    filters.push({ term: { [serviceTermField(mapping)]: q.service } });
   }
 
   const mustClause: unknown[] =
-    q.text !== undefined ? [{ match: { message: q.text } }] : [{ match_all: {} }];
+    q.text !== undefined
+      ? [{ match: { [mapping.messageField]: q.text } }]
+      : [{ match_all: {} }];
+
+  const svcTerm = serviceTermField(mapping);
+  const sigTerm =
+    field === mapping.eventCodeField ? signatureTermField(mapping) : `${field}.keyword`;
 
   return {
     size: 0,
@@ -79,21 +97,21 @@ export function buildErrorAnalysisBody(
     query: { bool: { filter: filters, must: mustClause } },
     aggs: {
       by_sig: {
-        terms: { field: `${field}.keyword`, size: 25 },
+        terms: { field: sigTerm, size: 25 },
         aggs: {
-          first_seen: { min: { field: 'time' } },
-          last_seen: { max: { field: 'time' } },
-          services: { terms: { field: 'service_name.keyword', size: 10 } },
+          first_seen: { min: { field: mapping.timestampField } },
+          last_seen: { max: { field: mapping.timestampField } },
+          services: { terms: { field: svcTerm, size: 10 } },
           sample: {
             top_hits: {
               size: 1,
-              _source: ['message', 'component', 'log_logger'],
-              sort: [{ time: { order: 'desc' } }],
+              _source: [mapping.messageField, 'component', 'log_logger'],
+              sort: [{ [mapping.timestampField]: { order: 'desc' } }],
             },
           },
         },
       },
-      affected_services: { terms: { field: 'service_name.keyword', size: 20 } },
+      affected_services: { terms: { field: svcTerm, size: 20 } },
     },
   };
 }
@@ -103,10 +121,14 @@ function bucketsOf(node: unknown): Array<Record<string, unknown>> {
   return (n?.['buckets'] ?? []) as Array<Record<string, unknown>>;
 }
 
-/** Parse an error-analysis aggregation response into a LogAnalysis (no baseline). */
+/**
+ * Parse an error-analysis aggregation response into a LogAnalysis (no baseline).
+ * `messageField` must match the field requested in the sample top_hits _source.
+ */
 export function parseErrorAnalysis(
   resp: unknown,
   window: { from?: string; to?: string },
+  messageField = 'message',
 ): LogAnalysis {
   const res = resp as Record<string, unknown>;
   const aggs = (res['aggregations'] ?? {}) as Record<string, unknown>;
@@ -133,14 +155,23 @@ export function parseErrorAnalysis(
     const sampleArr = (sampleHits['hits'] ?? []) as Array<Record<string, unknown>>;
     const sampleSrc = (sampleArr[0]?.['_source'] ?? {}) as Record<string, unknown>;
 
+    // Use the configured message field (supports dotted paths like 'log.message');
+    // fall back to 'message' for backward compat.
+    const rawMsg = getField(sampleSrc, messageField);
+    const sampleMessage =
+      typeof rawMsg === 'string'
+        ? rawMsg
+        : typeof sampleSrc['message'] === 'string'
+          ? sampleSrc['message']
+          : undefined;
+
     return {
       key: String(b['key'] ?? '') || '(none)',
       count: typeof b['doc_count'] === 'number' ? b['doc_count'] : 0,
       firstSeen: typeof first === 'string' ? first : '',
       lastSeen: typeof last === 'string' ? last : '',
       services,
-      sampleMessage:
-        typeof sampleSrc['message'] === 'string' ? sampleSrc['message'] : undefined,
+      sampleMessage,
       sampleComponent:
         typeof sampleSrc['component'] === 'string'
           ? sampleSrc['component']

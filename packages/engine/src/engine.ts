@@ -349,48 +349,67 @@ export async function investigate(
   // dumps. Optional; never breaks the investigation on failure.
   let analysis: LogAnalysis | null = null;
   const logEvIds: string[] = [];
+  let logsCollected = false;
+  let logsCompatibilityError: string | undefined;
 
   if (deps.logs) {
     try {
-      const from = logWindowFrom(input.since);
-      // Error signatures are scoped by service + window, NOT by the hint text:
-      // the errors that matter to an incident rarely contain the hint words in
-      // their message (the hint resolves the code seed; the service scopes logs).
-      analysis = await deps.logs.analyzeErrors({ service: input.service, from });
+      // Validate field mapping against the actual index before querying so an
+      // incompatible config surfaces as an honest gap rather than empty evidence.
+      // Pass requiresService so a missing service field is an error, not a warning.
+      const compat = await deps.logs.checkCompatibility({
+        requiresService: input.service !== undefined,
+        requiresServiceAggregation: true,
+        requiresEventCode: true,
+      });
+      const compatErrors = compat.issues.filter((i) => i.severity === 'error');
+      if (compatErrors.length > 0) {
+        logsCompatibilityError = compatErrors
+          .map((i) => `${i.field}: ${i.message}`)
+          .join('; ')
+          .slice(0, 300);
+      } else {
+        const from = logWindowFrom(input.since);
+        // Error signatures are scoped by service + window, NOT by the hint text:
+        // the errors that matter to an incident rarely contain the hint words in
+        // their message (the hint resolves the code seed; the service scopes logs).
+        analysis = await deps.logs.analyzeErrors({ service: input.service, from });
+        logsCollected = true;
 
-      for (const s of analysis.signatures.slice(0, 15)) {
-        const tags: string[] = [];
-        if (s.isNew) tags.push('NEW');
-        else if (s.ratio !== undefined && Number.isFinite(s.ratio) && s.ratio >= 1.5) {
-          tags.push(`spike x${s.ratio.toFixed(1)}`);
+        for (const s of analysis.signatures.slice(0, 15)) {
+          const tags: string[] = [];
+          if (s.isNew) tags.push('NEW');
+          else if (s.ratio !== undefined && Number.isFinite(s.ratio) && s.ratio >= 1.5) {
+            tags.push(`spike x${s.ratio.toFixed(1)}`);
+          }
+          const svc = s.services.length > 0 ? ` · ${s.services.slice(0, 3).join(', ')}` : '';
+          const tagStr = tags.length > 0 ? ` [${tags.join(', ')}]` : '';
+          const ev = mkEv(
+            'log',
+            `Error ${s.key}: ${s.count}x (first ${shortTs(s.firstSeen)}, last ${shortTs(s.lastSeen)})${svc}${tagStr}`.slice(
+              0,
+              180,
+            ),
+            {
+              signature: s.key,
+              count: s.count,
+              firstSeen: s.firstSeen,
+              lastSeen: s.lastSeen,
+              services: s.services,
+              isNew: s.isNew ?? false,
+              ratio: s.ratio ?? null,
+              sampleMessage: s.sampleMessage ?? null,
+            },
+            {},
+            s.lastSeen || undefined,
+            s.isNew ? 0.95 : s.ratio !== undefined && s.ratio >= 1.5 ? 0.9 : 0.8,
+          );
+          // Normalize recurrence signals to top-level Evidence fields so the
+          // Cause Scoring Engine can read them without inspecting the payload.
+          if (s.isNew) ev.isNew = s.isNew;
+          if (typeof s.ratio === 'number' && Number.isFinite(s.ratio)) ev.ratio = s.ratio;
+          logEvIds.push(ev.id);
         }
-        const svc = s.services.length > 0 ? ` · ${s.services.slice(0, 3).join(', ')}` : '';
-        const tagStr = tags.length > 0 ? ` [${tags.join(', ')}]` : '';
-        const ev = mkEv(
-          'log',
-          `Error ${s.key}: ${s.count}x (first ${shortTs(s.firstSeen)}, last ${shortTs(s.lastSeen)})${svc}${tagStr}`.slice(
-            0,
-            180,
-          ),
-          {
-            signature: s.key,
-            count: s.count,
-            firstSeen: s.firstSeen,
-            lastSeen: s.lastSeen,
-            services: s.services,
-            isNew: s.isNew ?? false,
-            ratio: s.ratio ?? null,
-            sampleMessage: s.sampleMessage ?? null,
-          },
-          {},
-          s.lastSeen || undefined,
-          s.isNew ? 0.95 : s.ratio !== undefined && s.ratio >= 1.5 ? 0.9 : 0.8,
-        );
-        // Normalize recurrence signals to top-level Evidence fields so the
-        // Cause Scoring Engine can read them without inspecting the payload.
-        if (s.isNew) ev.isNew = s.isNew;
-        if (typeof s.ratio === 'number' && Number.isFinite(s.ratio)) ev.ratio = s.ratio;
-        logEvIds.push(ev.id);
       }
     } catch {
       // Logs failure must never break the investigation — continue without log evidence.
@@ -951,12 +970,14 @@ export async function investigate(
   // HOR-19 — compute gap analysis and cap confidence BEFORE persisting so the
   // persisted record reflects the capped value.
   const connectorFlags: ConnectorFlags = deps.connectors
-    ? { ...deps.connectors, metricsCollected }
+    ? { ...deps.connectors, metricsCollected, logsCollected, logsCompatibilityError }
     : {
         elasticsearch: deps.logs != null,
         mongodb: deps.mongo != null,
         grafana: deps.metrics != null,
         metricsCollected,
+        logsCollected,
+        logsCompatibilityError,
       };
   const gapAnalysis = detectMissingEvidence(report, connectorFlags);
   report.gapAnalysis = gapAnalysis;

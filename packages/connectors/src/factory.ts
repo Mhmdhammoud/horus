@@ -9,7 +9,7 @@
  * unchanged.
  */
 
-import type { HorusConfig, ResolvedEnvironment } from '@horus/core';
+import type { HorusConfig, ResolvedEnvironment, ResolvedElasticsearchFields } from '@horus/core';
 import { resolveEnvironment } from '@horus/core';
 import { AxonHttpClient } from './axon/client.js';
 import { AxonCodeProvider } from './axon/provider.js';
@@ -17,6 +17,11 @@ import type { CodeProvider } from './contract.js';
 import { ElasticsearchClient } from './elasticsearch/client.js';
 import { ElasticsearchLogsProvider } from './elasticsearch/provider.js';
 import type { LogsProvider } from './elasticsearch/provider.js';
+import {
+  type ElasticsearchFieldMapping,
+  MERITT_FIELD_MAPPING,
+  ECS_FIELD_MAPPING,
+} from './elasticsearch/normalize.js';
 import { GrafanaClient } from './grafana/client.js';
 import { GrafanaMetricsProvider } from './grafana/provider.js';
 import type { MetricsProvider } from './grafana/provider.js';
@@ -46,12 +51,34 @@ export function codeForEnv(renv: ResolvedEnvironment): CodeProvider | null {
  * Return an Elasticsearch `LogsProvider` for the given resolved environment, or
  * `null` when no (or incomplete) ES connector is configured.
  */
+function applyFieldOverrides(
+  base: ElasticsearchFieldMapping,
+  overrides: ResolvedElasticsearchFields,
+): ElasticsearchFieldMapping {
+  return {
+    ...base,
+    ...(overrides.timestamp !== undefined ? { timestampField: overrides.timestamp } : {}),
+    ...(overrides.level !== undefined ? { levelField: overrides.level } : {}),
+    ...(overrides.levelFormat !== undefined ? { levelFormat: overrides.levelFormat } : {}),
+    ...(overrides.service !== undefined ? { serviceField: overrides.service } : {}),
+    ...(overrides.serviceKeyword !== undefined ? { serviceKeyword: overrides.serviceKeyword } : {}),
+    ...(overrides.message !== undefined ? { messageField: overrides.message } : {}),
+    ...(overrides.messageFallback !== undefined ? { messageFallbackField: overrides.messageFallback } : {}),
+    ...(overrides.traceId !== undefined ? { traceIdField: overrides.traceId } : {}),
+    ...(overrides.requestId !== undefined ? { requestIdField: overrides.requestId } : {}),
+    ...(overrides.eventCode !== undefined ? { eventCodeField: overrides.eventCode } : {}),
+    ...(overrides.eventCodeKeyword !== undefined ? { eventCodeKeyword: overrides.eventCodeKeyword } : {}),
+  };
+}
+
 export function logsForEnv(renv: ResolvedEnvironment): LogsProvider | null {
   const es = renv.connectors.elasticsearch;
   if (!es || !es.url) return null;
+  const base = es.preset === 'ecs' ? ECS_FIELD_MAPPING : MERITT_FIELD_MAPPING;
+  const fieldMapping = es.fields !== undefined ? applyFieldOverrides(base, es.fields) : base;
   return new ElasticsearchLogsProvider(
     new ElasticsearchClient({ baseUrl: es.url, username: es.username, password: es.password }),
-    { indexPattern: es.indexPattern },
+    { indexPattern: es.indexPattern, fieldMapping },
   );
 }
 

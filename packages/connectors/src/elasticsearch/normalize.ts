@@ -1,5 +1,5 @@
 /**
- * Pure normalization helpers for Elasticsearch log documents (HOR-10).
+ * Pure normalization helpers for Elasticsearch log documents (HOR-10, HOR-47).
  * No I/O — all functions are exhaustively unit-testable.
  */
 
@@ -35,6 +35,144 @@ export function levelToValue(l: LogLevel): number {
 }
 
 // ---------------------------------------------------------------------------
+// Field mapping (HOR-47)
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps abstract log concepts to actual Elasticsearch field names.
+ *
+ * Configure this to match your index schema. Both the Meritt shared logger
+ * shape and ECS (Elastic Common Schema) are supported out of the box via
+ * MERITT_FIELD_MAPPING and ECS_FIELD_MAPPING. For custom schemas, supply
+ * your own values.
+ */
+export interface ElasticsearchFieldMapping {
+  /**
+   * ISO timestamp field used for range filtering and sorting.
+   * Meritt: 'time'. ECS: '@timestamp'.
+   */
+  timestampField: string;
+  /**
+   * Severity / log-level field.
+   * Meritt: 'level' (numeric long). ECS: 'log.level' (string keyword).
+   */
+  levelField: string;
+  /**
+   * Whether levelField stores Pino numeric values (10/20/30/40/50/60)
+   * or string labels ('debug'/'info'/'warn'/'error'/'fatal').
+   *
+   * For string format, levelField must be a keyword-typed field (or include
+   * the .keyword suffix for text+keyword mappings).
+   */
+  levelFormat: 'numeric' | 'string';
+  /**
+   * Service/application name field.
+   * Meritt: 'service_name' (text+keyword). ECS: 'service.name' (keyword).
+   */
+  serviceField: string;
+  /**
+   * Whether serviceField has a .keyword sub-field for exact term matching.
+   * Set false when the field is already keyword-typed (e.g. ECS service.name).
+   * Default: true (Meritt service_name is text+keyword).
+   */
+  serviceKeyword: boolean;
+  /** Primary message field. */
+  messageField: string;
+  /** Fallback message field when messageField is absent (e.g. Pino 'msg'). */
+  messageFallbackField?: string;
+  /**
+   * Top-level trace/correlation ID field.
+   * Meritt: 'trace_id'. ECS: 'trace.id'.
+   * When set, normalizeHit reads this field directly instead of trying to
+   * parse it from a serialised context blob.
+   */
+  traceIdField?: string;
+  /** Top-level request ID field, if distinct from traceIdField. */
+  requestIdField?: string;
+  /**
+   * Structured event/error code field used for signature aggregations.
+   * Meritt: 'event_code'. ECS: 'event.code'.
+   */
+  eventCodeField: string;
+  /**
+   * Whether eventCodeField has a .keyword sub-field for terms aggregations.
+   * Set false when the field is already keyword-typed (e.g. ECS event.code).
+   * Default: true (Meritt event_code is text+keyword).
+   */
+  eventCodeKeyword: boolean;
+}
+
+/**
+ * Default mapping for the Meritt shared logger (pino-based).
+ * Matches field names produced by the @meritt/utils Logger as observed in
+ * real Elasticsearch indices (maison-safqa-prod-new-*, leadcall-api-prod-*).
+ */
+export const MERITT_FIELD_MAPPING: ElasticsearchFieldMapping = {
+  timestampField: 'time',
+  levelField: 'level',
+  levelFormat: 'numeric',
+  serviceField: 'service_name',
+  serviceKeyword: true,
+  messageField: 'message',
+  messageFallbackField: 'msg',
+  traceIdField: 'trace_id',
+  eventCodeField: 'event_code',
+  eventCodeKeyword: true,
+};
+
+/**
+ * Mapping for ECS (Elastic Common Schema) deployments.
+ * Compatible with Filebeat, Metricbeat, APM agents, and most managed
+ * Elastic offerings that follow ECS conventions.
+ *
+ * ECS uses nested _source documents (e.g. { service: { name: 'x' } }).
+ * normalizeHit resolves dotted field paths correctly for both nested and
+ * pre-flattened ECS variants.
+ */
+export const ECS_FIELD_MAPPING: ElasticsearchFieldMapping = {
+  timestampField: '@timestamp',
+  levelField: 'log.level',
+  levelFormat: 'string',
+  // ECS service.name is already keyword-typed — no .keyword sub-field needed.
+  serviceField: 'service.name',
+  serviceKeyword: false,
+  messageField: 'message',
+  traceIdField: 'trace.id',
+  requestIdField: 'http.request.id',
+  // ECS event.code is already keyword-typed — no .keyword sub-field needed.
+  eventCodeField: 'event.code',
+  eventCodeKeyword: false,
+};
+
+/**
+ * Validate a field mapping and throw an actionable error for invalid config.
+ * Call this once at provider construction time.
+ */
+export function validateFieldMapping(m: ElasticsearchFieldMapping): void {
+  if (!m.timestampField) {
+    throw new Error(
+      "[Horus/Elasticsearch] timestampField must be non-empty. Common values: 'time' (Meritt), '@timestamp' (ECS).",
+    );
+  }
+  if (!m.levelField) {
+    throw new Error(
+      "[Horus/Elasticsearch] levelField must be non-empty. Common values: 'level' (Meritt numeric), 'log.level' (ECS string).",
+    );
+  }
+  if (!m.serviceField) {
+    throw new Error(
+      "[Horus/Elasticsearch] serviceField must be non-empty. Common values: 'service_name' (Meritt), 'service.name' (ECS).",
+    );
+  }
+  if (!m.messageField) {
+    throw new Error('[Horus/Elasticsearch] messageField must be non-empty.');
+  }
+  if (!m.eventCodeField) {
+    throw new Error('[Horus/Elasticsearch] eventCodeField must be non-empty.');
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Shared types
 // ---------------------------------------------------------------------------
 
@@ -46,6 +184,8 @@ export interface LogRecord {
   service?: string;
   component?: string;
   eventCode?: string;
+  traceId?: string;
+  requestId?: string;
   host?: string;
   index: string;
   raw: Record<string, unknown>;
@@ -75,29 +215,89 @@ export interface ErrorDelta {
 }
 
 // ---------------------------------------------------------------------------
+// Internal helpers (exported so analyze.ts can reuse them)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read a (possibly dotted) field path from an Elasticsearch _source object.
+ *
+ * Handles both:
+ * - Flattened keys: { "service_name": "api", "@timestamp": "..." } — Meritt/Pino
+ * - Nested objects: { "service": { "name": "api" }, "log": { "level": "error" } } — ECS
+ * - Pre-flattened ECS: { "service.name": "api" } — Logstash ingest pipelines
+ */
+export function getField(src: Record<string, unknown>, path: string): unknown {
+  // Fast path: literal key match (covers flattened Meritt, '@timestamp', etc.)
+  if (Object.prototype.hasOwnProperty.call(src, path)) return src[path];
+  // Dotted path: navigate nested object (covers standard ECS _source)
+  const parts = path.split('.');
+  let node: unknown = src;
+  for (const part of parts) {
+    if (node === null || typeof node !== 'object') return undefined;
+    node = (node as Record<string, unknown>)[part];
+  }
+  return node;
+}
+
+/** Return the term-query field name for service filtering. */
+export function serviceTermField(m: ElasticsearchFieldMapping): string {
+  return m.serviceKeyword ? `${m.serviceField}.keyword` : m.serviceField;
+}
+
+/** Return the terms-aggregation field name for event/error code. */
+export function signatureTermField(m: ElasticsearchFieldMapping): string {
+  return m.eventCodeKeyword ? `${m.eventCodeField}.keyword` : m.eventCodeField;
+}
+
+/**
+ * Build a level filter clause for an ES bool query.
+ *
+ * Numeric format: range filter on the numeric field (Pino convention).
+ * String format: terms filter matching all level labels at or above minLevel.
+ */
+export function buildLevelFilter(
+  m: ElasticsearchFieldMapping,
+  minLevel: LogLevel,
+): unknown {
+  if (m.levelFormat === 'numeric') {
+    return { range: { [m.levelField]: { gte: levelToValue(minLevel) } } };
+  }
+  const minValue = levelToValue(minLevel);
+  const stringLevels = (Object.keys(LEVEL_VALUE) as LogLevel[]).filter(
+    (l) => LEVEL_VALUE[l] >= minValue,
+  );
+  return { terms: { [m.levelField]: stringLevels } };
+}
+
+// ---------------------------------------------------------------------------
 // Query builders
 // ---------------------------------------------------------------------------
 
-export function buildSearchBody(q: LogQuery): Record<string, unknown> {
+export function buildSearchBody(
+  q: LogQuery,
+  mapping: ElasticsearchFieldMapping = MERITT_FIELD_MAPPING,
+): Record<string, unknown> {
   const filters: unknown[] = [];
 
   if (q.level !== undefined) {
-    filters.push({ range: { level: { gte: levelToValue(q.level) } } });
+    filters.push(buildLevelFilter(mapping, q.level));
   }
 
   if (q.from !== undefined || q.to !== undefined) {
     const rangeClause: Record<string, string> = {};
     if (q.from !== undefined) rangeClause['gte'] = q.from;
     if (q.to !== undefined) rangeClause['lte'] = q.to;
-    filters.push({ range: { time: rangeClause } });
+    filters.push({ range: { [mapping.timestampField]: rangeClause } });
   }
 
   if (q.service !== undefined) {
-    filters.push({ term: { 'service_name.keyword': q.service } });
+    filters.push({ term: { [serviceTermField(mapping)]: q.service } });
   }
 
   const mustClause: unknown[] =
-    q.text !== undefined ? [{ match: { message: q.text } }] : [{ match_all: {} }];
+    q.text !== undefined
+      ? [{ match: { [mapping.messageField]: q.text } }]
+      : [{ match_all: {} }];
 
   return {
     query: {
@@ -106,29 +306,39 @@ export function buildSearchBody(q: LogQuery): Record<string, unknown> {
         must: mustClause,
       },
     },
-    sort: [{ time: { order: 'desc' } }],
+    sort: [{ [mapping.timestampField]: { order: 'desc' } }],
     size: q.limit ?? 50,
   };
 }
 
-export function buildErrorAggBody(q: LogQuery, field: string): Record<string, unknown> {
+export function buildErrorAggBody(
+  q: LogQuery,
+  field: string,
+  mapping: ElasticsearchFieldMapping = MERITT_FIELD_MAPPING,
+): Record<string, unknown> {
   const filters: unknown[] = [];
 
-  // Force level >= error (50) unless q.level is set higher.
-  const minLevel =
-    q.level !== undefined && levelToValue(q.level) > 50 ? levelToValue(q.level) : 50;
-  filters.push({ range: { level: { gte: minLevel } } });
+  // Force level >= error unless q.level is set higher.
+  const minLevel: LogLevel =
+    q.level !== undefined && levelToValue(q.level) > 50 ? q.level : 'error';
+  filters.push(buildLevelFilter(mapping, minLevel));
 
   if (q.from !== undefined || q.to !== undefined) {
     const rangeClause: Record<string, string> = {};
     if (q.from !== undefined) rangeClause['gte'] = q.from;
     if (q.to !== undefined) rangeClause['lte'] = q.to;
-    filters.push({ range: { time: rangeClause } });
+    filters.push({ range: { [mapping.timestampField]: rangeClause } });
   }
 
   if (q.service !== undefined) {
-    filters.push({ term: { 'service_name.keyword': q.service } });
+    filters.push({ term: { [serviceTermField(mapping)]: q.service } });
   }
+
+  // Use the mapping's keyword-aware term field when the field matches the
+  // configured eventCodeField; otherwise fall back to appending .keyword
+  // (for explicit field overrides from callers that pre-date HOR-47).
+  const aggField =
+    field === mapping.eventCodeField ? signatureTermField(mapping) : `${field}.keyword`;
 
   return {
     size: 0,
@@ -140,7 +350,7 @@ export function buildErrorAggBody(q: LogQuery, field: string): Record<string, un
     aggs: {
       by_key: {
         terms: {
-          field: `${field}.keyword`,
+          field: aggField,
           size: 20,
         },
       },
@@ -152,50 +362,126 @@ export function buildErrorAggBody(q: LogQuery, field: string): Record<string, un
 // Hit normalization
 // ---------------------------------------------------------------------------
 
-export function normalizeHit(hit: unknown): LogRecord {
+function resolveLevelFromSource(
+  src: Record<string, unknown>,
+  m: ElasticsearchFieldMapping,
+): { levelValue: number; level: LogLevel } {
+  const raw = getField(src, m.levelField);
+  if (m.levelFormat === 'numeric') {
+    if (typeof raw === 'number') {
+      return { levelValue: raw, level: valueToLevel(raw) };
+    }
+    if (typeof raw === 'string') {
+      const n = Number(raw);
+      if (!Number.isNaN(n)) return { levelValue: n, level: valueToLevel(n) };
+      const mapped = LEVEL_VALUE[raw.toLowerCase() as LogLevel];
+      if (mapped !== undefined) {
+        return { levelValue: mapped, level: raw.toLowerCase() as LogLevel };
+      }
+    }
+  } else {
+    if (typeof raw === 'string') {
+      const lower = raw.toLowerCase() as LogLevel;
+      const val = LEVEL_VALUE[lower];
+      if (val !== undefined) return { levelValue: val, level: lower };
+    }
+  }
+  // Graceful fallbacks for Meritt shape when a non-standard mapping is in use
+  if (typeof src['level'] === 'number') {
+    const lv = src['level'];
+    return { levelValue: lv, level: valueToLevel(lv) };
+  }
+  if (typeof src['log_level'] === 'string') {
+    const ll = src['log_level'] as string;
+    const lower = ll.toLowerCase() as LogLevel;
+    const val = LEVEL_VALUE[lower];
+    if (val !== undefined) return { levelValue: val, level: lower };
+  }
+  return { levelValue: 30, level: 'info' };
+}
+
+export function normalizeHit(
+  hit: unknown,
+  mapping: ElasticsearchFieldMapping = MERITT_FIELD_MAPPING,
+): LogRecord {
   const h = hit as Record<string, unknown>;
   const src = (h['_source'] ?? {}) as Record<string, unknown>;
 
+  // getField handles both flattened keys ('service_name', '@timestamp') and
+  // nested ECS objects ('service.name', 'log.level', 'trace.id').
+
+  // Timestamp: use configured field, fall back to common alternatives.
+  const tsRaw = getField(src, mapping.timestampField);
   const timestamp =
-    typeof src['time'] === 'string'
-      ? src['time']
+    typeof tsRaw === 'string'
+      ? tsRaw
       : typeof src['@timestamp'] === 'string'
-        ? src['@timestamp']
-        : '';
+        ? (src['@timestamp'] as string)
+        : typeof src['time'] === 'string'
+          ? (src['time'] as string)
+          : '';
 
-  let levelValue: number;
-  if (typeof src['level'] === 'number') {
-    levelValue = src['level'];
-  } else if (typeof src['log_level'] === 'string') {
-    const ll = src['log_level'] as string;
-    const mapped = ll.toLowerCase() as LogLevel;
-    levelValue = LEVEL_VALUE[mapped] ?? 30;
-  } else {
-    levelValue = 30;
-  }
+  const { levelValue, level } = resolveLevelFromSource(src, mapping);
 
-  const level = valueToLevel(levelValue);
-
+  // Message: use configured field, then fallback, then 'msg'.
+  const msgRaw = getField(src, mapping.messageField);
+  const msgFbRaw =
+    mapping.messageFallbackField !== undefined
+      ? getField(src, mapping.messageFallbackField)
+      : undefined;
   const message =
-    typeof src['message'] === 'string'
-      ? src['message']
-      : typeof src['msg'] === 'string'
-        ? src['msg']
-        : '';
+    typeof msgRaw === 'string'
+      ? msgRaw
+      : typeof msgFbRaw === 'string'
+        ? msgFbRaw
+        : typeof src['msg'] === 'string'
+          ? (src['msg'] as string)
+          : '';
 
-  const service = typeof src['service_name'] === 'string' ? src['service_name'] : undefined;
+  const svcRaw = getField(src, mapping.serviceField);
+  const service = typeof svcRaw === 'string' ? svcRaw : undefined;
+
   const component =
     typeof src['component'] === 'string'
       ? src['component']
       : typeof src['log_logger'] === 'string'
         ? src['log_logger']
         : undefined;
+
+  const ecRaw = getField(src, mapping.eventCodeField);
   const eventCode =
-    typeof src['event_code'] === 'string'
-      ? src['event_code']
+    typeof ecRaw === 'string'
+      ? ecRaw
       : typeof src['code'] === 'string'
         ? src['code']
         : undefined;
+
+  // Trace ID: check configured field (using getField for nested ECS paths),
+  // then fall back to parsing a serialised context blob (legacy Meritt pattern).
+  let traceId: string | undefined;
+  if (mapping.traceIdField !== undefined) {
+    const raw = getField(src, mapping.traceIdField);
+    if (typeof raw === 'string') traceId = raw;
+  }
+  if (traceId === undefined) {
+    const ctxRaw = src['context'];
+    if (typeof ctxRaw === 'string') {
+      try {
+        const parsed = JSON.parse(ctxRaw) as Record<string, unknown>;
+        const tid = parsed['traceId'] ?? parsed['trace_id'];
+        if (typeof tid === 'string') traceId = tid;
+      } catch {
+        // not parseable — leave undefined
+      }
+    }
+  }
+
+  let requestId: string | undefined;
+  if (mapping.requestIdField !== undefined) {
+    const raw = getField(src, mapping.requestIdField);
+    if (typeof raw === 'string') requestId = raw;
+  }
+
   const host =
     typeof src['hostname'] === 'string'
       ? src['hostname']
@@ -205,14 +491,30 @@ export function normalizeHit(hit: unknown): LogRecord {
 
   const index = typeof h['_index'] === 'string' ? h['_index'] : '';
 
-  return { timestamp, level, levelValue, message, service, component, eventCode, host, index, raw: src };
+  return {
+    timestamp,
+    level,
+    levelValue,
+    message,
+    service,
+    component,
+    eventCode,
+    traceId,
+    requestId,
+    host,
+    index,
+    raw: src,
+  };
 }
 
-export function hitsToRecords(searchResponse: unknown): LogRecord[] {
+export function hitsToRecords(
+  searchResponse: unknown,
+  mapping: ElasticsearchFieldMapping = MERITT_FIELD_MAPPING,
+): LogRecord[] {
   const res = searchResponse as Record<string, unknown>;
   const hits = res['hits'] as Record<string, unknown> | undefined;
   const hitsArr = (hits?.['hits'] ?? []) as unknown[];
-  return hitsArr.map(normalizeHit);
+  return hitsArr.map((h) => normalizeHit(h, mapping));
 }
 
 // ---------------------------------------------------------------------------
@@ -264,18 +566,6 @@ export function logsToEvidence(
   collectedAt: string,
 ): Evidence[] {
   return records.map((r, i) => {
-    let traceId: string | undefined;
-    const ctxRaw = r.raw['context'];
-    if (typeof ctxRaw === 'string') {
-      try {
-        const parsed = JSON.parse(ctxRaw) as Record<string, unknown>;
-        const tid = parsed['traceId'] ?? parsed['trace_id'];
-        if (typeof tid === 'string') traceId = tid;
-      } catch {
-        // not parseable — leave undefined
-      }
-    }
-
     const componentOrService = r.component ?? r.service ?? '';
     const title = `[${r.level}] ${componentOrService}: ${r.message}`.slice(0, 160);
 
@@ -296,7 +586,7 @@ export function logsToEvidence(
       timestamp: r.timestamp,
       relevance,
       payload: r,
-      links: { traceId },
+      links: { traceId: r.traceId, requestId: r.requestId },
       provenance: { query, collectedAt },
     };
   });

@@ -73,6 +73,38 @@ export async function runLogs(
     }
 
     const resolvedService = service ?? renv.connectors.elasticsearch?.serviceName;
+
+    // Validate that the configured field mapping is compatible with the actual
+    // index before querying. Errors block collection; warnings are advisory.
+    // Pass requiresService so a missing service field blocks rather than silently
+    // returning zero results.
+    try {
+      const compat = await logs.checkCompatibility({
+        requiresService: resolvedService !== undefined,
+        // raw mode dumps log lines (searchLogs); only the default path calls
+        // analyzeErrors() which requires aggregatable event-code and service fields.
+        requiresServiceAggregation: opts.raw !== true,
+        requiresEventCode: opts.raw !== true,
+      });
+      for (const w of compat.issues.filter((i) => i.severity === 'warning')) {
+        console.warn(pc.yellow(`[warn] ${w.field}: ${w.message}`));
+      }
+      const errors = compat.issues.filter((i) => i.severity === 'error');
+      if (errors.length > 0) {
+        console.error(pc.red('Elasticsearch field mapping is incompatible with the index:'));
+        for (const e of errors) {
+          console.error(pc.red(`  ${e.field}: ${e.message}`));
+        }
+        console.error(
+          pc.dim('Fix fields.* overrides in your connector config or choose the correct preset.'),
+        );
+        return 1;
+      }
+    } catch {
+      // Compat check is best-effort: network or auth errors must not prevent
+      // legitimate queries from proceeding.
+      console.warn(pc.dim('[warn] Elasticsearch compatibility check unavailable — proceeding.'));
+    }
     const from = sinceToIso(opts.since);
 
     // --raw: the escape hatch for an actual line dump.

@@ -161,13 +161,34 @@ describe('detectMissingEvidence', () => {
 
   it('logs gap distinguishes configured-but-empty from not-configured', () => {
     const report = makeMinimalReport({ evidence: [] });
-    const configured = detectMissingEvidence(report, { elasticsearch: true })
-      .gaps.find((g) => g.dimension === 'logs');
+    // logsCollected:true = collection ran successfully, just no error logs in window
+    const configured = detectMissingEvidence(report, {
+      elasticsearch: true,
+      logsCollected: true,
+    }).gaps.find((g) => g.dimension === 'logs');
     const notConfigured = detectMissingEvidence(report, { elasticsearch: false })
       .gaps.find((g) => g.dimension === 'logs');
     expect(configured?.why).toContain('No error logs matched');
     expect(notConfigured?.why).toContain('No Elasticsearch connector');
     expect(configured?.nextSource).not.toContain('HOR-');
+  });
+
+  it('logs gap reflects collection failure when logsCollected is false', () => {
+    const report = makeMinimalReport({ evidence: [] });
+    const gap = detectMissingEvidence(report, { elasticsearch: true, logsCollected: false })
+      .gaps.find((g) => g.dimension === 'logs');
+    expect(gap?.why).toContain('failed');
+  });
+
+  it('logs gap reflects mapping incompatibility when logsCompatibilityError is set', () => {
+    const report = makeMinimalReport({ evidence: [] });
+    const gap = detectMissingEvidence(report, {
+      elasticsearch: true,
+      logsCompatibilityError: "Timestamp field 'time' not found",
+    }).gaps.find((g) => g.dimension === 'logs');
+    expect(gap?.why).toContain('incompatible');
+    expect(gap?.why).toContain("'time'");
+    expect(gap?.nextSource).toContain('preset');
   });
 
   // -------------------------------------------------------------------------
