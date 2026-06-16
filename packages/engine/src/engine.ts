@@ -267,8 +267,12 @@ export async function investigate(
 
   // b. RESOLVE seeds — rank candidates so we prefer architectural entry points
   // (resolver/controller/service/route) over tiny helpers/scripts (HOR-39).
+  // Pass hint tokens so domain-specific symbols (e.g. ShopifyWebhookController)
+  // beat generic architectural matches (e.g. BrandService) when the hint names
+  // the domain explicitly.
   const rawSeeds = await code.searchSymbols(hint, 5);
-  const ranked = rankSeeds(rawSeeds);
+  const hintTokens = [...new Set(tokenize(hint))];
+  const ranked = rankSeeds(rawSeeds, hintTokens);
   const seeds = ranked.map((r) => r.symbol);
   // noUncheckedIndexedAccess: a non-empty array could still index to undefined.
   const top = seeds[0];
@@ -513,13 +517,11 @@ export async function investigate(
   if (deps.mongo) {
     try {
       stateAnalysis = await deps.mongo.analyzeState();
-      // Relevance terms: the hint + the resolved seed's name and file basename, so
-      // unrelated stale/legacy collections don't dominate (HOR-39).
-      const seedBase = top.filePath.split('/').pop() ?? '';
-      const terms = [
-        ...new Set([...tokenize(hint), ...tokenize(top.name), ...tokenize(seedBase)]),
-      ];
-      for (const s of selectStateSignals(stateAnalysis, terms)) {
+      // Relevance terms: hint tokens only. Using seed name/file tokens (e.g. "service"
+      // from BrandService) causes generic architectural words to match unrelated
+      // collections (e.g. "services", "handlers"). Domain context lives in the hint.
+      const stateTerms = [...new Set(tokenize(hint))];
+      for (const s of selectStateSignals(stateAnalysis, stateTerms)) {
         const ev = mkEv('state', s.title, s.payload, {}, s.timestamp, s.relevance);
         stateEvIds.push(ev.id);
         stateCollections.add(s.collection);
@@ -567,14 +569,17 @@ export async function investigate(
 
   // e0d. METRIC EVIDENCE (HOR-11 / HOR-40) — Grafana anomaly findings scoped by hint.
   // Optional; never breaks the investigation on failure.
-  // Hard timeout keeps a slow/large Grafana from stalling the report.
-  const METRICS_TIMEOUT_MS = 10_000;
+  // Timeout is generous (30 s) because dashboard discovery + dual-window queries
+  // per panel can easily exceed 10 s on a real Grafana instance. `horus metrics`
+  // has no timeout, so we match its effective behaviour here.
+  const METRICS_TIMEOUT_MS = 30_000;
   const metricEvIds: string[] = [];
   const latencyMetricEvIds: string[] = [];
   const queueMetricEvIds: string[] = [];
   // Per-queue metric IDs — queue-growth anomalies attributed to the matching queue name.
   const queueMetricEvIdsByQueue = new Map<string, string[]>();
   let metricsCollected = false;
+  let metricsFailureReason: string | undefined;
 
   if (deps.metrics) {
     const ac = new AbortController();
@@ -662,9 +667,10 @@ export async function investigate(
       }
       // Set only after the full collection + conversion loop completes without error.
       metricsCollected = true;
-    } catch {
+    } catch (metricsErr) {
       // Metrics failure (including timeout) must never break the investigation.
-      // metricsCollected stays false — gap detector will report the failure.
+      // metricsCollected stays false — gap detector will report the failure + reason.
+      metricsFailureReason = (metricsErr as Error)?.message?.slice(0, 120) ?? 'unknown error';
     } finally {
       // Always clear the timer to prevent it from firing after a fast response
       // and to release the reference regardless of the outcome.
@@ -980,8 +986,10 @@ export async function investigate(
     });
   }
 
-  // Runtime-errors + queue-path cause: only when we have error evidence AND a queue path.
-  if (analysis !== null && analysis.signatures.length > 0 && queueHits.length > 0) {
+  // Runtime-errors + queue-path cause: only when we have DIRECT error evidence AND a queue path.
+  // Ambient-only signatures have no structural link to the seed and must not drive
+  // cause ranking — they inflate confidence on unrelated high-volume errors.
+  if (analysis !== null && analysis.signatures.length > 0 && queueHits.length > 0 && directLogEvIds.length > 0) {
     const firstQueue = queueHits[0];
     const queueLabel =
       firstQueue !== undefined
@@ -992,7 +1000,7 @@ export async function investigate(
       id: 'cause:error-correlation',
       title: `Runtime errors (${analysis.totalErrors}${topSig ? `, top ${topSig.key}` : ''}) correlate with the implicated queue path ${queueLabel}`,
       category: 'error-correlation',
-      sourceEvidenceIds: logEvIds.slice(0, 3),
+      sourceEvidenceIds: directLogEvIds.slice(0, 3),
       baseScore: 0.30,
       metadata: { blastRadius },
     });
@@ -1102,12 +1110,13 @@ export async function investigate(
   // HOR-19 — compute gap analysis and cap confidence BEFORE persisting so the
   // persisted record reflects the capped value.
   const connectorFlags: ConnectorFlags = deps.connectors
-    ? { ...deps.connectors, metricsCollected, logsCollected, logsCompatibilityError }
+    ? { ...deps.connectors, metricsCollected, metricsFailureReason, logsCollected, logsCompatibilityError }
     : {
         elasticsearch: deps.logs != null,
         mongodb: deps.mongo != null,
         grafana: deps.metrics != null,
         metricsCollected,
+        metricsFailureReason,
         logsCollected,
         logsCompatibilityError,
       };

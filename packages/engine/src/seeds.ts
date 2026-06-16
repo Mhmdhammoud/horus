@@ -33,7 +33,7 @@ export function seedRole(s: Symbol): string {
 }
 
 /** Score a seed; higher = a more likely investigation entry point. */
-export function scoreSeed(s: Symbol, index: number): number {
+export function scoreSeed(s: Symbol, index: number, hintTokens?: string[]): number {
   const hay = `${s.name} ${s.filePath}`.toLowerCase();
   let score = 0;
   if (PREFER.test(hay)) score += 3;
@@ -44,13 +44,26 @@ export function scoreSeed(s: Symbol, index: number): number {
   if (/(^|\/)scripts?\//i.test(s.filePath)) score -= 2;
   // Mild tie-break toward earlier search rank (search relevance).
   score += Math.max(0, 5 - index) * 0.1;
+  // Domain-hint boost: strongly prefer symbols whose name/path contain hint tokens.
+  // +2 per matching token, capped at +6 so a 3-token match decisively beats a
+  // generic architectural-role match (max architectural score is +5).
+  if (hintTokens !== undefined && hintTokens.length > 0) {
+    let hintBoost = 0;
+    for (const tok of hintTokens) {
+      if (hay.includes(tok)) {
+        hintBoost += 2;
+        if (hintBoost >= 6) break;
+      }
+    }
+    score += hintBoost;
+  }
   return score;
 }
 
 /** Rank seeds best-first. Stable for equal scores (preserves search order). */
-export function rankSeeds(seeds: Symbol[]): RankedSeed[] {
+export function rankSeeds(seeds: Symbol[], hintTokens?: string[]): RankedSeed[] {
   return seeds
-    .map((symbol, i) => ({ symbol, score: scoreSeed(symbol, i), role: seedRole(symbol), i }))
+    .map((symbol, i) => ({ symbol, score: scoreSeed(symbol, i, hintTokens), role: seedRole(symbol), i }))
     .sort((a, b) => (b.score === a.score ? a.i - b.i : b.score - a.score))
     .map(({ symbol, score, role }) => ({ symbol, score, role }));
 }

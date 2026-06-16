@@ -435,8 +435,8 @@ describe('investigate() — timeout aborts metrics provider', () => {
       { code: fakeCode, db: fakeDb, metrics: slowMetrics, connectors: { grafana: true } },
     );
 
-    // Advance past the 10-second metrics deadline.
-    await vi.advanceTimersByTimeAsync(11_000);
+    // Advance past the 30-second metrics deadline.
+    await vi.advanceTimersByTimeAsync(31_000);
     const report = await reportPromise;
 
     // Signal must have been aborted by the deadline.

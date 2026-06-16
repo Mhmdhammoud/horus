@@ -32,6 +32,12 @@ export interface ConnectorFlags {
    * Lets the gap detector distinguish "no anomalies" from "collection failed".
    */
   metricsCollected?: boolean;
+  /**
+   * Short description of why metrics collection failed (e.g. "metrics timeout",
+   * "connection refused"). Only set when collection was attempted and failed.
+   * Used to surface the exact failure reason in the gap analysis.
+   */
+  metricsFailureReason?: string;
 }
 
 /** A single dimension of missing evidence and its investigation impact. */
@@ -113,9 +119,12 @@ export function detectMissingEvidence(
   // Only add a metrics gap when metrics are genuinely missing.
   // Successful collection with no anomalies is negative evidence — not a gap.
   if (!hasMetric && !(connectors.grafana && connectors.metricsCollected)) {
+    const failureDetail = connectors.metricsFailureReason
+      ? ` (${connectors.metricsFailureReason})`
+      : '';
     const metricsWhy = !connectors.grafana
       ? 'No Grafana connector configured — cannot see latency/error-rate trends.'
-      : 'Grafana metrics collection failed or timed out — metric trends unavailable for this investigation.';
+      : `Grafana metrics collection failed or timed out${failureDetail} — metric trends unavailable for this investigation.`;
     const metricsNextSource = !connectors.grafana
       ? 'Add a `grafana` connector to the environment'
       : 'Check Grafana connectivity, then run `horus metrics "<hint>"` manually';

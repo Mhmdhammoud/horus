@@ -45,4 +45,14 @@ describe('rankSeeds', () => {
     const b = sym('bService', 'src/services/b.service.ts');
     expect(rankSeeds([a, b]).map((r) => r.symbol.name)).toEqual(['aService', 'bService']);
   });
+
+  it('hint tokens boost domain-specific symbols above generic architectural matches', () => {
+    // Without hint tokens, BrandService (service bonus) can beat ShopifyWebhookRegistrationService
+    // if it appears earlier in search results. With hint tokens it should always lose.
+    const brandService = sym('BrandService', 'src/services/brand.service.ts');
+    const shopifyController = sym('ShopifyWebhookRegistrationService', 'src/shopify/shopify-app-webhook.controller.ts');
+    const hintTokens = ['shopify', 'webhook', 'uninstall'];
+    const ranked = rankSeeds([brandService, shopifyController], hintTokens);
+    expect(ranked[0]?.symbol.name).toBe('ShopifyWebhookRegistrationService');
+  });
 });
