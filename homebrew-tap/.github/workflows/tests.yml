@@ -18,13 +18,11 @@ jobs:
       - name: Set up Homebrew
         uses: Homebrew/actions/setup-homebrew@master
 
-      - name: Tap local repository
-        run: |
-          brew untap meritt-dev/tap 2>/dev/null || true
-          brew tap meritt-dev/tap "$PWD"
-
       - name: Audit formula
-        run: brew audit --strict meritt-dev/tap/horus
+        run: |
+          brew tap horus-ci/tap "$PWD"
+          brew audit --strict horus-ci/tap/horus
+          brew untap horus-ci/tap 2>/dev/null || true
 
   test:
     name: Install and test formula
