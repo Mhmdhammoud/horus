@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { Evidence } from '@horus/core';
-import { buildGraph, maxImplicationScore } from './graph.js';
+import { buildGraph, maxImplicationScore, implicatedEvidenceIdsByNodeType } from './graph.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -614,14 +614,14 @@ describe('maxImplicationScore', () => {
     expect(maxImplicationScore(g, ['ev-healthy-state'])).toBe(0);
   });
 
-  it('returns 0 when evidence ids match only evidence nodes (not infrastructure)', () => {
-    // symbol evidence creates no infrastructure node
+  it('returns 0 when evidence ids match only code topology nodes (symbol/file), which are never implicated', () => {
+    // symbol evidence creates symbol + file nodes but they are excluded from implication scoring
     const ev = makeEv({
       id: 'ev-symbol',
       source: 'code',
       kind: 'symbol',
       relevance: 0.9,
-      payload: { symbol: { id: 'sym:foo', name: 'foo' } },
+      payload: { symbol: { id: 'sym:foo', name: 'foo', filePath: 'src/foo.ts' } },
       links: { symbolId: 'sym:foo' },
     });
     const g = buildGraph([ev]);
@@ -642,5 +642,261 @@ describe('maxImplicationScore', () => {
     // ask for both — should return max(0.7, 0.95)
     const score = maxImplicationScore(g, ['ev-multi-1', 'ev-multi-2']);
     expect(score).toBeCloseTo(0.95);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Symbol evidence (HOR-195)
+// ---------------------------------------------------------------------------
+
+describe('buildGraph — symbol evidence', () => {
+  it('creates a symbol node and a file node', () => {
+    const ev = makeEv({
+      id: 'ev-sym-1',
+      source: 'code',
+      kind: 'symbol',
+      relevance: 0.9,
+      payload: { symbol: { id: 'fn:OrderService', name: 'OrderService', filePath: 'src/services/order.service.ts' } },
+      links: { symbolId: 'fn:OrderService', file: 'src/services/order.service.ts' },
+    });
+    const g = buildGraph([ev]);
+    const symbolNode = g.nodes.find((n) => n.id === 'symbol:OrderService');
+    const fileNode = g.nodes.find((n) => n.id === 'file:src/services/order.service.ts');
+    expect(symbolNode?.type).toBe('symbol');
+    expect(fileNode?.type).toBe('file');
+  });
+
+  it('creates an in-file edge from symbol to file', () => {
+    const ev = makeEv({
+      id: 'ev-sym-2',
+      source: 'code',
+      kind: 'symbol',
+      relevance: 0.9,
+      payload: { symbol: { id: 'fn:Foo', name: 'Foo', filePath: 'src/foo.ts' } },
+      links: {},
+    });
+    const g = buildGraph([ev]);
+    const inFile = g.edges.find((e) => e.type === 'in-file');
+    expect(inFile?.from).toBe('symbol:Foo');
+    expect(inFile?.to).toBe('file:src/foo.ts');
+  });
+
+  it('symbol and file nodes are never implicated even at high relevance', () => {
+    const ev = makeEv({
+      id: 'ev-sym-3',
+      source: 'code',
+      kind: 'symbol',
+      relevance: 1.0,
+      payload: { symbol: { id: 'fn:Bar', name: 'Bar', filePath: 'src/bar.ts' } },
+      links: {},
+    });
+    const g = buildGraph([ev]);
+    const symbolNode = g.nodes.find((n) => n.id === 'symbol:Bar');
+    const fileNode = g.nodes.find((n) => n.id === 'file:src/bar.ts');
+    expect(symbolNode?.implicated).toBe(false);
+    expect(fileNode?.implicated).toBe(false);
+  });
+
+  it('skips symbol without a name', () => {
+    const ev = makeEv({
+      id: 'ev-sym-empty',
+      source: 'code',
+      kind: 'symbol',
+      relevance: 0.9,
+      payload: { symbol: { id: 'fn:?', name: '' } },
+      links: {},
+    });
+    const g = buildGraph([ev]);
+    const symbolNodes = g.nodes.filter((n) => n.type === 'symbol');
+    expect(symbolNodes).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Flow evidence (HOR-195)
+// ---------------------------------------------------------------------------
+
+describe('buildGraph — flow evidence', () => {
+  it('creates a flow node', () => {
+    const ev = makeEv({
+      id: 'ev-flow-1',
+      source: 'code',
+      kind: 'flow',
+      relevance: 0.6,
+      payload: { flowId: 'proc:checkout', name: 'checkout', steps: ['OrderService', 'PaymentService'] },
+      links: {},
+    });
+    const g = buildGraph([ev]);
+    const flowNode = g.nodes.find((n) => n.id === 'flow:proc:checkout');
+    expect(flowNode?.type).toBe('flow');
+    expect(flowNode?.label).toBe('checkout');
+  });
+
+  it('creates symbol-in-flow edges for each step', () => {
+    const ev = makeEv({
+      id: 'ev-flow-2',
+      source: 'code',
+      kind: 'flow',
+      relevance: 0.6,
+      payload: { flowId: 'proc:pay', name: 'payment-flow', steps: ['OrderService', 'PaymentProcessor'] },
+      links: {},
+    });
+    const g = buildGraph([ev]);
+    const inFlowEdges = g.edges.filter((e) => e.type === 'symbol-in-flow');
+    const froms = inFlowEdges.map((e) => e.from);
+    expect(froms).toContain('symbol:OrderService');
+    expect(froms).toContain('symbol:PaymentProcessor');
+    expect(inFlowEdges[0]?.to).toMatch(/^flow:/);
+  });
+
+  it('flow node is never implicated', () => {
+    const ev = makeEv({
+      id: 'ev-flow-3',
+      source: 'code',
+      kind: 'flow',
+      relevance: 1.0,
+      payload: { flowId: 'proc:big', name: 'big-flow', steps: ['A', 'B'] },
+      links: {},
+    });
+    const g = buildGraph([ev]);
+    const flowNode = g.nodes.find((n) => n.type === 'flow');
+    expect(flowNode?.implicated).toBe(false);
+  });
+
+  it('handles empty steps array', () => {
+    const ev = makeEv({
+      id: 'ev-flow-4',
+      source: 'code',
+      kind: 'flow',
+      relevance: 0.6,
+      payload: { flowId: 'proc:empty', name: 'empty-flow', steps: [] },
+      links: {},
+    });
+    const g = buildGraph([ev]);
+    const symbolNodes = g.nodes.filter((n) => n.type === 'symbol');
+    expect(symbolNodes).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Metric evidence (HOR-195)
+// ---------------------------------------------------------------------------
+
+describe('buildGraph — metric evidence', () => {
+  it('creates a service node when metric has a "service" label', () => {
+    const ev = makeEv({
+      id: 'ev-metric-1',
+      source: 'metrics',
+      kind: 'metric',
+      relevance: 0.8,
+      payload: { labels: { service: 'api', route: '/checkout' }, panelTitle: 'HTTP p95 Latency' },
+      links: {},
+    });
+    const g = buildGraph([ev]);
+    const serviceNode = g.nodes.find((n) => n.id === 'service:api');
+    expect(serviceNode?.type).toBe('service');
+  });
+
+  it('creates a metric-from edge from evidence node to service', () => {
+    const ev = makeEv({
+      id: 'ev-metric-2',
+      source: 'metrics',
+      kind: 'metric',
+      relevance: 0.8,
+      payload: { labels: { job: 'shopify-worker' }, panelTitle: 'Worker Latency' },
+      links: {},
+    });
+    const g = buildGraph([ev]);
+    const edge = g.edges.find((e) => e.type === 'metric-from');
+    expect(edge?.from).toBe('ev:ev-metric-2');
+    expect(edge?.to).toBe('service:shopify-worker');
+  });
+
+  it('high-relevance metric implicates the linked service node', () => {
+    const ev = makeEv({
+      id: 'ev-metric-3',
+      source: 'metrics',
+      kind: 'metric',
+      relevance: 0.9,
+      payload: { labels: { service: 'payment-api' }, panelTitle: 'Error Rate' },
+      links: {},
+    });
+    const g = buildGraph([ev]);
+    // metric is NOT structural — it contributes to base implication score of the service
+    const serviceNode = g.nodes.find((n) => n.id === 'service:payment-api');
+    expect(serviceNode?.implicated).toBe(true);
+    expect(serviceNode?.implicationScore).toBeCloseTo(0.9);
+  });
+
+  it('skips service node creation when no service/job/instance label is present', () => {
+    const ev = makeEv({
+      id: 'ev-metric-4',
+      source: 'metrics',
+      kind: 'metric',
+      relevance: 0.8,
+      payload: { labels: { route: '/checkout' }, panelTitle: 'Checkout Latency' },
+      links: {},
+    });
+    const g = buildGraph([ev]);
+    const serviceNodes = g.nodes.filter((n) => n.type === 'service');
+    expect(serviceNodes).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// implicatedEvidenceIdsByNodeType (HOR-195)
+// ---------------------------------------------------------------------------
+
+describe('implicatedEvidenceIdsByNodeType', () => {
+  it('returns evidence IDs from implicated service nodes', () => {
+    const ev = makeEv({
+      id: 'ev-ietype-1',
+      source: 'logs',
+      kind: 'log',
+      relevance: 0.9,
+      payload: { services: ['api'] },
+      links: {},
+    });
+    const g = buildGraph([ev]);
+    const ids = implicatedEvidenceIdsByNodeType(g, 'service');
+    expect(ids).toContain('ev-ietype-1');
+  });
+
+  it('returns empty array when no nodes of that type are implicated', () => {
+    const ev = makeEv({
+      id: 'ev-ietype-2',
+      source: 'logs',
+      kind: 'log',
+      relevance: 0.9,
+      payload: { services: ['api'] },
+      links: {},
+    });
+    const g = buildGraph([ev]);
+    // No collection nodes exist
+    const ids = implicatedEvidenceIdsByNodeType(g, 'collection');
+    expect(ids).toHaveLength(0);
+  });
+
+  it('deduplicates evidence IDs across multiple implicated nodes of the same type', () => {
+    const ev1 = makeEv({ id: 'shared-ev', source: 'logs', kind: 'log', relevance: 0.9, payload: { services: ['svc-a', 'svc-b'] }, links: {} });
+    const g = buildGraph([ev1]);
+    // Both svc-a and svc-b reference the same evidence ID
+    const ids = implicatedEvidenceIdsByNodeType(g, 'service');
+    const unique = [...new Set(ids)];
+    expect(ids).toHaveLength(unique.length);
+  });
+
+  it('does not return evidence from non-implicated nodes', () => {
+    const ev = makeEv({
+      id: 'ev-low-rel',
+      source: 'logs',
+      kind: 'log',
+      relevance: 0.3, // below implication threshold
+      payload: { services: ['api'] },
+      links: {},
+    });
+    const g = buildGraph([ev]);
+    const ids = implicatedEvidenceIdsByNodeType(g, 'service');
+    expect(ids).toHaveLength(0);
   });
 });

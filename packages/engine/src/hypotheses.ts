@@ -11,6 +11,8 @@
 
 import type { Evidence } from '@horus/core';
 import type { CorrelationResult } from './correlate.js';
+import type { InvestigationGraph } from './graph.js';
+import { implicatedEvidenceIdsByNodeType } from './graph.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -52,6 +54,13 @@ export interface HypothesisContext {
    * list — redundant advice when the user already provided a range.
    */
   sinceProvided?: boolean;
+  /**
+   * Typed evidence graph built from all collected evidence.
+   * When provided, hypothesis generation consults graph-derived implicated node sets
+   * in addition to (not instead of) raw evidence kind checks, so topology links can
+   * boost confidence for hypotheses even when per-kind evidence arrays are thin.
+   */
+  graph?: InvestigationGraph;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +109,18 @@ export function generateHypotheses(
   const allQueueStarvationEvIds = [
     ...(ctx.queueStarvationEvIdsByQueue?.values() ?? []),
   ].flat();
+
+  // Graph-derived signals: evidence IDs attached to implicated node types.
+  // These supplement raw evidence kind checks — a collection that is implicated via
+  // graph topology (e.g. a MongoDB state anomaly) can contribute to the infrastructure
+  // hypothesis even when the raw state evidence array is thin.
+  // NOTE: We intentionally do NOT add graph-implicated service evidence to the
+  // external-api-latency hypothesis — metric evidence has a service-scope guard in
+  // the engine that prevents scope mismatch, and bypassing it via the graph path
+  // would surface unscoped metric anomalies as causal evidence incorrectly.
+  const graphImplicatedCollectionEvIds = ctx.graph
+    ? implicatedEvidenceIdsByNodeType(ctx.graph, 'collection')
+    : [];
 
   const hyps: Hypothesis[] = [];
 
@@ -154,6 +175,11 @@ export function generateHypotheses(
   }
 
   // d. external-api-latency — always emitted
+  // Support: latency/error-rate metric evidence scoped by service (direct only).
+  // Graph-derived service implication is intentionally excluded here — metric evidence
+  // requires a service-scope match established by the engine before being wired to
+  // this hypothesis, and bypassing that guard via graph topology would create false
+  // positives when metrics exist but don't match the investigated service.
   const latencyMetricEvIds = ctx.latencyMetricEvIds ?? [];
   hyps.push({
     id: globalThis.crypto.randomUUID(),
@@ -188,12 +214,14 @@ export function generateHypotheses(
 
   // f. infrastructure — always emitted
   // Support: DB state anomalies (MongoDB signals), queue starvation (workers died),
-  //          and latency metric anomalies (slow responses = infra degradation).
+  //          latency metric anomalies (slow responses = infra degradation), and
+  //          evidence from graph-implicated collection nodes (MongoDB topology).
   const infraSupport = [
     ...new Set([
       ...stateEvIds,
       ...allQueueStarvationEvIds,
       ...(ctx.latencyMetricEvIds ?? []),
+      ...graphImplicatedCollectionEvIds,
     ]),
   ];
   hyps.push({

@@ -18,6 +18,9 @@ export type GraphNodeType =
   | 'database'        // a database server (MongoDB, Redis)
   | 'collection'      // a MongoDB collection
   | 'deployment'      // a git commit / deployment event
+  | 'symbol'          // a code symbol (function, class, method)
+  | 'file'            // a source file
+  | 'flow'            // an execution flow (Process node from source intelligence)
   | 'evidence'        // a raw evidence item not mapped to infrastructure
   | 'external_system' // an external dependency (third-party API, SaaS, etc.)
   | 'unknown';
@@ -30,7 +33,10 @@ export type GraphEdgeType =
   | 'depends_on'       // service → service: general dependency
   | 'caused_by'        // node → node: causal relationship
   | 'correlated_with'  // node → node: correlation (not necessarily causal)
-  | 'observed_in';     // evidence → infrastructure: where the evidence was observed
+  | 'observed_in'      // evidence → infrastructure: where the evidence was observed
+  | 'in-file'          // symbol → file: symbol is defined in the file
+  | 'symbol-in-flow'   // symbol → flow: symbol participates in the execution flow
+  | 'metric-from';     // metric evidence → service/queue: where the metric was emitted
 
 // ── Graph model ────────────────────────────────────────────────────────────────
 
@@ -115,6 +121,9 @@ interface QueueEdgePayload { queueName?: string; producerSymbol?: string; worker
 interface QueueStatePayload { queueName?: string }
 interface LogPayload { services?: string[] }
 interface StatePayload { collection?: string }
+interface SymbolPayload { symbol?: { id?: string; name?: string; filePath?: string }; filePath?: string }
+interface FlowPayload { flowId?: string; name?: string; steps?: string[] }
+interface MetricPayload { labels?: Record<string, string>; panelTitle?: string; kind?: string }
 
 function processEvidence(ev: Evidence, nodes: NodeMap, edges: EdgeMap): void {
   const evId = `ev:${ev.id}`;
@@ -177,7 +186,52 @@ function processEvidence(ev: Evidence, nodes: NodeMap, edges: EdgeMap): void {
       return;
     }
 
-    // symbol, flow, impact, redis-key, metric: evidence node only, no infra derived
+    case 'symbol': {
+      const p = ev.payload as SymbolPayload;
+      const sym = p.symbol ?? {};
+      const name = sym.name ?? '';
+      if (!name) return;
+      const symbolId = `symbol:${name}`;
+      upsertNode(nodes, symbolId, 'symbol', name, ev.id);
+      addEdge(edges, 'observed_in', evId, symbolId, ev.id);
+      const filePath = sym.filePath ?? p.filePath ?? ev.links.file;
+      if (filePath) {
+        const fileId = `file:${filePath}`;
+        upsertNode(nodes, fileId, 'file', filePath, ev.id);
+        addEdge(edges, 'in-file', symbolId, fileId, ev.id);
+      }
+      return;
+    }
+
+    case 'flow': {
+      const p = ev.payload as FlowPayload;
+      const name = p.name ?? ev.title;
+      const flowNodeId = `flow:${p.flowId ?? name}`;
+      upsertNode(nodes, flowNodeId, 'flow', name, ev.id);
+      addEdge(edges, 'observed_in', evId, flowNodeId, ev.id);
+      for (const stepName of p.steps ?? []) {
+        if (!stepName) continue;
+        const stepSymbolId = `symbol:${stepName}`;
+        upsertNode(nodes, stepSymbolId, 'symbol', stepName);
+        addEdge(edges, 'symbol-in-flow', stepSymbolId, flowNodeId, ev.id);
+      }
+      return;
+    }
+
+    case 'metric': {
+      const p = ev.payload as MetricPayload;
+      const labels = p.labels ?? {};
+      // Try common label keys to identify the emitting service.
+      const svc = labels['service'] ?? labels['job'] ?? labels['instance'];
+      if (svc) {
+        const serviceId = `service:${svc}`;
+        upsertNode(nodes, serviceId, 'service', svc, ev.id);
+        addEdge(edges, 'metric-from', evId, serviceId, ev.id);
+      }
+      return;
+    }
+
+    // impact, redis-key: evidence node only, no infra derived
     default:
       return;
   }
@@ -228,8 +282,11 @@ function scoreImplication(nodes: NodeMap, edges: EdgeMap, evidence: Evidence[]):
   // Pass 1: base score = max relevance of non-structural, directly-attached
   // evidence. Structural evidence (queue-edge, symbol, flow, impact — always
   // priority: 'info') is excluded so topology alone cannot implicate a node.
+  // Code topology nodes (symbol, file, flow) never receive a base score — they
+  // are structural by definition and never represent runtime anomalies.
   for (const node of nodes.values()) {
     if (node.type === 'evidence') continue;
+    if (node.type === 'symbol' || node.type === 'file' || node.type === 'flow') continue;
     node.implicationScore = node.evidenceIds.reduce((max, eid) => {
       const ev = evById.get(eid);
       if (!ev || isExcludedFromImplication(ev)) return max;
@@ -238,14 +295,21 @@ function scoreImplication(nodes: NodeMap, edges: EdgeMap, evidence: Evidence[]):
   }
 
   // Pass 2: propagate one hop to infrastructure neighbours (bidirectional).
-  // Build adjacency ignoring observed_in edges — those connect evidence to
-  // infrastructure; we only propagate between infrastructure nodes.
+  // Build adjacency ignoring observed_in, in-file, symbol-in-flow, and metric-from
+  // edges — those connect code topology / evidence nodes to infrastructure; we only
+  // propagate between runtime infrastructure nodes (service, queue, worker, etc.).
+  const CODE_TOPOLOGY_NODE_TYPES: ReadonlySet<string> = new Set([
+    'evidence', 'symbol', 'file', 'flow',
+  ]);
   const adj = new Map<string, Set<string>>();
   for (const edge of edges.values()) {
     if (edge.type === 'observed_in') continue;
+    if (edge.type === 'in-file') continue;
+    if (edge.type === 'symbol-in-flow') continue;
+    if (edge.type === 'metric-from') continue;
     const f = nodes.get(edge.from);
     const t = nodes.get(edge.to);
-    if (!f || !t || f.type === 'evidence' || t.type === 'evidence') continue;
+    if (!f || !t || CODE_TOPOLOGY_NODE_TYPES.has(f.type) || CODE_TOPOLOGY_NODE_TYPES.has(t.type)) continue;
     const fs = adj.get(edge.from) ?? new Set<string>();
     const ts = adj.get(edge.to) ?? new Set<string>();
     fs.add(edge.to);
@@ -274,8 +338,11 @@ function scoreImplication(nodes: NodeMap, edges: EdgeMap, evidence: Evidence[]):
   }
 
   // Pass 3: set implicated flag based on final score.
+  // Code topology nodes (symbol, file, flow) are never implicated — they are
+  // structural and can only participate in topology traversal, not anomaly scoring.
   for (const node of nodes.values()) {
     if (node.type === 'evidence') continue;
+    if (node.type === 'symbol' || node.type === 'file' || node.type === 'flow') continue;
     node.implicated = node.implicationScore >= IMPLICATION_THRESHOLD;
   }
 }
@@ -354,4 +421,25 @@ export function implicatedNodeIds(
       (n) => n.type !== 'evidence' && n.implicated && n.evidenceIds.some((eid) => idSet.has(eid)),
     )
     .map((n) => n.id);
+}
+
+/**
+ * Return all evidence IDs attached to **implicated** nodes of the given type.
+ *
+ * Used by hypothesis generation to find graph-derived evidence for a node class
+ * (e.g. all evidence touching an implicated `service` or `queue` node) without
+ * inspecting raw evidence kind fields.
+ */
+export function implicatedEvidenceIdsByNodeType(
+  graph: InvestigationGraph,
+  nodeType: GraphNodeType,
+): string[] {
+  const ids: string[] = [];
+  for (const node of graph.nodes) {
+    if (node.type !== nodeType || !node.implicated) continue;
+    for (const eid of node.evidenceIds) {
+      if (!ids.includes(eid)) ids.push(eid);
+    }
+  }
+  return ids;
 }
