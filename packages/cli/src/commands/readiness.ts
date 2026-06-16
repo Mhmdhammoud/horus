@@ -130,7 +130,7 @@ export async function runReadiness(opts?: {
       status: 'warn',
       blocking: false,
       detail: 'not installed — source intelligence unavailable',
-      next: `uv tool install axoniq==${PINNED_SOURCE_VERSION}`,
+      next: `pip install git+https://github.com/Mhmdhammoud/axon`,
     });
   } else if (sourceVersion !== PINNED_SOURCE_VERSION) {
     checks.push({
@@ -138,7 +138,7 @@ export async function runReadiness(opts?: {
       status: 'warn',
       blocking: false,
       detail: `version mismatch (installed: ${sourceVersion}, required: ${PINNED_SOURCE_VERSION})`,
-      next: `uv tool install axoniq==${PINNED_SOURCE_VERSION}`,
+      next: `pip install git+https://github.com/Mhmdhammoud/axon`,
     });
   } else {
     checks.push({

@@ -125,11 +125,10 @@ describe('runSetup — Axon binary not found', () => {
     expect(code).toBe(1);
   });
 
-  it('output explains how to install axoniq', async () => {
+  it('output explains how to install the source-intelligence backend', async () => {
     const { lines } = await captureOutput((write) => runSetup({ write }));
     const output = lines.join('\n');
-    expect(output).toContain('uv tool install axoniq');
-    expect(output).toContain('1.0.1');
+    expect(output).toContain('pip install git+https://github.com/Mhmdhammoud/axon');
   });
 });
 

@@ -112,20 +112,20 @@ async function stopHost(root: string, hostUrl: string): Promise<number> {
     return 1;
   }
 
-  // Match the exact argv sequence: axon host --port <exact-port>.
+  // Match either `horus-source host --port <port>` (current) or `axon host --port <port>` (legacy).
   // Requirements for the pattern:
-  //  - Optional path prefix: handles /home/user/.local/bin/axon (Python entrypoint)
-  //  - `axon` then `host` then `--port` in that ORDER (not independent substrings)
+  //  - Optional path prefix: handles /home/user/.local/bin/horus-source (Python entrypoint)
+  //  - binary then `host` then `--port` in that ORDER (not independent substrings)
   //  - Port must be followed by \s or EOL so 8420 does not match 84200
   //  - port comes from parseInt so it has no regex metacharacters
   const portStr = String(port);
   const axonHostPortRe = new RegExp(
-    `(?:^|\\s)(?:\\S*/)?axon\\s+host\\s+--port(?:=|\\s+)${portStr}(?=\\s|$)`,
+    `(?:^|\\s)(?:\\S*/)?(?:horus-source|axon)\\s+host\\s+--port(?:=|\\s+)${portStr}(?=\\s|$)`,
   );
   if (!axonHostPortRe.test(info.args)) {
     console.error(
       pc.red(
-        `Pid ${spawned.pid} args do not match "axon host --port ${portStr}". ` +
+        `Pid ${spawned.pid} args do not match "horus-source host --port ${portStr}" or "axon host --port ${portStr}". ` +
           `Got: "${info.args.slice(0, 120)}". Aborting for safety.`,
       ),
     );

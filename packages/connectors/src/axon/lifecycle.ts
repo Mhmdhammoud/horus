@@ -1,11 +1,11 @@
 /**
  * Source-intelligence process lifecycle (HOR-37) — analyze a repo and host its graph.
  *
- * This shells out to the `axon` CLI for LIFECYCLE only (analyze / host), which is
+ * This shells out to the `horus-source` CLI for LIFECYCLE only (analyze / host), which is
  * explicitly allowed (like the git connector). The "no CLI shell-out" rule applies
  * to QUERIES — those still go over HTTP/MCP via SourceHttpClient.
  *
- * The binary is still named `axon` (upstream PyPI package `axoniq`); Horus exposes
+ * The binary is named `horus-source` (PyPI package `horus-source`); Horus exposes
  * lifecycle wrappers through source-boundary.ts (HOR-136, HOR-145).
  */
 
@@ -17,28 +17,45 @@ import { createServer } from 'node:net';
 
 const exec = promisify(execFile);
 
-/** Is the source-intelligence backend binary (`axon`) on PATH? */
-export async function axonAvailable(): Promise<boolean> {
-  try {
-    await exec('axon', ['--version'], { timeout: 5000 });
-    return true;
-  } catch {
-    return false;
+/**
+ * Preferred binary name, with `axon` as legacy fallback for users who have not yet
+ * reinstalled the source-intelligence backend under the new Horus-owned name.
+ */
+const SOURCE_BINARIES = ['horus-source', 'axon'] as const;
+
+/** Resolve the first available source-intelligence binary, or null if neither is on PATH. */
+async function resolveSourceBin(): Promise<string | null> {
+  for (const bin of SOURCE_BINARIES) {
+    try {
+      await exec(bin, ['--version'], { timeout: 5000 });
+      return bin;
+    } catch {
+      // try next candidate
+    }
   }
+  return null;
+}
+
+/** Is the source-intelligence backend binary (`horus-source` or legacy `axon`) on PATH? */
+export async function axonAvailable(): Promise<boolean> {
+  return (await resolveSourceBin()) !== null;
 }
 
 /**
  * Return the installed source-intelligence backend version string (e.g. "1.0.1"),
- * or null if the `axon` binary is not on PATH or the version cannot be parsed.
+ * or null if no binary is on PATH or the version cannot be parsed.
  */
 export async function getAxonVersion(): Promise<string | null> {
-  try {
-    const { stdout } = await exec('axon', ['--version'], { timeout: 5000 });
-    const match = stdout.trim().match(/(\d+\.\d+\.\d+)/);
-    return match?.[1] ?? null;
-  } catch {
-    return null;
+  for (const bin of SOURCE_BINARIES) {
+    try {
+      const { stdout } = await exec(bin, ['--version'], { timeout: 5000 });
+      const match = stdout.trim().match(/(\d+\.\d+\.\d+)/);
+      if (match?.[1]) return match[1];
+    } catch {
+      // try next candidate
+    }
   }
+  return null;
 }
 
 /** Has the repo been analyzed (a `.axon/` source-intelligence index exists)? */
@@ -46,9 +63,11 @@ export function isAnalyzed(root: string): boolean {
   return existsSync(join(root, '.axon'));
 }
 
-/** Run `axon analyze .` in the repo. Throws with stderr on failure. */
+/** Run `horus-source analyze .` (or legacy `axon analyze .`) in the repo. Throws on failure. */
 export async function analyzeRepo(root: string): Promise<void> {
-  await exec('axon', ['analyze', '.'], {
+  const bin = await resolveSourceBin();
+  if (!bin) throw new Error('Source-intelligence backend not found. Install horus-source.');
+  await exec(bin, ['analyze', '.'], {
     cwd: root,
     timeout: 900_000,
     maxBuffer: 64 * 1024 * 1024,
@@ -121,19 +140,27 @@ export function readSpawnedHost(root: string): SpawnedHostRecord | null {
 }
 
 /**
- * Spawn `axon host --port <port>` as a detached background source-intelligence host in
- * `root`, logging to `.horus/source-host.log`. Records the PID in `.horus/spawned-host.json`
- * for safe teardown. Returns immediately — poll `waitForHost`.
+ * Spawn `horus-source host --port <port>` (or legacy `axon host --port <port>`) as a detached
+ * background source-intelligence host in `root`, logging to `.horus/source-host.log`. Records
+ * the PID in `.horus/spawned-host.json` for safe teardown. Returns immediately — poll `waitForHost`.
  */
-export function startHost(root: string, port: number): void {
+export function startHost(root: string, port: number, bin = 'horus-source'): void {
   mkdirSync(join(root, '.horus'), { recursive: true });
   const logPath = join(root, '.horus', 'source-host.log');
   const fd = openSync(logPath, 'a');
-  const child = spawn('axon', ['host', '--port', String(port)], {
+  const child = spawn(bin, ['host', '--port', String(port)], {
     cwd: root,
     detached: true,
     stdio: ['ignore', fd, fd],
   });
+
+  // If the preferred binary is missing, retry with the legacy `axon` binary.
+  child.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'ENOENT' && bin === 'horus-source') {
+      startHost(root, port, 'axon');
+    }
+  });
+
   if (child.pid !== undefined) {
     const record: SpawnedHostRecord = {
       pid: child.pid,
