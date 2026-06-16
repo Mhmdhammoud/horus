@@ -159,17 +159,44 @@ export function sanitizeExpr(expr: string): string | null {
 // ---------------------------------------------------------------------------
 
 /**
+ * Tokenize a hint string for panel matching.
+ *
+ * Splits on camelCase boundaries and snake_case underscores in addition to
+ * non-alphanumeric delimiters, then lowercases and drops tokens shorter than
+ * 3 characters.
+ *
+ * Examples:
+ *   "getSaleWithLink"              → ["get", "sale", "with", "link"]
+ *   "http_request_rate"            → ["http", "request", "rate"]
+ *   "GraphQL p95 Latency"          → ["graphql", "p95", "latency"]
+ *   "getSaleWithLink slow timeout" → ["get", "sale", "with", "link", "slow", "timeout"]
+ */
+export function extractHintTokens(hint: string): string[] {
+  // camelCase split: insert a space before each uppercase letter that follows a
+  // lowercase letter ("getSale" → "get Sale")
+  const camelSplit = hint.replace(/([a-z])([A-Z])/g, '$1 $2');
+  // Acronym split: "XMLParser" → "XML Parser"
+  const acronymSplit = camelSplit.replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
+  return acronymSplit
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length >= 3);
+}
+
+/**
  * Returns true if the panel is relevant to the given hint.
  * - An empty/undefined hint matches every panel.
- * - Otherwise, at least one token from `hint` (split on non-alphanumeric chars)
- *   must appear in the lowercased panel title or any expression.
+ * - Otherwise, at least one token from `hint` (split via `extractHintTokens`,
+ *   which handles camelCase and snake_case) must appear in the lowercased panel
+ *   title or any expression.
+ *
+ * This means `"getSaleWithLink"` will match a panel titled "Sale Latency"
+ * because the hint tokenises to ["get", "sale", "with", "link"] and "sale"
+ * is present in the panel title.
  */
 export function panelMatchesHint(p: Panel, hint: string): boolean {
   if (hint === '') return true;
-  const tokens = hint
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((t) => t.length > 0);
+  const tokens = extractHintTokens(hint);
   if (tokens.length === 0) return true;
 
   const haystack =

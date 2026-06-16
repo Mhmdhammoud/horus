@@ -6,7 +6,7 @@
 
 import pc from 'picocolors';
 import { loadConfig } from '@horus/core';
-import { metricsProviderFromConfig } from '@horus/connectors';
+import { metricsProviderFromConfig, extractHintTokens } from '@horus/connectors';
 import { summarize } from '@horus/connectors';
 import type { MetricFinding } from '@horus/connectors';
 
@@ -149,13 +149,21 @@ export async function runMetrics(
     const ok = findings.filter((f) => f.anomaly === 'none');
 
     if (findings.length === 0) {
-      console.log(
-        pc.dim(
-          hint !== undefined
-            ? `No panels matched hint "${hint}".`
-            : 'No panels found in configured Grafana dashboards.',
-        ),
-      );
+      if (hint !== undefined) {
+        const tokens = extractHintTokens(hint);
+        console.log(pc.dim(`No panels matched hint "${hint}".`));
+        if (tokens.length > 0) {
+          console.log(pc.dim(`  Searched for panels containing: ${tokens.join(', ')}`));
+        }
+        console.log(
+          pc.dim(
+            `  Tip: run ${pc.bold('horus metrics')} (no hint) to see all available panels,` +
+              ` then use a panel title or keyword directly.`,
+          ),
+        );
+      } else {
+        console.log(pc.dim('No panels found in configured Grafana dashboards.'));
+      }
       return 0;
     }
 

@@ -8,6 +8,7 @@ import {
   classifyPanel,
   sanitizeExpr,
   panelMatchesHint,
+  extractHintTokens,
 } from './panels.js';
 
 // ---------------------------------------------------------------------------
@@ -234,5 +235,97 @@ describe('panelMatchesHint', () => {
   it('returns true if at least one token matches (partial hint)', () => {
     // "http redis" — "http" matches, "redis" does not
     expect(panelMatchesHint(latencyPanel, 'http redis')).toBe(true);
+  });
+
+  it('matches a camelCase hint by splitting into tokens (HOR-159)', () => {
+    // "getSaleWithLink" → ["get", "sale", "with", "link"]
+    // latencyPanel title "HTTP p95 Latency" does not contain any of these, but
+    // a sale panel would.
+    const salePanel = {
+      id: 10,
+      title: 'Sale Latency p95',
+      type: 'timeseries',
+      unit: 's',
+      datasourceUid: 'Prometheus',
+      exprs: ['histogram_quantile(0.95, rate(sale_duration_seconds_bucket[5m]))'],
+      kind: 'latency' as const,
+    };
+    expect(panelMatchesHint(salePanel, 'getSaleWithLink')).toBe(true);
+  });
+
+  it('does NOT match an unrelated panel with a camelCase hint', () => {
+    // "getSaleWithLink" → ["get", "sale", "with", "link"]
+    // None of these appear in "BullMQ Queue Depth" or its exprs
+    const queuePanel = {
+      id: 20,
+      title: 'BullMQ Queue Depth',
+      type: 'stat',
+      unit: 'short',
+      datasourceUid: 'Prometheus',
+      exprs: ['maison_safqa_bullmq_queue_jobs'],
+      kind: 'queue' as const,
+    };
+    expect(panelMatchesHint(queuePanel, 'getSaleWithLink')).toBe(false);
+  });
+
+  it('matches a camelCase hint in expressions too', () => {
+    const exprPanel = {
+      id: 30,
+      title: 'Custom Panel',
+      type: 'timeseries',
+      unit: 'none',
+      datasourceUid: 'Prometheus',
+      exprs: ['rate(sale_request_total[5m])'],
+      kind: 'other' as const,
+    };
+    // "getSaleWithLink" splits to ["get","sale","with","link"]; "sale" in expr
+    expect(panelMatchesHint(exprPanel, 'getSaleWithLink')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractHintTokens — camelCase and snake_case splitting (HOR-159)
+// ---------------------------------------------------------------------------
+
+describe('extractHintTokens', () => {
+  it('splits camelCase into tokens', () => {
+    expect(extractHintTokens('getSaleWithLink')).toEqual(['get', 'sale', 'with', 'link']);
+  });
+
+  it('splits snake_case into tokens', () => {
+    expect(extractHintTokens('http_request_rate')).toEqual(['http', 'request', 'rate']);
+  });
+
+  it('splits an investigation hint with mixed casing and spaces', () => {
+    const tokens = extractHintTokens('getSaleWithLink slow');
+    expect(tokens).toContain('sale');
+    expect(tokens).toContain('link');
+    expect(tokens).toContain('slow');
+  });
+
+  it('filters tokens shorter than 3 characters', () => {
+    // "getA" → ["get"] ("a" filtered)
+    const tokens = extractHintTokens('getA');
+    expect(tokens).not.toContain('a');
+    expect(tokens).toContain('get');
+  });
+
+  it('handles plain lowercase words without modification', () => {
+    expect(extractHintTokens('latency spike')).toEqual(['latency', 'spike']);
+  });
+
+  it('handles acronym splits (XMLParser → xml, parser)', () => {
+    const tokens = extractHintTokens('XMLParser');
+    expect(tokens).toContain('xml');
+    expect(tokens).toContain('parser');
+  });
+
+  it('returns empty array for an empty string', () => {
+    expect(extractHintTokens('')).toEqual([]);
+  });
+
+  it('deduplicates naturally — no tokens shorter than 3 survive', () => {
+    const tokens = extractHintTokens('p95 p99');
+    expect(tokens).toEqual(['p95', 'p99']);
   });
 });
