@@ -82,7 +82,7 @@ jobs:
         run: |
           cp apps/horus/dist/index.cjs "apps/horus/dist/horus-${RELEASE_TAG}"
           chmod +x "apps/horus/dist/horus-${RELEASE_TAG}"
-          sha256sum "apps/horus/dist/horus-${RELEASE_TAG}" | awk '{print $1}' \
+          (cd apps/horus/dist && sha256sum "horus-${RELEASE_TAG}") \
             > "apps/horus/dist/horus-${RELEASE_TAG}.sha256"
 
       - name: Write release notes

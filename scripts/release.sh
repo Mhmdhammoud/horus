@@ -55,6 +55,19 @@ sha256_file() {
   fi
 }
 
+# Produce "HASH  basename" — the format install.sh expects when validating downloads.
+sha256sum_named() {
+  local file="$1" base
+  base="$(basename "$file")"
+  if command -v shasum &>/dev/null; then
+    shasum -a 256 "$file" | awk -v n="$base" '{print $1 "  " n}'
+  elif command -v sha256sum &>/dev/null; then
+    sha256sum "$file" | awk -v n="$base" '{print $1 "  " n}'
+  else
+    die "sha256 tool not found (need shasum or sha256sum)"
+  fi
+}
+
 APP_DIR="$ROOT/apps/horus"
 APP_PKG="$APP_DIR/package.json"
 VERSION_FILE="$ROOT/packages/core/src/version.ts"
@@ -172,7 +185,7 @@ CHECKSUM_FILE="${ARTIFACT_FILE}.sha256"
 
 cp "$DIST_FILE" "$ARTIFACT_FILE"
 chmod +x "$ARTIFACT_FILE"
-sha256_file "$ARTIFACT_FILE" > "$CHECKSUM_FILE"
+sha256sum_named "$ARTIFACT_FILE" > "$CHECKSUM_FILE"
 
 ok "Artifact: ${ARTIFACT_FILE} ($(du -sh "$ARTIFACT_FILE" | cut -f1))"
 ok "Checksum: $(cat "$CHECKSUM_FILE")"
