@@ -58,9 +58,9 @@ export async function getAxonVersion(): Promise<string | null> {
   return null;
 }
 
-/** Has the repo been analyzed (a `.axon/` source-intelligence index exists)? */
+/** Has the repo been analyzed? Checks `.horus/source/` first, falls back to legacy `.axon/`. */
 export function isAnalyzed(root: string): boolean {
-  return existsSync(join(root, '.axon'));
+  return existsSync(join(root, '.horus', 'source')) || existsSync(join(root, '.axon'));
 }
 
 /** Run `horus-source analyze .` (or legacy `axon analyze .`) in the repo. Throws on failure. */
