@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -9,6 +9,7 @@ import {
   registerProject,
   lookupProject,
   readRegistry,
+  ensureProjectGitignore,
 } from './discovery.js';
 
 describe('discoverLocalConfig', () => {
@@ -44,6 +45,43 @@ describe('findRepoRoot', () => {
     const deep = join(root, 'src', 'deep');
     mkdirSync(deep, { recursive: true });
     expect(findRepoRoot(deep)).toBe(root);
+  });
+});
+
+describe('ensureProjectGitignore', () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'horus-gi-'));
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  const gitignore = () => join(root, '.gitignore');
+
+  it('does nothing when the repo is not a git repository', () => {
+    ensureProjectGitignore(root);
+    expect(existsSync(gitignore())).toBe(false);
+  });
+
+  it('creates .gitignore with a .horus/ entry when the repo is a git repo without one', () => {
+    mkdirSync(join(root, '.git'), { recursive: true });
+    ensureProjectGitignore(root);
+    expect(readFileSync(gitignore(), 'utf8')).toBe('.horus/\n');
+  });
+
+  it('appends .horus/ to an existing .gitignore', () => {
+    mkdirSync(join(root, '.git'), { recursive: true });
+    writeFileSync(gitignore(), 'node_modules\ndist\n');
+    ensureProjectGitignore(root);
+    expect(readFileSync(gitignore(), 'utf8')).toBe('node_modules\ndist\n.horus/\n');
+  });
+
+  it('is idempotent — does not duplicate an existing .horus entry (any common spelling)', () => {
+    mkdirSync(join(root, '.git'), { recursive: true });
+    for (const entry of ['.horus', '.horus/', '/.horus', '/.horus/']) {
+      writeFileSync(gitignore(), `node_modules\n${entry}\n`);
+      ensureProjectGitignore(root);
+      expect(readFileSync(gitignore(), 'utf8')).toBe(`node_modules\n${entry}\n`);
+    }
   });
 });
 

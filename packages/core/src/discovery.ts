@@ -132,6 +132,38 @@ export function readLocalConfig(path: string): LocalConfigFile {
 }
 
 /**
+ * Ensure the project's root `.gitignore` ignores the `.horus/` directory, so the
+ * local config and machine-specific runtime state (host.json, logs, source index)
+ * are never committed. Called by `horus init` / `horus index` when onboarding a repo.
+ *
+ * Behavior:
+ *   - No `.git` directory under `root` → no-op (not a git repo, nothing to ignore).
+ *   - `.gitignore` missing → create it with a `.horus/` entry.
+ *   - `.gitignore` present without a `.horus` entry → append one.
+ *   - `.horus` already ignored (any common spelling) → no-op.
+ */
+export function ensureProjectGitignore(root: string): void {
+  if (!existsSync(join(root, '.git'))) return;
+
+  const gitignorePath = join(root, '.gitignore');
+  const entry = '.horus/';
+
+  if (!existsSync(gitignorePath)) {
+    writeFileSync(gitignorePath, entry + '\n');
+    return;
+  }
+
+  const existing = readFileSync(gitignorePath, 'utf8');
+  const alreadyIgnored = existing
+    .split('\n')
+    .map((l) => l.trim())
+    .some((l) => l === '.horus' || l === '.horus/' || l === '/.horus' || l === '/.horus/');
+  if (alreadyIgnored) return;
+
+  writeFileSync(gitignorePath, existing.trimEnd() + '\n' + entry + '\n');
+}
+
+/**
  * Patch a single connector's config in an existing `.horus/config.json`.
  * If `envName` is omitted, targets the first environment in the project.
  * Merges `patch` into any existing connector config (so partial updates work).

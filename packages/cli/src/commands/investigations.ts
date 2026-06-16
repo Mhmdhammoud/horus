@@ -1,14 +1,12 @@
-import pc from 'picocolors';
-import { loadConfig } from '@horus/core';
 import { createDb, listInvestigations } from '@horus/db';
 import { formatDateTime } from '../lib/format.js';
+import { resolveDbUrl } from '../lib/db-url.js';
 
 export async function runInvestigations(opts: {
   config?: string;
   limit?: number;
 }): Promise<number> {
-  const config = await loadConfig(opts.config);
-  const { db, sql } = createDb(config.database.url);
+  const { db, sql } = createDb(await resolveDbUrl(opts.config));
   try {
     const rows = await listInvestigations(db, opts.limit ?? 20);
     if (rows.length === 0) {

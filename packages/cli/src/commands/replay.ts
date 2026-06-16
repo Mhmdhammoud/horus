@@ -1,6 +1,6 @@
 import pc from 'picocolors';
-import { loadConfig } from '@horus/core';
 import { createDb, getInvestigation, updateInvestigationReport } from '@horus/db';
+import { resolveDbUrl } from '../lib/db-url.js';
 import { renderReport, reportToMarkdown, reportToJSON, migrateReport } from '@horus/engine';
 import type { InvestigationReport } from '@horus/engine';
 import { renderNarrative, AnthropicNarrativeProvider } from '@horus/ai';
@@ -21,8 +21,7 @@ export async function runReplay(
     refreshAi?: boolean;
   },
 ): Promise<number> {
-  const config = await loadConfig(opts.config);
-  const { db, sql } = createDb(config.database.url);
+  const { db, sql } = createDb(await resolveDbUrl(opts.config));
   try {
     const row = await getInvestigation(db, id);
     if (!row) {

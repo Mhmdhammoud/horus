@@ -11,6 +11,7 @@ import {
   findRepoRoot,
   writeLocalConfig,
   registerProject,
+  ensureProjectGitignore,
   type LocalConfigFile,
 } from '@horus/core';
 
@@ -40,6 +41,7 @@ export async function runInit(opts: {
 
     const configPath = writeLocalConfig(root, file);
     registerProject(name, root, configPath);
+    ensureProjectGitignore(root);
 
     console.log(`${pc.green('✓')} Initialized Horus project ${pc.bold(name)}`);
     console.log(pc.dim(`  config:     ${configPath}`));
@@ -53,7 +55,7 @@ export async function runInit(opts: {
       pc.dim('  add runtime connectors (elasticsearch/mongodb/grafana) to .horus/config.json'),
     );
     console.log(
-      pc.dim('  safe to commit .horus/config.json — no secrets stored (keep credentials in environment variables)'),
+      pc.dim('  .horus/ is gitignored — local config and runtime state stay out of version control'),
     );
     return 0;
   } catch (err) {

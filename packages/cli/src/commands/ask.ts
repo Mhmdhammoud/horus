@@ -1,6 +1,6 @@
 import pc from 'picocolors';
-import { loadConfig } from '@horus/core';
 import { createDb, getInvestigation } from '@horus/db';
+import { resolveDbUrl } from '../lib/db-url.js';
 import {
   refineInvestigation,
   renderRefined,
@@ -20,8 +20,7 @@ export async function runAsk(
   directive: string,
   opts: { config?: string; json?: boolean },
 ): Promise<number> {
-  const config = await loadConfig(opts.config);
-  const { db, sql } = createDb(config.database.url);
+  const { db, sql } = createDb(await resolveDbUrl(opts.config));
   try {
     const row = await getInvestigation(db, id);
     if (!row) {

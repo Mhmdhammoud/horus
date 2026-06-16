@@ -19,6 +19,7 @@ import {
   registerProject,
   discoverLocalConfig,
   readLocalConfig,
+  ensureProjectGitignore,
   type HorusConfig,
   type LocalConfigFile,
 } from '@horus/core';
@@ -180,6 +181,7 @@ export async function runIndex(opts: {
       };
       const configPath = writeLocalConfig(root, file);
       registerProject(name, root, configPath);
+      ensureProjectGitignore(root);
       console.log(`${pc.green('✓')} Indexed ${pc.bold(name)} — host ${hostUrl}`);
       console.log(pc.dim(`  ${configPath}`));
       console.log(
@@ -202,6 +204,7 @@ export async function runIndex(opts: {
         }
         writeLocalConfig(root, file);
         registerProject(label, root, existingPath);
+        ensureProjectGitignore(root);
         console.log(`${pc.green('✓')} Indexed ${pc.bold(label)} — source host registered at ${hostUrl}`);
         console.log(pc.dim(`  ${existingPath}`));
       } else {
