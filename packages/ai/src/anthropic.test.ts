@@ -191,7 +191,7 @@ describe('renderNarrative + AnthropicNarrativeProvider', () => {
     });
 
     expect(result.fromProvider).toBe(false);
-    expect(result.validationErrors).toContain('Provider threw an error');
+    expect(result.validationErrors?.[0]).toContain('Network error');
     expect(result.output.what).toBe(FIXTURE_INPUT.deterministicSummary);
   });
 

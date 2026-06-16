@@ -324,11 +324,11 @@ export async function renderNarrative(
         fromProvider: false,
         validationErrors: validation.errors,
       };
-    } catch {
+    } catch (err) {
       return {
         output: deterministicFallback(input),
         fromProvider: false,
-        validationErrors: ['Provider threw an error'],
+        validationErrors: [err instanceof Error ? err.message : 'Provider threw an error'],
       };
     }
   }

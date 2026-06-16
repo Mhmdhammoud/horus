@@ -132,12 +132,13 @@ describe('no-key fallback — network failure', () => {
     expect(result.output.why).toContain(FIXTURE_INPUT.suspectedCauses[0]!.label);
   });
 
-  it('validationErrors contains "Provider threw an error" (CLI secondary note trigger)', async () => {
+  it('validationErrors contains the actual error message (CLI secondary note trigger)', async () => {
     mockNetworkError();
     const result = await renderNarrative(FIXTURE_INPUT, {
       provider: new AnthropicNarrativeProvider({ apiKey: 'any-key' }),
     });
-    expect(result.validationErrors).toContain('Provider threw an error');
+    expect(result.validationErrors).toBeDefined();
+    expect(result.validationErrors![0]).toContain('ECONNREFUSED');
   });
 });
 

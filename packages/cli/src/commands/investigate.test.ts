@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { buildNarrativeInput } from './investigate.js';
+import { buildNarrativeInput, classifyAIFailure } from './investigate.js';
 import type { InvestigationReport } from '@horus/engine';
 
 afterEach(() => {
@@ -143,5 +143,35 @@ describe('buildNarrativeInput', () => {
     for (const ev of input.evidence) {
       expect(reportIds.has(ev.id)).toBe(true);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// classifyAIFailure (HOR-199)
+// ---------------------------------------------------------------------------
+
+describe('classifyAIFailure', () => {
+  it('returns generic message when no error is given', () => {
+    expect(classifyAIFailure()).toBe('provider unavailable');
+  });
+
+  it('returns generic message for undefined', () => {
+    expect(classifyAIFailure(undefined)).toBe('provider unavailable');
+  });
+
+  it('classifies 401 Unauthorized as missing API key', () => {
+    const reason = classifyAIFailure('Anthropic API error: 401 Unauthorized');
+    expect(reason).toContain('API key');
+    expect(reason).toContain('ANTHROPIC_API_KEY');
+  });
+
+  it('classifies ECONNREFUSED as network error', () => {
+    const reason = classifyAIFailure('ECONNREFUSED');
+    expect(reason).toContain('network error');
+  });
+
+  it('passes through unclassified error messages verbatim', () => {
+    const reason = classifyAIFailure('some unexpected provider message');
+    expect(reason).toBe('some unexpected provider message');
   });
 });

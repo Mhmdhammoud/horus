@@ -5,7 +5,7 @@ import { createDb, updateInvestigationReport } from '@horus/db';
 import { investigate, renderReport, reportToJSON, reportToMarkdown } from '@horus/engine';
 import type { InvestigationReport, StoredAIJudgment } from '@horus/engine';
 import { renderNarrative, AnthropicNarrativeProvider } from '@horus/ai';
-import type { NarrativeInput, NarrativeOutput } from '@horus/ai';
+import type { NarrativeInput, NarrativeOutput, NarrativeProvider } from '@horus/ai';
 import type { Evidence } from '@horus/engine';
 
 function extractEvidenceExcerpt(e: Evidence): string | undefined {
@@ -122,6 +122,24 @@ export function renderStoredAIJudgment(
   }
 }
 
+/**
+ * Classify an AI provider failure reason into a user-readable string.
+ * Inspects the first validationError to distinguish common failure modes.
+ */
+export function classifyAIFailure(firstError?: string): string {
+  if (!firstError) return 'provider unavailable';
+  if (/401|unauthorized|api.key|api key/i.test(firstError)) {
+    return 'missing or invalid API key — set ANTHROPIC_API_KEY';
+  }
+  if (/invalid.request|model|not.found/i.test(firstError)) {
+    return `invalid model or request — ${firstError}`;
+  }
+  if (/econnrefused|enotfound|network|fetch|abort/i.test(firstError)) {
+    return 'network error — check connectivity';
+  }
+  return firstError;
+}
+
 export async function runInvestigate(
   hint: string,
   opts: {
@@ -137,6 +155,8 @@ export async function runInvestigate(
     format?: string;
     ai?: boolean;
     aiModel?: string;
+    /** Injectable AI provider for smoke tests — bypasses credential requirement. */
+    _aiProvider?: NarrativeProvider;
   },
 ): Promise<number> {
   try {
@@ -214,15 +234,16 @@ export async function runInvestigate(
       console.log(rendered);
 
       if (opts.ai && format !== 'json') {
+        const model = opts.aiModel ?? 'claude-opus-4-8';
+        const provider = opts._aiProvider ?? new AnthropicNarrativeProvider({ model });
+        console.log(pc.dim(`[ai] model: ${model}`));
+
         const narrativeInput = buildNarrativeInput(report);
-        const provider = new AnthropicNarrativeProvider({ model: opts.aiModel });
         const { output, fromProvider, validationErrors } = await renderNarrative(narrativeInput, { provider });
 
         if (!fromProvider) {
-          console.error(pc.yellow(`[ai] Provider unavailable — deterministic output shown above.`));
-          if (validationErrors?.length) {
-            console.error(pc.dim(`    ${validationErrors[0]}`));
-          }
+          const reason = classifyAIFailure(validationErrors?.[0]);
+          console.error(pc.yellow(`[ai] fallback to deterministic — ${reason}`));
         } else {
           // Persist AI judgment in the report and update DB (HOR-198)
           const stored = narrativeOutputToStoredJudgment(output, 'anthropic');
