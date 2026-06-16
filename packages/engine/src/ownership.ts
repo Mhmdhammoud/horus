@@ -18,7 +18,30 @@ export interface OwnershipEstimate {
   mostActiveRecent: string | null;
   confidence: number;
   evidence: string[];
+  /** Populated when multiple files match a file-path query and the result is ambiguous. */
+  candidates?: string[];
   note: string;
+}
+
+// Extensions treated as file-path queries (not symbol names).
+const CODE_EXTENSIONS = new Set([
+  'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs',
+  'py', 'rb', 'go', 'rs', 'java', 'kt', 'swift',
+  'cs', 'cpp', 'c', 'h', 'hpp', 'cc',
+  'vue', 'svelte', 'astro',
+  'php', 'scala', 'clj', 'ex', 'exs', 'hs',
+  'sh', 'bash', 'zsh',
+  'json', 'yaml', 'yml', 'toml',
+  'sql', 'graphql', 'proto',
+  'html', 'css', 'scss', 'sass', 'less',
+  'md', 'mdx',
+]);
+
+function looksLikeFilePath(query: string): boolean {
+  const base = query.split('/').pop() ?? '';
+  const dotIdx = base.lastIndexOf('.');
+  if (dotIdx <= 0) return false;
+  return CODE_EXTENSIONS.has(base.slice(dotIdx + 1).toLowerCase());
 }
 
 /**
@@ -31,9 +54,55 @@ export async function estimateOwnership(
   query: string,
   deps: { code: CodeProvider; repoPath: string; symbol?: Symbol | null },
 ): Promise<OwnershipEstimate> {
-  // Reuse the caller's resolved symbol when provided — avoids a duplicate Axon
-  // search and prevents a different duplicate-name match from diverging ownership.
-  const top: Symbol | null = deps.symbol ?? (await deps.code.searchSymbols(query, 5))[0] ?? null;
+  let top: Symbol | null = deps.symbol ?? null;
+  const needsSearch = deps.symbol === undefined || deps.symbol === null;
+
+  if (needsSearch) {
+    if (looksLikeFilePath(query)) {
+      // File-path query: search broadly then prefer exact basename / path-suffix matches
+      // over whatever fuzzy symbol the provider returns as top-1.
+      const queryBase = query.split('/').pop() ?? query;
+      const broad = await deps.code.searchSymbols(query, 20);
+
+      const byFile = new Map<string, Symbol>();
+      for (const sym of broad) {
+        const fp = sym.filePath;
+        if (fp === query || fp.endsWith('/' + query) || fp.split('/').pop() === queryBase) {
+          if (!byFile.has(fp)) byFile.set(fp, sym);
+        }
+      }
+
+      if (byFile.size === 1) {
+        top = [...byFile.values()][0] ?? null;
+      } else if (byFile.size > 1) {
+        return {
+          query,
+          symbol: null,
+          file: null,
+          contributors: [],
+          likelyMaintainer: null,
+          maintainerShare: 0,
+          mostActiveRecent: null,
+          confidence: 0,
+          evidence: [],
+          candidates: [...byFile.keys()],
+          note:
+            'Ambiguous: ' +
+            byFile.size +
+            ' files match "' +
+            query +
+            '". Use a more specific path to disambiguate.',
+        };
+      } else {
+        // No exact file match — fall back to fuzzy symbol search.
+        top = (await deps.code.searchSymbols(query, 5))[0] ?? null;
+      }
+    } else {
+      // Symbol/class/function query — fuzzy search as before.
+      top = (await deps.code.searchSymbols(query, 5))[0] ?? null;
+    }
+  }
+
   const file = top?.filePath ?? null;
 
   if (file === null) {

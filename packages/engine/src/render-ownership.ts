@@ -12,6 +12,13 @@ export function renderOwnership(o: OwnershipEstimate): string {
 
   if (o.file === null) {
     lines.push(o.note);
+    if (o.candidates !== undefined && o.candidates.length > 0) {
+      lines.push('');
+      lines.push('Candidates:');
+      for (const c of o.candidates) {
+        lines.push('  ' + c);
+      }
+    }
     return lines.join('\n');
   }
 
