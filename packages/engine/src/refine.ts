@@ -71,6 +71,14 @@ const TOPIC_MAP: Record<string, TopicEntry> = {
 
 const ALL_TOPICS = Object.keys(TOPIC_MAP) as Array<keyof typeof TOPIC_MAP>;
 
+// Stop-words and mode verbs stripped before text-based fallback matching.
+const STOP_WORDS = new Set([
+  'on', 'the', 'a', 'an', 'at', 'in', 'of', 'and', 'or', 'for', 'with',
+  'by', 'to', 'from', 'that', 'this', 'is', 'are', 'was', 'were', 'it',
+  'be', 'about', 'focus', 'ignore', 'exclude', 'only', 'just', 'concentrate',
+  'look', 'without', 'skip', 'drop',
+]);
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -125,6 +133,62 @@ function topicKeywords(topics: string[]): string[] {
   return kws;
 }
 
+/** Extract significant words from a free-text directive for text-based fallback filtering. */
+function extractSignificantTerms(directive: string): string[] {
+  return directive
+    .toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !STOP_WORDS.has(w));
+}
+
+/** Filter evidence/hypotheses by text match when no predefined topic matched. */
+function applyTextFilter(
+  r: InvestigationReport,
+  directive: string,
+  mode: 'focus' | 'ignore',
+  terms: string[],
+): RefinedView {
+  const matches = (text: string): boolean => terms.some((t) => text.toLowerCase().includes(t));
+
+  const note =
+    (mode === 'focus' ? 'Focused on' : 'Excluding') +
+    ' terms: ' +
+    terms.join(', ') +
+    '. No predefined topic matched; filtered by text search. ' +
+    "Reused the saved investigation's evidence — no re-query of production.";
+
+  if (mode === 'focus') {
+    const hypotheses = r.hypotheses.filter(
+      (h) => matches(h.statement) || matches(h.category),
+    );
+    const evidence = r.evidence.filter((e) => matches(e.title) || matches(e.kind));
+    const suspectedCauses = r.suspectedCauses.filter((c) => matches(c.title));
+    return {
+      directive,
+      mode: 'focus',
+      topics: [],
+      hypotheses,
+      evidence,
+      suspectedCauses: suspectedCauses.length > 0 ? suspectedCauses : r.suspectedCauses,
+      note,
+    };
+  }
+
+  // ignore mode
+  return {
+    directive,
+    mode: 'ignore',
+    topics: [],
+    hypotheses: r.hypotheses.filter(
+      (h) => !matches(h.statement) && !matches(h.category),
+    ),
+    evidence: r.evidence.filter((e) => !matches(e.title) && !matches(e.kind)),
+    suspectedCauses: r.suspectedCauses.filter((c) => !matches(c.title)),
+    note,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Core export
 // ---------------------------------------------------------------------------
@@ -142,8 +206,17 @@ export function refineInvestigation(
   const mode = detectMode(d);
   const topics = matchedTopics(d);
 
-  // ── No recognizable topics or mode=none: return everything ────────────────
+  // ── No recognizable topics or mode=none ────────────────────────────────────
   if (mode === 'none' || topics.length === 0) {
+    // When mode is focus/ignore but no predefined topic keyword matched, try a
+    // text-based fallback using significant words from the directive.
+    if (mode !== 'none' && topics.length === 0) {
+      const terms = extractSignificantTerms(d);
+      if (terms.length > 0) {
+        return applyTextFilter(r, directive, mode, terms);
+      }
+    }
+
     const recognizedList = ALL_TOPICS.join(', ');
     const note =
       'No specific topic directive recognized. ' +

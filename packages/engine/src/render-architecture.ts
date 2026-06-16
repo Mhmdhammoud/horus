@@ -69,7 +69,7 @@ export function renderArchitecture(m: ArchitectureModel): string {
 
   // Fragility
   lines.push('## Fragility');
-  lines.push(`- Dead-code symbols: ${m.fragile.deadCode}`);
+  lines.push(`- Unreferenced symbols: ${m.fragile.deadCode}`);
   lines.push(`- High-coupling pairs (co-changes ≥ 3): ${m.fragile.highCouplingPairs}`);
 
   return lines.join('\n');

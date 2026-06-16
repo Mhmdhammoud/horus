@@ -120,40 +120,49 @@ export interface FileContributor {
 }
 
 /**
- * Pure parser for `git log --format=%an%x1f%aI` stdout.
- * Each line is 'authorISODATE'. Returns contributors sorted by commits
- * descending, then by lastDate descending.
+ * Pure parser for `git log --format=%an%x1f%ae%x1f%aI` stdout.
+ * Each line is 'nameemailISODATE'. Entries are grouped by email so
+ * different display-name aliases for the same address are merged. Returns
+ * contributors sorted by commits descending, then by lastDate descending.
  */
 export function parseFileContributors(stdout: string): FileContributor[] {
   if (!stdout.trim()) return [];
 
-  const tally = new Map<string, { commits: number; firstDate: string; lastDate: string }>();
+  // key = email (or name when email is absent), value = tally
+  const tally = new Map<string, { name: string; commits: number; firstDate: string; lastDate: string }>();
 
   for (const line of stdout.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
-    const sepIdx = trimmed.indexOf('');
-    if (sepIdx === -1) continue;
+    const parts = trimmed.split('');
+    if (parts.length < 3) continue;
 
-    const author = trimmed.slice(0, sepIdx).trim();
-    const date = trimmed.slice(sepIdx + 1).trim();
+    const name = parts[0]!.trim();
+    const email = parts[1]!.trim();
+    const date = parts[2]!.trim();
 
-    if (!author || !date) continue;
+    if (!name || !date) continue;
 
-    const existing = tally.get(author);
+    // Group by email to merge alias commits; fall back to name when email is absent.
+    const key = email || name;
+
+    const existing = tally.get(key);
     if (existing === undefined) {
-      tally.set(author, { commits: 1, firstDate: date, lastDate: date });
+      tally.set(key, { name, commits: 1, firstDate: date, lastDate: date });
     } else {
       existing.commits += 1;
       if (date < existing.firstDate) existing.firstDate = date;
-      if (date > existing.lastDate) existing.lastDate = date;
+      if (date > existing.lastDate) {
+        existing.lastDate = date;
+        existing.name = name; // use the most recently seen display name
+      }
     }
   }
 
   const result: FileContributor[] = [];
-  for (const [author, stats] of tally.entries()) {
-    result.push({ author, ...stats });
+  for (const [, stats] of tally.entries()) {
+    result.push({ author: stats.name, commits: stats.commits, firstDate: stats.firstDate, lastDate: stats.lastDate });
   }
 
   result.sort((a, b) => {
@@ -175,7 +184,7 @@ export async function gitFileContributors(
   try {
     const { stdout } = await exec(
       'git',
-      ['-C', repoPath, 'log', '--follow', '--format=%an%x1f%aI', '--', file],
+      ['-C', repoPath, 'log', '--follow', '--format=%an%x1f%ae%x1f%aI', '--', file],
       { maxBuffer: 10 * 1024 * 1024 },
     );
     return parseFileContributors(stdout);

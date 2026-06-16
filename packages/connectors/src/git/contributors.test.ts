@@ -5,8 +5,13 @@
 import { describe, it, expect } from 'vitest';
 import { parseFileContributors } from './provider.js';
 
-// Unit separator character (\x1f) used in the --format=%an%x1f%aI output.
+// Unit separator character (\x1f) used in the --format=%an%x1f%ae%x1f%aI output.
 const SEP = '\x1f';
+
+// Helper: build a git-log line with name, email, and ISO date.
+function line(name: string, email: string, date: string): string {
+  return name + SEP + email + SEP + date;
+}
 
 describe('parseFileContributors', () => {
   it('returns an empty array for empty input', () => {
@@ -15,14 +20,13 @@ describe('parseFileContributors', () => {
   });
 
   it('tallies commits per author and returns sorted by commits desc', () => {
-    // 5 lines: Alice × 3, Bob × 2 (oldest first in git log output is not guaranteed,
-    // but ISO-string comparison works regardless of order).
+    // 5 lines: Alice × 3, Bob × 2
     const stdout = [
-      'Alice' + SEP + '2024-03-01T10:00:00+00:00',
-      'Bob' + SEP + '2024-03-02T11:00:00+00:00',
-      'Alice' + SEP + '2024-03-05T09:00:00+00:00',
-      'Bob' + SEP + '2024-02-20T08:00:00+00:00',
-      'Alice' + SEP + '2024-01-15T07:00:00+00:00',
+      line('Alice', 'alice@example.com', '2024-03-01T10:00:00+00:00'),
+      line('Bob', 'bob@example.com', '2024-03-02T11:00:00+00:00'),
+      line('Alice', 'alice@example.com', '2024-03-05T09:00:00+00:00'),
+      line('Bob', 'bob@example.com', '2024-02-20T08:00:00+00:00'),
+      line('Alice', 'alice@example.com', '2024-01-15T07:00:00+00:00'),
     ].join('\n');
 
     const result = parseFileContributors(stdout);
@@ -44,12 +48,31 @@ describe('parseFileContributors', () => {
     expect(bob?.lastDate).toBe('2024-03-02T11:00:00+00:00');
   });
 
-  it('skips malformed lines missing the separator', () => {
+  it('merges commits from the same email under different display names', () => {
+    // Alice commits under two different display names — same email merges them.
     const stdout = [
-      'Alice' + SEP + '2024-03-01T10:00:00+00:00',
+      line('Alice', 'alice@example.com', '2024-01-01T10:00:00+00:00'),
+      line('Alice B', 'alice@example.com', '2024-03-05T09:00:00+00:00'),
+      line('Bob', 'bob@example.com', '2024-02-20T08:00:00+00:00'),
+    ].join('\n');
+
+    const result = parseFileContributors(stdout);
+
+    expect(result).toHaveLength(2);
+    // Alice has 2 merged commits; display name comes from the most recent commit.
+    expect(result[0]?.author).toBe('Alice B');
+    expect(result[0]?.commits).toBe(2);
+    expect(result[1]?.author).toBe('Bob');
+    expect(result[1]?.commits).toBe(1);
+  });
+
+  it('skips malformed lines with fewer than 3 fields', () => {
+    const stdout = [
+      line('Alice', 'alice@example.com', '2024-03-01T10:00:00+00:00'),
       'this-line-has-no-separator',
+      'Alice' + SEP + '2024-03-05T09:00:00+00:00', // only 2 fields — skipped
       '',
-      'Alice' + SEP + '2024-03-05T09:00:00+00:00',
+      line('Alice', 'alice@example.com', '2024-03-05T09:00:00+00:00'),
     ].join('\n');
 
     const result = parseFileContributors(stdout);
@@ -60,11 +83,11 @@ describe('parseFileContributors', () => {
     expect(alice?.commits).toBe(2);
   });
 
-  it('skips lines with empty author or empty date after the separator', () => {
+  it('skips lines with empty author or empty date', () => {
     const stdout = [
-      SEP + '2024-03-01T10:00:00+00:00', // empty author
-      'Bob' + SEP, // empty date
-      'Carol' + SEP + '2024-03-10T12:00:00+00:00',
+      SEP + 'x@x.com' + SEP + '2024-03-01T10:00:00+00:00', // empty name
+      line('Bob', 'bob@example.com', ''),                     // empty date
+      line('Carol', 'carol@example.com', '2024-03-10T12:00:00+00:00'),
     ].join('\n');
 
     const result = parseFileContributors(stdout);
@@ -76,8 +99,8 @@ describe('parseFileContributors', () => {
   it('breaks ties in commit count by lastDate descending', () => {
     // Both have 1 commit; the one with the more recent lastDate should come first.
     const stdout = [
-      'Alice' + SEP + '2024-01-10T10:00:00+00:00',
-      'Bob' + SEP + '2024-06-01T10:00:00+00:00',
+      line('Alice', 'alice@example.com', '2024-01-10T10:00:00+00:00'),
+      line('Bob', 'bob@example.com', '2024-06-01T10:00:00+00:00'),
     ].join('\n');
 
     const result = parseFileContributors(stdout);
@@ -86,5 +109,18 @@ describe('parseFileContributors', () => {
     // Bob has a later date so should sort first when commits are tied.
     expect(result[0]?.author).toBe('Bob');
     expect(result[1]?.author).toBe('Alice');
+  });
+
+  it('falls back to name as key when email is empty', () => {
+    const stdout = [
+      line('Alice', '', '2024-03-01T10:00:00+00:00'),
+      line('Alice', '', '2024-03-05T09:00:00+00:00'),
+    ].join('\n');
+
+    const result = parseFileContributors(stdout);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.author).toBe('Alice');
+    expect(result[0]?.commits).toBe(2);
   });
 });

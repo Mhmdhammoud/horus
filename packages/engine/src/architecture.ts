@@ -177,7 +177,7 @@ export async function discoverArchitecture(deps: {
     `${subsystems.length} subsystems (largest: ${largestDesc}), ` +
     `${asyncBoundaries.length} async queue boundaries, ` +
     `${externalSystems.length} external systems, ` +
-    `${deadCode} dead-code symbols.`;
+    `${deadCode} unreferenced symbols.`;
 
   return {
     nodeStats,

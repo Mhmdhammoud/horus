@@ -58,7 +58,7 @@ export function renderOnboarding(g: OnboardingGuide): string {
   // What usually breaks
   lines.push('## What usually breaks');
   lines.push('');
-  lines.push(`- Dead-code symbols: ${g.architecture.fragile.deadCode}`);
+  lines.push(`- Unreferenced symbols: ${g.architecture.fragile.deadCode}`);
   lines.push(
     `- High-coupling pairs (co-changes ≥ 3): ${g.architecture.fragile.highCouplingPairs}`,
   );

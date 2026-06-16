@@ -259,6 +259,9 @@ export function generatePostmortem(r: InvestigationReport): string {
   }
 
   for (const gap of r.gapAnalysis.gaps) {
+    // If the raw nextSource action is already listed from r.nextActions, skip the
+    // compound "Wire..." wrapper — it would duplicate the same instruction.
+    if (seen.has(gap.nextSource)) continue;
     const wireAction = `Wire ${gap.nextSource} to close the '${gap.dimension}' evidence gap`;
     if (!seen.has(wireAction)) {
       seen.add(wireAction);
