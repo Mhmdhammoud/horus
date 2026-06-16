@@ -124,10 +124,6 @@ node -e "
 "
 ok "  apps/horus/package.json → ${VERSION}"
 
-sed -i.bak "s/HORUS_VERSION = '[^']*'/HORUS_VERSION = '${VERSION}'/" "$VERSION_FILE"
-rm -f "${VERSION_FILE}.bak"
-ok "  packages/core/src/version.ts → ${VERSION}"
-
 # ── 2. install ────────────────────────────────────────────────────────────────
 
 info "Installing dependencies"
@@ -157,7 +153,7 @@ ok "Smoke test passed"
 
 info "Committing and tagging ${TAG}"
 
-git -C "$ROOT" add apps/horus/package.json packages/core/src/version.ts
+git -C "$ROOT" add apps/horus/package.json
 git -C "$ROOT" commit -m "chore: release ${TAG}"
 git -C "$ROOT" tag -a "$TAG" -m "Horus ${TAG}"
 ok "  Committed and tagged ${TAG}"

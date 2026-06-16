@@ -2,8 +2,8 @@ name: Release
 
 # Triggers on every push to master. Reads the version from apps/horus/package.json
 # and skips if a GitHub Release for that version already exists — making each step
-# idempotent. To release a new version: bump the version in apps/horus/package.json
-# and packages/core/src/version.ts, commit, and push to master.
+# idempotent. To release a new version: bump apps/horus/package.json, commit, and
+# push to master. HORUS_VERSION is injected from package.json at build time.
 #
 # Required secrets:
 #   npm_token          — npm publish token (access: public)

@@ -1,5 +1,7 @@
-/** Horus release version. */
-export const HORUS_VERSION = '0.1.2';
+// Injected at build time from apps/horus/package.json via tsup define.
+// Falls back to 'dev' in test environments where the define is not applied.
+declare const __HORUS_VERSION__: string | undefined;
+export const HORUS_VERSION: string = typeof __HORUS_VERSION__ !== 'undefined' ? __HORUS_VERSION__ : 'dev';
 
 /**
  * The exact Axon version Horus is validated and pinned against. The Axon provider
