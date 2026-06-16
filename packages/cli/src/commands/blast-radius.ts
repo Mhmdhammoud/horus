@@ -22,8 +22,15 @@ export async function runBlastRadius(
     try {
       const r = await analyzeBlastRadius(query, { code, db }, opts.depth ?? 3);
       if (!r) {
-        console.log('No symbol found for: ' + query);
+        console.log(`No symbol found for: ${query}`);
+        console.log(pc.dim(`  Tip: use an exact class or function name, e.g. "MyService"`));
         return 1;
+      }
+      if (r.seed.name.toLowerCase() !== query.toLowerCase()) {
+        console.log(
+          pc.yellow(`  No exact match for "${query}"`) +
+            pc.dim(` — showing closest: "${r.seed.name}" (fuzzy match)`),
+        );
       }
       console.log(opts.json ? blastRadiusToJSON(r) : renderBlastRadius(r));
     } finally {

@@ -18,11 +18,20 @@ export async function runExplain(
 
   const symbols = await code.searchSymbols(query, 5);
   if (symbols.length === 0) {
-    console.log('No symbol found for: ' + query);
+    console.log(`No symbol found for: ${query}`);
+    console.log(pc.dim(`  Tip: use an exact class or function name, e.g. "MyService" or "processOrder"`));
     return 1;
   }
   const top = symbols[0];
   if (!top) return 1;
+
+  const isExactMatch = top.name.toLowerCase() === query.toLowerCase();
+  if (!isExactMatch) {
+    console.log(
+      pc.yellow(`  No exact match for "${query}"`) +
+        pc.dim(` — showing closest: "${top.name}" (fuzzy match)`),
+    );
+  }
   // Semantic search often returns several same-named hits (e.g. a resolver, a service,
   // and a test factory all named `createCompany`). We explain the highest-ranked match
   // and DISCLOSE the collisions so the user can re-query to target another — rather than
