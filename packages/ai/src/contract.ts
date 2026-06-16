@@ -36,6 +36,19 @@ export interface NarrativeCauseItem {
   evidenceIds: string[];
 }
 
+/** A deterministic hypothesis passed to the AI for second-pass judgment (HOR-197). */
+export interface NarrativeHypothesisItem {
+  id: string;
+  category: string;
+  statement: string;
+  /** Deterministic engine verdict before AI judgment. */
+  deterministicVerdict: 'supported' | 'weakened' | 'eliminated' | 'unconfirmed';
+  /** Deterministic engine confidence (0–1). */
+  deterministicConfidence: number;
+  /** Evidence IDs that support this hypothesis deterministically. */
+  supportingEvidenceIds: string[];
+}
+
 /**
  * Bounded, sanitised packet passed to a NarrativeProvider.
  * All evidence IDs here are the only valid citation targets.
@@ -57,6 +70,8 @@ export interface NarrativeInput {
   deterministicSummary: string;
   /** Key findings from the engine for context. */
   findings: Array<{ title: string; evidenceIds: string[] }>;
+  /** Deterministic hypotheses for AI second-pass judgment (HOR-197). */
+  hypotheses?: NarrativeHypothesisItem[];
 }
 
 // ---------------------------------------------------------------------------
@@ -68,6 +83,38 @@ export interface NarrativeCitation {
   evidenceId: string;
   /** Why this evidence supports the claim. */
   rationale?: string;
+}
+
+/**
+ * AI second-pass judgment on a single deterministic hypothesis (HOR-197).
+ * The AI may agree with, refine, or disagree with the deterministic verdict.
+ * Deterministic scoring remains authoritative; this is an annotation layer.
+ */
+export interface AIHypothesisJudgment {
+  hypothesisId: string;
+  category: string;
+  verdict: 'supported' | 'weakened' | 'eliminated' | 'unconfirmed';
+  /** One-paragraph rationale grounded in cited evidence. */
+  rationale: string;
+  /** Evidence IDs the AI cites to support this verdict. Must be from NarrativeInput.evidence. */
+  citedEvidenceIds: string[];
+  /** AI confidence in this verdict (0–1). Must not exceed reportConfidence. */
+  confidence: number;
+}
+
+/**
+ * AI structured root cause assessment (HOR-197).
+ * Complements the deterministic suspected causes with an evidence-grounded narrative.
+ */
+export interface AIRootCauseAssessment {
+  /** One-paragraph root cause summary grounded in cited evidence. */
+  summary: string;
+  /** ID of the hypothesis the AI considers the primary cause driver, if any. */
+  primaryHypothesisId?: string;
+  /** Evidence IDs cited in this root cause assessment. */
+  citedEvidenceIds: string[];
+  /** AI-reported uncertainty level based on evidence quality. */
+  uncertainty: 'low' | 'medium' | 'high';
 }
 
 /** The structured output a NarrativeProvider must return. */
@@ -84,6 +131,16 @@ export interface NarrativeOutput {
   confidence: number;
   /** Optional: services the narrative mentions. Used for hallucination check. */
   mentionedServices?: string[];
+  /**
+   * Structured per-hypothesis AI judgments (HOR-197).
+   * Present when input.hypotheses was supplied. AI verdict and rationale for each hypothesis.
+   */
+  hypothesisJudgments?: AIHypothesisJudgment[];
+  /**
+   * Structured AI root cause assessment (HOR-197).
+   * Complements the deterministic suspected causes; never replaces them.
+   */
+  rootCauseAssessment?: AIRootCauseAssessment;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +221,58 @@ export function validateNarrative(
           `Narrative mentions service "${svc}" which is not in the known services list — possible hallucination`,
         );
       }
+    }
+  }
+
+  // Hypothesis judgment validation (HOR-197)
+  if (output.hypothesisJudgments !== undefined) {
+    const knownHypIds = new Set(input.hypotheses?.map((h) => h.id) ?? []);
+    const validVerdicts = new Set(['supported', 'weakened', 'eliminated', 'unconfirmed']);
+    for (const j of output.hypothesisJudgments) {
+      if (input.hypotheses && !knownHypIds.has(j.hypothesisId)) {
+        errors.push(
+          `hypothesisJudgment references unknown hypothesis ID "${j.hypothesisId}"`,
+        );
+      }
+      if (!validVerdicts.has(j.verdict)) {
+        errors.push(
+          `hypothesisJudgment "${j.hypothesisId}" has invalid verdict "${j.verdict}"`,
+        );
+      }
+      if (!j.rationale || j.rationale.trim().length === 0) {
+        errors.push(`hypothesisJudgment "${j.hypothesisId}" has empty rationale`);
+      }
+      for (const eid of j.citedEvidenceIds) {
+        if (!knownIds.has(eid)) {
+          errors.push(
+            `hypothesisJudgment "${j.hypothesisId}" cites unknown evidence ID "${eid}"`,
+          );
+        }
+      }
+      if (j.confidence < 0 || j.confidence > 1) {
+        errors.push(
+          `hypothesisJudgment "${j.hypothesisId}" confidence must be between 0 and 1`,
+        );
+      }
+    }
+  }
+
+  // Root cause assessment validation (HOR-197)
+  if (output.rootCauseAssessment !== undefined) {
+    const rca = output.rootCauseAssessment;
+    if (!rca.summary || rca.summary.trim().length === 0) {
+      errors.push('rootCauseAssessment.summary must be non-empty');
+    }
+    for (const eid of rca.citedEvidenceIds) {
+      if (!knownIds.has(eid)) {
+        errors.push(`rootCauseAssessment cites unknown evidence ID "${eid}"`);
+      }
+    }
+    const validUncertainty = new Set(['low', 'medium', 'high']);
+    if (!validUncertainty.has(rca.uncertainty)) {
+      errors.push(
+        `rootCauseAssessment.uncertainty must be 'low', 'medium', or 'high' (got "${rca.uncertainty}")`,
+      );
     }
   }
 

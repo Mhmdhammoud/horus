@@ -12,8 +12,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Symbol, HealthStatus } from '@horus/core';
 
 const mocks = vi.hoisted(() => ({
-  searchSymbols: vi.fn<[string, number?], Promise<Symbol[]>>(),
-  codeHealth: vi.fn<[], Promise<HealthStatus>>(),
+  searchSymbols: vi.fn<() => Promise<Symbol[]>>(),
+  codeHealth: vi.fn<() => Promise<HealthStatus>>(),
   context: vi.fn(),
   impact: vi.fn(),
   flowsFor: vi.fn(),

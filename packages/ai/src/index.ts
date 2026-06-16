@@ -12,9 +12,12 @@
 export type {
   NarrativeEvidenceItem,
   NarrativeCauseItem,
+  NarrativeHypothesisItem,
   NarrativeInput,
   NarrativeOutput,
   NarrativeCitation,
+  AIHypothesisJudgment,
+  AIRootCauseAssessment,
   NarrativeProvider,
   NarrativeProviderOptions,
   NarrativeValidationResult,

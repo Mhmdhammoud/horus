@@ -10,6 +10,8 @@ import {
   type NarrativeInput,
   type NarrativeOutput,
   type NarrativeProvider,
+  type AIHypothesisJudgment,
+  type AIRootCauseAssessment,
 } from './contract.js';
 
 // ---------------------------------------------------------------------------
@@ -44,6 +46,44 @@ function makeOutput(overrides: Partial<NarrativeOutput> = {}): NarrativeOutput {
     citations: [{ evidenceId: 'ev-001' }, { evidenceId: 'ev-003' }],
     confidence: 0.65,
     ...overrides,
+  };
+}
+
+function makeInputWithHypotheses(overrides: Partial<NarrativeInput> = {}): NarrativeInput {
+  return makeInput({
+    hypotheses: [
+      {
+        id: 'hyp-001',
+        category: 'queue-backlog',
+        statement: 'Queue backlog growing on payments.',
+        deterministicVerdict: 'supported',
+        deterministicConfidence: 0.65,
+        supportingEvidenceIds: ['ev-001'],
+      },
+    ],
+    ...overrides,
+  });
+}
+
+function makeValidJudgment(override: Partial<AIHypothesisJudgment> = {}): AIHypothesisJudgment {
+  return {
+    hypothesisId: 'hyp-001',
+    category: 'queue-backlog',
+    verdict: 'supported',
+    rationale: 'The log evidence confirms queue growth.',
+    citedEvidenceIds: ['ev-001'],
+    confidence: 0.60,
+    ...override,
+  };
+}
+
+function makeValidRca(override: Partial<AIRootCauseAssessment> = {}): AIRootCauseAssessment {
+  return {
+    summary: 'Queue backlog caused by producer outpacing consumer.',
+    primaryHypothesisId: 'hyp-001',
+    citedEvidenceIds: ['ev-001'],
+    uncertainty: 'low',
+    ...override,
   };
 }
 
@@ -231,5 +271,133 @@ describe('renderNarrative — no provider', () => {
     const input = makeInput({ suspectedCauses: [] });
     const result = await renderNarrative(input);
     expect(result.output.why).toContain('could not be determined');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateNarrative — hypothesis judgments (HOR-197)
+// ---------------------------------------------------------------------------
+
+describe('validateNarrative — hypothesis judgments', () => {
+  it('valid hypothesis judgment passes', () => {
+    const input = makeInputWithHypotheses();
+    const output = makeOutput({ hypothesisJudgments: [makeValidJudgment()] });
+    expect(validateNarrative(output, input).valid).toBe(true);
+  });
+
+  it('rejects judgment referencing unknown hypothesis ID', () => {
+    const input = makeInputWithHypotheses();
+    const output = makeOutput({
+      hypothesisJudgments: [makeValidJudgment({ hypothesisId: 'hyp-GHOST' })],
+    });
+    const result = validateNarrative(output, input);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('hyp-GHOST'))).toBe(true);
+  });
+
+  it('rejects judgment with invalid verdict', () => {
+    const input = makeInputWithHypotheses();
+    const output = makeOutput({
+      hypothesisJudgments: [makeValidJudgment({ verdict: 'maybe' as AIHypothesisJudgment['verdict'] })],
+    });
+    const result = validateNarrative(output, input);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('invalid verdict'))).toBe(true);
+  });
+
+  it('rejects judgment with empty rationale', () => {
+    const input = makeInputWithHypotheses();
+    const output = makeOutput({
+      hypothesisJudgments: [makeValidJudgment({ rationale: '   ' })],
+    });
+    const result = validateNarrative(output, input);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('empty rationale'))).toBe(true);
+  });
+
+  it('rejects judgment citing unknown evidence ID', () => {
+    const input = makeInputWithHypotheses();
+    const output = makeOutput({
+      hypothesisJudgments: [makeValidJudgment({ citedEvidenceIds: ['ev-GHOST'] })],
+    });
+    const result = validateNarrative(output, input);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('ev-GHOST'))).toBe(true);
+  });
+
+  it('rejects judgment with confidence out of range', () => {
+    const input = makeInputWithHypotheses();
+    const output = makeOutput({
+      hypothesisJudgments: [makeValidJudgment({ confidence: -0.1 })],
+    });
+    const result = validateNarrative(output, input);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('confidence must be between 0 and 1'))).toBe(true);
+  });
+
+  it('passes when hypothesisJudgments is undefined (optional field)', () => {
+    const input = makeInputWithHypotheses();
+    const output = makeOutput({ hypothesisJudgments: undefined });
+    expect(validateNarrative(output, input).valid).toBe(true);
+  });
+
+  it('passes when input has no hypotheses but output has no judgments', () => {
+    const input = makeInput(); // no hypotheses
+    const output = makeOutput();
+    expect(validateNarrative(output, input).valid).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateNarrative — root cause assessment (HOR-197)
+// ---------------------------------------------------------------------------
+
+describe('validateNarrative — root cause assessment', () => {
+  it('valid root cause assessment passes', () => {
+    const input = makeInputWithHypotheses();
+    const output = makeOutput({ rootCauseAssessment: makeValidRca() });
+    expect(validateNarrative(output, input).valid).toBe(true);
+  });
+
+  it('rejects rca with empty summary', () => {
+    const input = makeInputWithHypotheses();
+    const output = makeOutput({ rootCauseAssessment: makeValidRca({ summary: '' }) });
+    const result = validateNarrative(output, input);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('summary must be non-empty'))).toBe(true);
+  });
+
+  it('rejects rca citing unknown evidence ID', () => {
+    const input = makeInputWithHypotheses();
+    const output = makeOutput({
+      rootCauseAssessment: makeValidRca({ citedEvidenceIds: ['ev-GHOST'] }),
+    });
+    const result = validateNarrative(output, input);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('ev-GHOST'))).toBe(true);
+  });
+
+  it('rejects rca with invalid uncertainty', () => {
+    const input = makeInputWithHypotheses();
+    const output = makeOutput({
+      rootCauseAssessment: makeValidRca({ uncertainty: 'maybe' as AIRootCauseAssessment['uncertainty'] }),
+    });
+    const result = validateNarrative(output, input);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('uncertainty'))).toBe(true);
+  });
+
+  it('passes when rootCauseAssessment is undefined (optional field)', () => {
+    const input = makeInputWithHypotheses();
+    const output = makeOutput({ rootCauseAssessment: undefined });
+    expect(validateNarrative(output, input).valid).toBe(true);
+  });
+
+  it('primaryHypothesisId is optional and does not cause validation failure when absent', () => {
+    const input = makeInputWithHypotheses();
+    const output = makeOutput({
+      rootCauseAssessment: makeValidRca({ primaryHypothesisId: undefined }),
+    });
+    expect(validateNarrative(output, input).valid).toBe(true);
   });
 });

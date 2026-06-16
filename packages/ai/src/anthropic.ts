@@ -17,6 +17,8 @@ import type {
   NarrativeCitation,
   NarrativeProvider,
   NarrativeProviderOptions,
+  AIHypothesisJudgment,
+  AIRootCauseAssessment,
 } from './contract.js';
 
 export interface AnthropicProviderOptions {
@@ -90,7 +92,35 @@ function buildPrompt(input: NarrativeInput, ceiling: number): string {
     .map((c) => `- ${c.label} (score: ${c.score})`)
     .join('\n');
 
-  return `You are an incident analysis assistant. Analyze this investigation and return a JSON narrative.
+  const hypothesisLines = input.hypotheses && input.hypotheses.length > 0
+    ? input.hypotheses
+        .map(
+          (h) =>
+            `- [${h.id}] (${h.category}) [deterministic: ${h.deterministicVerdict} @ ${h.deterministicConfidence.toFixed(2)}] ${h.statement}`,
+        )
+        .join('\n')
+    : null;
+
+  const hypothesisJudgmentSchema = hypothesisLines
+    ? `  "hypothesisJudgments": [
+    {
+      "hypothesisId": "<id from hypotheses list above>",
+      "category": "<category from hypotheses list>",
+      "verdict": "<supported|weakened|eliminated|unconfirmed>",
+      "rationale": "<one paragraph grounded in evidence IDs>",
+      "citedEvidenceIds": ["<evidence IDs from the list>"],
+      "confidence": <0–${ceiling}>
+    }
+  ],
+  "rootCauseAssessment": {
+    "summary": "<one paragraph root cause grounded in evidence>",
+    "primaryHypothesisId": "<id of the hypothesis you consider the primary driver, or omit>",
+    "citedEvidenceIds": ["<evidence IDs from the list>"],
+    "uncertainty": "<low|medium|high>"
+  },`
+    : '';
+
+  return `You are an incident analysis assistant. Analyze this investigation and return a JSON judgment.
 
 Investigation hint: ${input.hint}
 Deterministic summary: ${input.deterministicSummary}
@@ -100,51 +130,103 @@ ${evidenceLines}
 
 Suspected causes:
 ${causeLines}
+${hypothesisLines ? `\nDeterministic hypotheses (provide a second-pass judgment for each):\n${hypothesisLines}` : ''}
 
 Known services: ${input.knownServices.join(', ')}
 
 Return ONLY valid JSON with this exact shape:
 {
   "what": "<what happened — one concise paragraph>",
-  "why": "<root cause analysis grounded in the evidence above>",
+  "why": "<root cause narrative grounded in the evidence above>",
   "whereNext": ["<action 1>", "<action 2>"],
   "citations": [{"evidenceId": "<id from the evidence list>", "rationale": "<why this supports the claim>"}],
   "confidence": <number between 0 and ${ceiling}>,
-  "mentionedServices": ["<service name from known list only>"]
+  "mentionedServices": ["<service name from known list only>"],
+${hypothesisJudgmentSchema}
 }
 
 Hard rules:
 - confidence must not exceed ${ceiling}
 - only cite evidence IDs from the list above — any other ID is a hallucination
-- only include services from: ${input.knownServices.join(', ')}`;
+- only include services from: ${input.knownServices.join(', ')}
+- hypothesisJudgments must only reference hypothesis IDs from the hypotheses list above
+- verdict must be exactly one of: supported, weakened, eliminated, unconfirmed
+- uncertainty must be exactly one of: low, medium, high`;
 }
 
 function parseOutput(raw: string, input: NarrativeInput, ceiling: number): NarrativeOutput {
-  let parsed: Partial<NarrativeOutput & { citations: NarrativeCitation[] }>;
+  let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(raw) as typeof parsed;
+    parsed = JSON.parse(raw) as Record<string, unknown>;
   } catch {
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       throw new Error('Anthropic response did not contain a JSON object');
     }
-    parsed = JSON.parse(jsonMatch[0]) as typeof parsed;
+    parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
   }
 
   const confidence = Math.min(
-    typeof parsed.confidence === 'number' ? parsed.confidence : input.reportConfidence,
+    typeof parsed['confidence'] === 'number' ? parsed['confidence'] : input.reportConfidence,
     ceiling,
   );
 
+  const citations: NarrativeCitation[] = Array.isArray(parsed['citations'])
+    ? (parsed['citations'] as NarrativeCitation[])
+    : [];
+
   const output: NarrativeOutput = {
-    what: typeof parsed.what === 'string' ? parsed.what : '',
-    why: typeof parsed.why === 'string' ? parsed.why : '',
-    whereNext: Array.isArray(parsed.whereNext) ? parsed.whereNext.map(String) : [],
-    citations: Array.isArray(parsed.citations) ? parsed.citations : [],
+    what: typeof parsed['what'] === 'string' ? parsed['what'] : '',
+    why: typeof parsed['why'] === 'string' ? parsed['why'] : '',
+    whereNext: Array.isArray(parsed['whereNext']) ? (parsed['whereNext'] as string[]).map(String) : [],
+    citations,
     confidence,
   };
-  if (Array.isArray(parsed.mentionedServices)) {
-    output.mentionedServices = parsed.mentionedServices.map(String);
+
+  if (Array.isArray(parsed['mentionedServices'])) {
+    output.mentionedServices = (parsed['mentionedServices'] as unknown[]).map(String);
   }
+
+  // Parse structured hypothesis judgments (HOR-197)
+  if (Array.isArray(parsed['hypothesisJudgments'])) {
+    output.hypothesisJudgments = (parsed['hypothesisJudgments'] as Record<string, unknown>[]).map(
+      (j): AIHypothesisJudgment => ({
+        hypothesisId: typeof j['hypothesisId'] === 'string' ? j['hypothesisId'] : '',
+        category: typeof j['category'] === 'string' ? j['category'] : '',
+        verdict: isValidVerdict(j['verdict']) ? j['verdict'] : 'unconfirmed',
+        rationale: typeof j['rationale'] === 'string' ? j['rationale'] : '',
+        citedEvidenceIds: Array.isArray(j['citedEvidenceIds'])
+          ? (j['citedEvidenceIds'] as unknown[]).map(String)
+          : [],
+        confidence: Math.min(
+          typeof j['confidence'] === 'number' ? j['confidence'] : 0,
+          ceiling,
+        ),
+      }),
+    );
+  }
+
+  // Parse structured root cause assessment (HOR-197)
+  if (parsed['rootCauseAssessment'] && typeof parsed['rootCauseAssessment'] === 'object') {
+    const rca = parsed['rootCauseAssessment'] as Record<string, unknown>;
+    output.rootCauseAssessment = {
+      summary: typeof rca['summary'] === 'string' ? rca['summary'] : '',
+      primaryHypothesisId:
+        typeof rca['primaryHypothesisId'] === 'string' ? rca['primaryHypothesisId'] : undefined,
+      citedEvidenceIds: Array.isArray(rca['citedEvidenceIds'])
+        ? (rca['citedEvidenceIds'] as unknown[]).map(String)
+        : [],
+      uncertainty: isValidUncertainty(rca['uncertainty']) ? rca['uncertainty'] : 'high',
+    } satisfies AIRootCauseAssessment;
+  }
+
   return output;
+}
+
+function isValidVerdict(v: unknown): v is AIHypothesisJudgment['verdict'] {
+  return v === 'supported' || v === 'weakened' || v === 'eliminated' || v === 'unconfirmed';
+}
+
+function isValidUncertainty(v: unknown): v is AIRootCauseAssessment['uncertainty'] {
+  return v === 'low' || v === 'medium' || v === 'high';
 }

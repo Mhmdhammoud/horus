@@ -51,6 +51,24 @@ export const FIXTURE_INPUT: NarrativeInput = {
     { title: 'Concurrency bump correlates with stall onset', evidenceIds: ['ev-commit-001'] },
     { title: 'Queue depth spike follows stall events', evidenceIds: ['ev-metric-001'] },
   ],
+  hypotheses: [
+    {
+      id: 'hyp-worker-slowdown',
+      category: 'worker-slowdown',
+      statement: 'Workers consuming the default queue stalled or processing slowly.',
+      deterministicVerdict: 'supported',
+      deterministicConfidence: 0.68,
+      supportingEvidenceIds: ['ev-log-001', 'ev-metric-001'],
+    },
+    {
+      id: 'hyp-deployment-regression',
+      category: 'deployment-regression',
+      statement: 'A recent deployment changed worker concurrency configuration.',
+      deterministicVerdict: 'weakened',
+      deterministicConfidence: 0.45,
+      supportingEvidenceIds: ['ev-commit-001'],
+    },
+  ],
 };
 
 // ---------------------------------------------------------------------------
@@ -60,7 +78,7 @@ export const FIXTURE_INPUT: NarrativeInput = {
 /**
  * A fully valid NarrativeOutput for FIXTURE_INPUT.
  * All citation IDs exist in the input, confidence is below the ceiling,
- * and all required sections are populated.
+ * and all required sections are populated, including structured hypothesis judgments (HOR-197).
  * validateNarrative(FIXTURE_VALID_OUTPUT, FIXTURE_INPUT) must return { valid: true }.
  */
 export const FIXTURE_VALID_OUTPUT: NarrativeOutput = {
@@ -78,6 +96,33 @@ export const FIXTURE_VALID_OUTPUT: NarrativeOutput = {
   ],
   confidence: 0.68,
   mentionedServices: ['leadcall-api'],
+  hypothesisJudgments: [
+    {
+      hypothesisId: 'hyp-worker-slowdown',
+      category: 'worker-slowdown',
+      verdict: 'supported',
+      rationale:
+        'The stall logs (ev-log-001) directly confirm workers exceeded lockDuration, and the queue depth spike (ev-metric-001) is consistent with a slowdown. The deterministic verdict of supported is well-grounded.',
+      citedEvidenceIds: ['ev-log-001', 'ev-metric-001'],
+      confidence: 0.65,
+    },
+    {
+      hypothesisId: 'hyp-deployment-regression',
+      category: 'deployment-regression',
+      verdict: 'supported',
+      rationale:
+        'The commit (ev-commit-001) directly changed concurrency settings and the timing aligns with the stall onset. I upgrade this from weakened to supported given the direct causal link.',
+      citedEvidenceIds: ['ev-commit-001'],
+      confidence: 0.60,
+    },
+  ],
+  rootCauseAssessment: {
+    summary:
+      'The concurrency increase (ev-commit-001) caused Redis connection pool exhaustion, leading to BullMQ worker stalls (ev-log-001) and a queue depth spike (ev-metric-001). The deployment change is the root cause; the worker slowdown is the mechanism.',
+    primaryHypothesisId: 'hyp-worker-slowdown',
+    citedEvidenceIds: ['ev-commit-001', 'ev-log-001', 'ev-metric-001'],
+    uncertainty: 'low',
+  },
 };
 
 // ---------------------------------------------------------------------------

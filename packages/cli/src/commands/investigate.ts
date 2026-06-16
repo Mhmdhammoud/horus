@@ -6,6 +6,19 @@ import { investigate, renderReport, reportToJSON, reportToMarkdown } from '@horu
 import type { InvestigationReport } from '@horus/engine';
 import { renderNarrative, AnthropicNarrativeProvider } from '@horus/ai';
 import type { NarrativeInput } from '@horus/ai';
+import type { Evidence } from '@horus/engine';
+
+function extractEvidenceExcerpt(e: Evidence): string | undefined {
+  if (!e.payload || typeof e.payload !== 'object') return undefined;
+  const p = e.payload as Record<string, unknown>;
+  const candidate =
+    (typeof p['pattern'] === 'string' ? p['pattern'] : null) ??
+    (typeof p['message'] === 'string' ? p['message'] : null) ??
+    (typeof p['label'] === 'string' ? p['label'] : null) ??
+    (typeof p['summary'] === 'string' ? p['summary'] : null) ??
+    (typeof p['valueLabel'] === 'string' ? p['valueLabel'] : null);
+  return candidate ? candidate.slice(0, 120) : undefined;
+}
 
 export function buildNarrativeInput(report: InvestigationReport): NarrativeInput {
   return {
@@ -16,6 +29,7 @@ export function buildNarrativeInput(report: InvestigationReport): NarrativeInput
       id: e.id,
       kind: e.kind,
       title: e.title,
+      excerpt: extractEvidenceExcerpt(e),
     })),
     knownServices: report.input.service ? [report.input.service] : [],
     suspectedCauses: report.suspectedCauses.map((c) => ({
@@ -27,6 +41,14 @@ export function buildNarrativeInput(report: InvestigationReport): NarrativeInput
     findings: report.findings.map((f) => ({
       title: f.title,
       evidenceIds: f.evidenceIds,
+    })),
+    hypotheses: report.hypotheses.map((h) => ({
+      id: h.id,
+      category: h.category,
+      statement: h.statement,
+      deterministicVerdict: h.verdict,
+      deterministicConfidence: h.confidence,
+      supportingEvidenceIds: h.supportingEvidenceIds,
     })),
   };
 }
@@ -135,8 +157,44 @@ export async function runInvestigate(
         } else {
           const sep = '─'.repeat(60);
           console.log(`\n${sep}`);
-          console.log(pc.bold('AI Narrative'));
+          console.log(pc.bold('AI Judgment') + pc.dim(` (confidence: ${(output.confidence * 100).toFixed(0)}%)`));
           console.log(sep);
+
+          // Structured hypothesis judgments (HOR-197)
+          if (output.hypothesisJudgments && output.hypothesisJudgments.length > 0) {
+            console.log(pc.bold('Hypothesis verdicts:'));
+            for (const j of output.hypothesisJudgments) {
+              const verdictColor =
+                j.verdict === 'supported' ? pc.green :
+                j.verdict === 'weakened' ? pc.yellow :
+                j.verdict === 'eliminated' ? pc.red : pc.dim;
+              console.log(
+                `  ${verdictColor(`[${j.verdict}]`)} ${j.category}` +
+                pc.dim(` (${(j.confidence * 100).toFixed(0)}%)`),
+              );
+              console.log(pc.dim(`    ${j.rationale}`));
+            }
+            console.log('');
+          }
+
+          // Structured root cause assessment (HOR-197)
+          if (output.rootCauseAssessment) {
+            const rca = output.rootCauseAssessment;
+            const uncertaintyColor =
+              rca.uncertainty === 'low' ? pc.green :
+              rca.uncertainty === 'medium' ? pc.yellow : pc.red;
+            console.log(
+              pc.bold('Root cause assessment:') +
+              pc.dim(` uncertainty: ${uncertaintyColor(rca.uncertainty)}`),
+            );
+            console.log(rca.summary);
+            if (rca.citedEvidenceIds.length > 0) {
+              console.log(pc.dim(`  Cited: ${rca.citedEvidenceIds.join(', ')}`));
+            }
+            console.log('');
+          }
+
+          // Narrative sections
           console.log(pc.bold('What:'), output.what);
           console.log(pc.bold('Why:'), output.why);
           if (output.whereNext.length > 0) {
@@ -148,7 +206,6 @@ export async function runInvestigate(
           if (output.citations.length > 0) {
             console.log(pc.dim(`\nCited evidence: ${output.citations.map((c) => c.evidenceId).join(', ')}`));
           }
-          console.log(pc.dim(`AI confidence: ${(output.confidence * 100).toFixed(0)}%`));
         }
       }
     } finally {

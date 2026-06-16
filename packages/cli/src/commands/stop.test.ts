@@ -179,7 +179,7 @@ describe('horus stop --all — summary counts correctly', () => {
     const { readRegistry } = await import('@horus/core');
     vi.mocked(readRegistry).mockReturnValue({
       projects: {
-        'maison-safqa': { root: '/repo/root', name: 'maison-safqa' },
+        'maison-safqa': { root: '/repo/root', name: 'maison-safqa', configPath: '/repo/root/.horus/config.yml' },
       },
     } as ReturnType<typeof readRegistry>);
     // readSourceHostUrl + isHostHealthy + readSpawnedHost already mocked at top level
