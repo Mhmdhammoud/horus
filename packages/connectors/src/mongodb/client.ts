@@ -22,11 +22,19 @@ export class MongoStateClient {
   constructor(private readonly opts: MongoClientOpts) {}
 
   private assertAllowed(collection: string): void {
+    if (this.opts.allowlist.length === 0) return; // empty = auto-discover mode, all collections permitted
     if (!this.opts.allowlist.includes(collection)) {
       throw new Error(
         `Collection "${collection}" is not allowlisted for ${this.opts.database}`,
       );
     }
+  }
+
+  /** List all collection names in the configured database (for auto-discovery). */
+  async listCollections(): Promise<string[]> {
+    const db = await this.db();
+    const cols = await db.listCollections({}, { nameOnly: true }).toArray();
+    return cols.map((c) => c['name'] as string).filter(Boolean);
   }
 
   private async db() {

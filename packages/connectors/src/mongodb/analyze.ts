@@ -74,6 +74,8 @@ export interface StateAnalysis {
   staleHours: number;
   legacyHours: number;
   collections: CollectionState[];
+  /** True when no allowlist was configured — collections were discovered from the database. */
+  autoDiscovered?: boolean;
 }
 
 export function classifyAge(

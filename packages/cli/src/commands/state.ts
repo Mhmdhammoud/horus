@@ -50,9 +50,13 @@ export async function runState(opts: {
         staleHours !== undefined ? { staleHours } : {},
       );
 
+      const discoveryNote = analysis.autoDiscovered
+        ? pc.dim(` (${analysis.collections.length} collections, auto-discovered)`)
+        : '';
       console.log(
         pc.bold('State analysis') +
-          pc.dim(` — ${renv.project}/${renv.env} · db ${analysis.database}`),
+          pc.dim(` — ${renv.project}/${renv.env} · db ${analysis.database}`) +
+          discoveryNote,
       );
       console.log('');
 
@@ -73,11 +77,26 @@ export async function runState(opts: {
       }
 
       console.log('');
-      console.log(
-        signals > 0
-          ? `  ${pc.bold(String(signals))} state signal(s) across ${analysis.collections.length} allowlisted collection(s)`
-          : pc.dim(`  No state anomalies across ${analysis.collections.length} collection(s).`),
-      );
+      if (analysis.collections.length === 0) {
+        console.log(
+          pc.yellow('  No collections discovered in this database.') +
+            pc.dim(' Verify the database name in your MongoDB connector config.'),
+        );
+      } else {
+        const scope = analysis.autoDiscovered ? 'collection(s)' : 'allowlisted collection(s)';
+        console.log(
+          signals > 0
+            ? `  ${pc.bold(String(signals))} state signal(s) across ${analysis.collections.length} ${scope}`
+            : pc.dim(`  No state anomalies across ${analysis.collections.length} ${scope}.`),
+        );
+        if (analysis.autoDiscovered) {
+          console.log(
+            pc.dim(
+              `  Tip: add a "collections" list to your MongoDB connector config to restrict analysis.`,
+            ),
+          );
+        }
+      }
       return 0;
     } finally {
       await mongo.close();

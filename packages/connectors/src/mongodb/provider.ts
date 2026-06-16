@@ -48,7 +48,14 @@ export class MongoStateProvider implements StateProvider {
     const nowMs = Date.now();
     const collections: CollectionState[] = [];
 
-    for (const coll of this.opts.collections) {
+    let targetCollections = this.opts.collections;
+    let autoDiscovered = false;
+    if (targetCollections.length === 0) {
+      targetCollections = await this.client.listCollections();
+      autoDiscovered = true;
+    }
+
+    for (const coll of targetCollections) {
       try {
         const count = await this.client.count(coll);
         const fields = await this.client.sampleFields(coll);
@@ -85,7 +92,7 @@ export class MongoStateProvider implements StateProvider {
       }
     }
 
-    return { database: this.opts.database, staleHours, legacyHours, collections };
+    return { database: this.opts.database, staleHours, legacyHours, collections, autoDiscovered };
   }
 
   toEvidence(analysis: StateAnalysis): Evidence[] {
