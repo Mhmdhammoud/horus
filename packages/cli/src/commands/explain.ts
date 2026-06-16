@@ -1,7 +1,8 @@
 import pc from 'picocolors';
 import { loadConfig } from '@horus/core';
-import type { Symbol, SymbolContext, ImpactResult, Flow } from '@horus/core';
+import type { HorusConfig, Symbol, SymbolContext, ImpactResult, Flow } from '@horus/core';
 import { codeForRepo } from '@horus/connectors';
+import { createDb, listQueueEdges } from '@horus/db';
 
 export async function runExplain(
   query: string,
@@ -18,6 +19,13 @@ export async function runExplain(
 
   const symbols = await code.searchSymbols(query, 5);
   if (symbols.length === 0) {
+    if (await isQueueBoundary(config, query)) {
+      console.log(`No symbol found for: ${pc.bold(query)}`);
+      console.log(
+        pc.dim(`  "${query}" matches an async boundary — try: `) + pc.bold(`horus queues ${query}`),
+      );
+      return 1;
+    }
     console.log(`No symbol found for: ${query}`);
     console.log(pc.dim(`  Tip: use an exact class or function name, e.g. "MyService" or "processOrder"`));
     return 1;
@@ -27,6 +35,13 @@ export async function runExplain(
 
   const isExactMatch = top.name.toLowerCase() === query.toLowerCase();
   if (!isExactMatch) {
+    if (await isQueueBoundary(config, query)) {
+      console.log(`No exact symbol match for: ${pc.bold(query)}`);
+      console.log(
+        pc.dim(`  "${query}" matches an async boundary — try: `) + pc.bold(`horus queues ${query}`),
+      );
+      return 1;
+    }
     console.log(
       pc.yellow(`  No exact match for "${query}"`) +
         pc.dim(` — showing closest: "${top.name}" (fuzzy match)`),
@@ -66,6 +81,20 @@ export async function runExplain(
 
   renderReport(top, ctx, impact, flows, siblings);
   return 0;
+}
+
+async function isQueueBoundary(config: HorusConfig, query: string): Promise<boolean> {
+  try {
+    const { db, sql } = createDb(config.database.url);
+    try {
+      const edges = await listQueueEdges(db, { queueName: query });
+      return edges.length > 0;
+    } finally {
+      await sql.end().catch(() => {});
+    }
+  } catch {
+    return false;
+  }
 }
 
 function renderReport(
