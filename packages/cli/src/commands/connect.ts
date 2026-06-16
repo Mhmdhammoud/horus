@@ -26,6 +26,7 @@ import {
   ensureCredentialGitignore,
 } from '@horus/core';
 import { ElasticsearchClient, MongoStateClient, GrafanaClient } from '@horus/connectors';
+import { checkboxSearch, isInteractive, ExitPromptError } from '../lib/tty-selector.js';
 
 export interface ConnectOpts {
   env?: string;
@@ -92,12 +93,16 @@ export async function runConnect(type: string, opts: ConnectOpts): Promise<numbe
         );
         return 1;
       }
-      console.log(`\n${pc.green('✓')} ${connectorType} reachable ${pc.dim(`(${probeResult.detail})`)}`);
+      console.log(
+        `\n${pc.green('✓')} ${connectorType} reachable ${pc.dim(`(${probeResult.detail})`)}`,
+      );
     }
 
     // Guard literal credentials against Git exposure BEFORE writing them.
     const hasLiteralCredentials =
-      filled.url !== undefined || filled.password !== undefined || filled.username !== undefined;
+      filled.url !== undefined ||
+      filled.password !== undefined ||
+      filled.username !== undefined;
     if (hasLiteralCredentials) {
       if (isGitTracked(configPath, root)) {
         console.error(
@@ -106,7 +111,9 @@ export async function runConnect(type: string, opts: ConnectOpts): Promise<numbe
             pc.dim(
               '  Option A — remove from Git index then re-run:\n' +
                 '    git rm --cached .horus/config.json\n' +
-                '    horus connect ' + type + ' ...\n\n' +
+                '    horus connect ' +
+                type +
+                ' ...\n\n' +
                 '  Option B — keep credentials in the environment and reference them:\n' +
                 '    export ES_URL=https://...\n' +
                 '    export ES_USERNAME=...\n' +
@@ -124,11 +131,17 @@ export async function runConnect(type: string, opts: ConnectOpts): Promise<numbe
     // Write to config (writeLocalConfig enforces mode 0600 on every write).
     patchLocalConnector(configPath, connectorType, patch, filled.env);
 
-    console.log(`${pc.green('✓')} ${pc.bold(connectorType)} connector saved → ${pc.dim(configPath)}`);
+    console.log(
+      `${pc.green('✓')} ${pc.bold(connectorType)} connector saved → ${pc.dim(configPath)}`,
+    );
     printSummary(connectorType, filled);
     console.log(pc.dim(`\n  run: horus investigate "<hint>"`));
     return 0;
   } catch (err) {
+    if (err instanceof ExitPromptError) {
+      console.error(pc.red('Cancelled.'));
+      return 1;
+    }
     console.error(pc.red((err as Error).message));
     return 1;
   }
@@ -138,23 +151,32 @@ export async function runConnect(type: string, opts: ConnectOpts): Promise<numbe
 // Interactive fill-in
 // ---------------------------------------------------------------------------
 
-async function fillInteractive(type: ConnectorType, opts: ConnectOpts): Promise<ConnectOpts> {
+async function fillInteractive(
+  type: ConnectorType,
+  opts: ConnectOpts,
+): Promise<ConnectOpts> {
   const needsInteraction = missingRequired(type, opts);
   if (!needsInteraction) return opts;
 
-  console.log(`\n${pc.bold(`Connect ${type}`)} ${pc.dim('(press Enter to skip optional fields)')}\n`);
+  console.log(
+    `\n${pc.bold(`Connect ${type}`)} ${pc.dim('(press Enter to skip optional fields)')}\n`,
+  );
 
   const filled = { ...opts };
 
   switch (type) {
     case 'elasticsearch':
       filled.url = filled.url ?? (await ask('URL', 'https://elastic.example.com'));
-      filled.username = filled.username ?? ((await ask('Username', '', false)) || undefined);
-      filled.password =
-        filled.password ?? ((await askPassword('Password')) || undefined);
+      filled.username =
+        filled.username ?? ((await ask('Username', '', false)) || undefined);
+      filled.password = filled.password ?? ((await askPassword('Password')) || undefined);
       // Discover available indexes if no index pattern was passed via flag.
       if (filled.indexPattern === undefined && filled.indexPatterns === undefined) {
-        const discovered = await discoverEsIndices(filled.url, filled.username, filled.password);
+        const discovered = await discoverEsIndices(
+          filled.url,
+          filled.username,
+          filled.password,
+        );
         if (discovered.length > 0) {
           const selected = await askIndexSelection(discovered);
           if (selected.length > 0) {
@@ -174,17 +196,22 @@ async function fillInteractive(type: ConnectorType, opts: ConnectOpts): Promise<
         filled.url ?? (await ask('Connection string', 'mongodb://localhost:27017'));
       filled.database = filled.database ?? (await ask('Database name', ''));
       filled.collections =
-        filled.collections ?? ((await ask('Collections (comma-separated, or Enter for all)', '')) || undefined);
+        filled.collections ??
+        ((await ask('Collections (comma-separated, or Enter for all)', '')) || undefined);
       break;
 
     case 'grafana':
       filled.url = filled.url ?? (await ask('URL', 'https://grafana.example.com'));
-      filled.username = filled.username ?? ((await ask('Username', '', false)) || undefined);
-      filled.password =
-        filled.password ?? ((await askPassword('Password')) || undefined);
+      filled.username =
+        filled.username ?? ((await ask('Username', '', false)) || undefined);
+      filled.password = filled.password ?? ((await askPassword('Password')) || undefined);
       // Discover available dashboards if no dashboard was passed via flag.
       if (filled.dashboard === undefined && filled.dashboardUids === undefined) {
-        const discovered = await discoverGrafanaDashboards(filled.url, filled.username, filled.password);
+        const discovered = await discoverGrafanaDashboards(
+          filled.url,
+          filled.username,
+          filled.password,
+        );
         if (discovered.length > 0) {
           const selected = await askDashboardSelection(discovered);
           if (selected.length > 0) {
@@ -242,7 +269,11 @@ function ask(label: string, placeholder = '', required = true): Promise<string> 
     const hint = placeholder ? pc.dim(` (${placeholder})`) : '';
     const suffix = required ? '' : pc.dim(' [optional]');
     process.stdout.write(`  ${label}${suffix}${hint}: `);
-    const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: false,
+    });
     rl.once('line', (line) => {
       rl.close();
       resolve(line.trim() || (required ? placeholder : ''));
@@ -316,7 +347,10 @@ function buildMongoPatch(opts: ConnectOpts): Record<string, unknown> {
   const patch: Record<string, unknown> = { database: opts.database };
   if (opts.url) patch['url'] = opts.url;
   if (opts.collections) {
-    patch['collections'] = opts.collections.split(',').map((c) => c.trim()).filter(Boolean);
+    patch['collections'] = opts.collections
+      .split(',')
+      .map((c) => c.trim())
+      .filter(Boolean);
   }
   return patch;
 }
@@ -363,7 +397,10 @@ async function probe(type: ConnectorType, opts: ConnectOpts): Promise<ProbeResul
         // AbortController cancels the fetch and clears the timer so nothing
         // keeps the process alive after the probe resolves either way.
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(new Error('timed out after 8s')), 8000);
+        const timer = setTimeout(
+          () => controller.abort(new Error('timed out after 8s')),
+          8000,
+        );
         try {
           return await client.health(controller.signal);
         } catch (err) {
@@ -383,7 +420,10 @@ async function probe(type: ConnectorType, opts: ConnectOpts): Promise<ProbeResul
           url: opts.url,
           database: opts.database,
           allowlist: opts.collections
-            ? opts.collections.split(',').map((c) => c.trim()).filter(Boolean)
+            ? opts.collections
+                .split(',')
+                .map((c) => c.trim())
+                .filter(Boolean)
             : [],
         });
         try {
@@ -396,7 +436,9 @@ async function probe(type: ConnectorType, opts: ConnectOpts): Promise<ProbeResul
         if (!opts.url) return { ok: true, detail: 'skipped (no URL)' };
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
         if (opts.username && opts.password) {
-          const encoded = Buffer.from(`${opts.username}:${opts.password}`).toString('base64');
+          const encoded = Buffer.from(`${opts.username}:${opts.password}`).toString(
+            'base64',
+          );
           headers['Authorization'] = `Basic ${encoded}`;
         }
         const res = await fetch(`${opts.url.replace(/\/$/, '')}/api/health`, {
@@ -427,9 +469,19 @@ function tcpProbe(host: string, port: number, timeoutMs = 3000): Promise<boolean
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { createConnection } = require('node:net') as typeof import('node:net');
     const sock = createConnection({ host, port });
-    const timer = setTimeout(() => { sock.destroy(); resolve(false); }, timeoutMs);
-    sock.on('connect', () => { clearTimeout(timer); sock.destroy(); resolve(true); });
-    sock.on('error', () => { clearTimeout(timer); resolve(false); });
+    const timer = setTimeout(() => {
+      sock.destroy();
+      resolve(false);
+    }, timeoutMs);
+    sock.on('connect', () => {
+      clearTimeout(timer);
+      sock.destroy();
+      resolve(true);
+    });
+    sock.on('error', () => {
+      clearTimeout(timer);
+      resolve(false);
+    });
   });
 }
 
@@ -441,7 +493,8 @@ function printSummary(type: ConnectorType, opts: ConnectOpts): void {
   const lines: string[] = [];
   if (opts.url) lines.push(`  url:            ${redactUrl(opts.url)}`);
   if (opts.username) lines.push(`  username:       ${opts.username}`);
-  if (opts.password) lines.push(`  password:       ${'•'.repeat(Math.min(opts.password.length, 8))}`);
+  if (opts.password)
+    lines.push(`  password:       ${'•'.repeat(Math.min(opts.password.length, 8))}`);
   if (opts.indexPatterns && opts.indexPatterns.length > 0) {
     lines.push(`  index-patterns: ${opts.indexPatterns.join(', ')}`);
   } else if (opts.indexPattern) {
@@ -502,7 +555,20 @@ async function discoverEsIndices(
  * Returns the selected index names, or [] if the user skipped / typed manually
  * (the caller falls back to a text prompt in that case).
  */
-async function askIndexSelection(indices: string[]): Promise<string[]> {
+export async function askIndexSelection(indices: string[]): Promise<string[]> {
+  if (isInteractive()) {
+    try {
+      return await checkboxSearch({
+        message: 'Select index patterns to use',
+        choices: indices,
+        pageSize: 12,
+      });
+    } catch (err) {
+      if (err instanceof ExitPromptError) throw err;
+      // If the interactive selector fails for any reason, fall back to plain text.
+    }
+  }
+
   const MAX_DISPLAY = 25;
   const shown = indices.slice(0, MAX_DISPLAY);
 
@@ -511,14 +577,20 @@ async function askIndexSelection(indices: string[]): Promise<string[]> {
     console.log(`  ${pc.dim(`[${i + 1}]`)} ${name}`);
   });
   if (indices.length > MAX_DISPLAY) {
-    console.log(pc.dim(`  … and ${indices.length - MAX_DISPLAY} more (type a pattern manually to match all)`));
+    console.log(
+      pc.dim(
+        `  … and ${indices.length - MAX_DISPLAY} more (type a pattern manually to match all)`,
+      ),
+    );
   }
 
-  const input = (await ask(
-    `  Select index patterns to use (e.g. 1,2 or Enter to type pattern manually)`,
-    '',
-    false,
-  )).trim();
+  const input = (
+    await ask(
+      `  Select index patterns to use (e.g. 1,2 or Enter to type pattern manually)`,
+      '',
+      false,
+    )
+  ).trim();
 
   if (!input) return [];
 
@@ -560,9 +632,23 @@ async function discoverGrafanaDashboards(
  * pick one or more by number. Returns selected dashboard objects, or [] if
  * the user skipped (caller falls back to manual UID prompt).
  */
-async function askDashboardSelection(
+export async function askDashboardSelection(
   dashboards: { uid: string; title: string; folderTitle?: string }[],
 ): Promise<{ uid: string; title: string }[]> {
+  if (isInteractive()) {
+    try {
+      const selected = await checkboxSearch({
+        message: 'Select dashboards to use',
+        choices: dashboards.map((d) => d.title),
+        pageSize: 12,
+      });
+      return dashboards.filter((d) => selected.includes(d.title));
+    } catch (err) {
+      if (err instanceof ExitPromptError) throw err;
+      // Fall back to plain text on unexpected failures.
+    }
+  }
+
   const MAX_DISPLAY = 25;
   const shown = dashboards.slice(0, MAX_DISPLAY);
 
@@ -575,11 +661,13 @@ async function askDashboardSelection(
     console.log(pc.dim(`  … and ${dashboards.length - MAX_DISPLAY} more`));
   }
 
-  const input = (await ask(
-    `  Select dashboards to use (e.g. 1,2 or Enter to type uid manually)`,
-    '',
-    false,
-  )).trim();
+  const input = (
+    await ask(
+      `  Select dashboards to use (e.g. 1,2 or Enter to type uid manually)`,
+      '',
+      false,
+    )
+  ).trim();
 
   if (!input) return [];
 
