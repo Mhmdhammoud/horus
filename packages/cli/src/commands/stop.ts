@@ -34,6 +34,12 @@ export interface StopOpts {
 const SPAWNED_HOST_FILE = 'spawned-host.json';
 /** Tolerated drift between recorded start time and measured elapsed time (seconds). */
 const START_TIME_TOLERANCE_S = 60;
+/** How long to wait after SIGTERM for the process to exit. */
+const STOP_WAIT_MS = 5_000;
+/** Poll interval when waiting for a process to exit. */
+const STOP_POLL_MS = 200;
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export async function runStop(opts: StopOpts): Promise<number> {
   try {
@@ -108,8 +114,11 @@ async function stopHost(root: string, hostUrl: string): Promise<number> {
   // --- verify process identity ---
   const info = await getProcessInfo(spawned.pid);
   if (info === null) {
-    console.error(pc.red(`Process pid ${spawned.pid} is no longer running.`));
-    return 1;
+    // Process already exited — this is the desired outcome (race between the health
+    // check and the PID lookup). Clean up the record and report success.
+    console.log(pc.dim(`Process pid ${spawned.pid} is no longer running — already stopped.`));
+    try { await unlinkAsync(join(root, HORUS_DIR, SPAWNED_HOST_FILE)); } catch { /* not fatal */ }
+    return 0;
   }
 
   // Match `horus-source host --port <port>`.
@@ -151,20 +160,44 @@ async function stopHost(root: string, hostUrl: string): Promise<number> {
     return 1;
   }
 
+  let signaled = false;
   try {
     process.kill(spawned.pid, 'SIGTERM');
+    signaled = true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') {
+      // Process exited between our getProcessInfo check and the kill call — success.
+      console.log(pc.dim(`Process pid ${spawned.pid} exited before signal — already stopped.`));
+    } else {
+      console.error(pc.red(`Failed to signal pid ${spawned.pid}: ${(err as Error).message}`));
+      return 1;
+    }
+  }
+
+  // After SIGTERM, poll until the process exits (confirms the signal was honoured).
+  if (signaled) {
+    const deadline = Date.now() + STOP_WAIT_MS;
+    let exited = false;
+    while (Date.now() < deadline) {
+      await sleep(STOP_POLL_MS);
+      if ((await getProcessInfo(spawned.pid)) === null) {
+        exited = true;
+        break;
+      }
+    }
+    if (!exited) {
+      console.error(
+        pc.red(
+          `Host pid ${spawned.pid} did not exit within ${STOP_WAIT_MS / 1000}s after SIGTERM.`,
+        ),
+      );
+      return 1;
+    }
     console.log(
       `${pc.green('✓')} Stopped source-intelligence host ` +
         pc.dim(`(pid ${spawned.pid}, port ${port})`) +
         ` for ${root}`,
     );
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ESRCH') {
-      console.log(pc.dim(`Host already gone (pid ${spawned.pid}).`));
-    } else {
-      console.error(pc.red(`Failed to signal pid ${spawned.pid}: ${(err as Error).message}`));
-      return 1;
-    }
   }
 
   // Remove ownership record so stale entries don't confuse future runs.
