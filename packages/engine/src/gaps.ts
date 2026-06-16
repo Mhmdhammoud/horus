@@ -135,7 +135,7 @@ export function detectMissingEvidence(
         ? 'Queue topology is known but live depth + failed/delayed counts were not collected.'
         : 'Queue topology is known but there is no Redis/BullMQ connector for live depth/failures.',
       nextSource: connectors.redis
-        ? 'Inspect `horus queues`'
+        ? 'Run `horus queues --live` to see real-time queue depths and failed-job counts'
         : 'Add a `redis` connector to read live BullMQ state',
       confidenceImpact: 0.1,
     });
