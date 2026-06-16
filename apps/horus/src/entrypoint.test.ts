@@ -54,7 +54,9 @@ describe('source entrypoint via tsx', () => {
   it('--version exits 0 and prints version', () => {
     const result = runCLI('--version');
     expect(result.status).toBe(0);
-    expect(result.stdout).toMatch(/horus \d+\.\d+\.\d+/);
+    // tsx runs the source without tsup's define, so version is 'dev' — the
+    // semver format is verified by the dist artifact test below.
+    expect(result.stdout).toContain('horus');
   });
 
   it('--help exits 0 and includes the program name', () => {
