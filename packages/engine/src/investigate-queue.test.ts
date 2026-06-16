@@ -121,6 +121,7 @@ function makeQueueProvider(state: QueueRuntimeState): QueueRuntimeProvider {
     kind: 'queue',
     async health() { return { ok: true, detail: 'fake' }; },
     async analyzeQueues() { return state; },
+    async discoverQueues() { return []; },
     toEvidence() { return []; },
     async close() {},
   };

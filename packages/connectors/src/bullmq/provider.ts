@@ -17,6 +17,8 @@ import {
 
 export interface QueueRuntimeProvider extends Provider {
   analyzeQueues(opts?: { queueNames?: string[] }): Promise<QueueRuntimeState>;
+  /** Discover queue names present in Redis (regardless of static topology). */
+  discoverQueues(): Promise<string[]>;
   toEvidence(state: QueueRuntimeState): Evidence[];
   close(): Promise<void>;
 }
@@ -39,6 +41,11 @@ export class BullMQRuntimeProvider implements QueueRuntimeProvider {
 
     const queues = await Promise.all(names.map((name) => this.inspectQueue(name)));
     return { prefix: this.client.prefix, collectedAt, queues };
+  }
+
+  /** Discover queue names present in Redis under the configured prefix. */
+  discoverQueues(): Promise<string[]> {
+    return this.client.discoverQueues();
   }
 
   private async inspectQueue(name: string): Promise<QueueCounts> {

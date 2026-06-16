@@ -106,6 +106,15 @@ describe('listQueueEdges — project filter (HOR-38)', () => {
     expect(memList().length).toBe(3);
   });
 
+  it('REGRESSION: unscoped list leaks other projects — a single-project view MUST pass project', () => {
+    // The `horus queues` command originally called listQueueEdges with project=undefined,
+    // so running it inside maison-safqa surfaced leadcall-api's queues (e.g. zoho-sync-*)
+    // as if they belonged to maison-safqa. The DB layer is correct; the command must
+    // resolve and pass the active project. This locks in that contract.
+    expect(memList().map((r) => r.queueName).sort()).toEqual(['emails', 'orders', 'tasks']); // unscoped = leak
+    expect(memList({ project: 'maison-safqa' }).map((r) => r.queueName)).toEqual(['orders']); // scoped = correct
+  });
+
   it('filters to only the given project', () => {
     const rows = memList({ project: 'leadcall-api' });
     expect(rows.length).toBe(2);

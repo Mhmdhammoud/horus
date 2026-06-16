@@ -275,6 +275,7 @@ describe('HOR-108 connector fallback — Scenario D: queue analyzeQueues throws'
     async analyzeQueues() {
       throw new Error('connect ECONNREFUSED 127.0.0.1:6379');
     },
+    async discoverQueues() { return []; },
     toEvidence() { return []; },
     async close() {},
   };
@@ -329,6 +330,7 @@ describe('HOR-108 connector fallback — Scenario E: queue returns empty state',
     kind: 'queue',
     async health() { return { ok: true, detail: 'connected' }; },
     async analyzeQueues() { return emptyQueueState; },
+    async discoverQueues() { return []; },
     toEvidence() { return []; },
     async close() {},
   };
@@ -412,6 +414,7 @@ describe('HOR-108 connector fallback — Scenario G: multiple simultaneous failu
     kind: 'queue',
     async health() { return { ok: false, detail: 'Redis unreachable' }; },
     async analyzeQueues() { throw new Error('Redis ECONNREFUSED'); },
+    async discoverQueues() { return []; },
     toEvidence() { return []; },
     async close() {},
   };

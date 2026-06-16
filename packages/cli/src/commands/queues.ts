@@ -15,7 +15,22 @@ export async function runQueues(
     const { db, sql } = createDb(config.database.url);
 
     try {
-      const rows = await listQueueEdges(db, { project: opts.project, queueName: name });
+      // Scope the topology to the ACTIVE project. listQueueEdges with project=undefined
+      // returns every project's rows from the shared Horus database, so without this a
+      // repo would show other projects' queues as its own (e.g. another repo's Zoho
+      // queues bleeding into this one). Resolve the project the same way the rest of the
+      // CLI does: explicit --project, else the single configured project, else infer from
+      // the current repo path. If it can't be resolved (multi-project config, no cwd
+      // match), fall back to the unscoped listing rather than failing.
+      let project = opts.project;
+      if (project === undefined) {
+        try {
+          project = resolveEnvironment(config, { project: opts.project }).project;
+        } catch {
+          // Unresolvable — leave undefined (unscoped) to preserve prior behavior.
+        }
+      }
+      const rows = await listQueueEdges(db, { project, queueName: name });
 
       // ── Source topology ──────────────────────────────────────────────────────
       console.log(
@@ -161,14 +176,20 @@ async function runLiveMode(
       return;
     }
 
-    // Use topology queue names if available; otherwise let the client discover.
-    const topologyNames = [...buildQueueMap(rows).keys()];
-    const queueNames =
-      nameFilter !== undefined
-        ? [nameFilter]
-        : topologyNames.length > 0
-          ? topologyNames
-          : undefined;
+    // Probe the UNION of statically-known queues and queues discovered live in Redis.
+    // Static-only probing hid runtime-only queues (present in BullMQ but with no
+    // static producer/worker mapping); discovery-only probing hid idle static queues
+    // (no live keys to scan). The union shows both, so the live view matches what a
+    // Bull dashboard sees. A single-queue filter still narrows to that one.
+    const staticNames = new Set(buildQueueMap(rows).keys());
+    let queueNames: string[] | undefined;
+    if (nameFilter !== undefined) {
+      queueNames = [nameFilter];
+    } else {
+      const discovered = await queueProvider.discoverQueues().catch(() => [] as string[]);
+      const union = new Set<string>([...staticNames, ...discovered]);
+      queueNames = union.size > 0 ? [...union] : undefined;
+    }
 
     const state = await queueProvider.analyzeQueues({ queueNames });
     const collectedAt = new Date(state.collectedAt).toLocaleTimeString();
@@ -190,7 +211,7 @@ async function runLiveMode(
       return;
     }
 
-    printLiveTable(state.queues);
+    printLiveTable(state.queues, staticNames);
   } catch (err) {
     if (!headerPrinted) {
       console.log(pc.bold('Live queue state') + pc.dim('  ·  source: Redis/BullMQ'));
@@ -201,7 +222,7 @@ async function runLiveMode(
   }
 }
 
-function printLiveTable(queues: QueueCounts[]): void {
+function printLiveTable(queues: QueueCounts[], staticNames: Set<string> = new Set()): void {
   // Column widths
   const nameWidth = Math.max(10, ...queues.map((q) => q.queueName.length));
   const numWidth = 7;
@@ -240,6 +261,12 @@ function printLiveTable(queues: QueueCounts[]): void {
       '  ' +
       (q.isPaused ? pc.yellow('paused') : String(q.paused).padStart(numWidth));
     console.log(color(row));
+
+    // Flag queues live in Redis that have no static producer/worker mapping —
+    // they exist at runtime but weren't discovered in the source graph.
+    if (!staticNames.has(q.queueName)) {
+      console.log(pc.dim('    runtime-only · no static producer/worker mapping'));
+    }
 
     // Oldest waiting job
     if (q.oldestWaitingMs !== undefined) {

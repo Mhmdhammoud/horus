@@ -100,12 +100,16 @@ export class BullMQRedisClient {
   }
 
   /**
-   * Discover queue names by scanning for BullMQ wait-list keys.
+   * Discover queue names by scanning for BullMQ `:meta` keys.
+   *
+   * `:meta` is written when a Queue is instantiated and persists regardless of job
+   * state, so it finds idle queues too. Scanning `:wait` (the previous approach) only
+   * surfaced queues with pending jobs, so idle-but-real queues were invisible.
    * Returns at most `limit` queue names.
    */
   async discoverQueues(limit = 50): Promise<string[]> {
-    const pattern = `${this.prefix}:*:wait`;
-    const suffixLen = ':wait'.length;
+    const pattern = `${this.prefix}:*:meta`;
+    const suffixLen = ':meta'.length;
     const prefixLen = this.prefix.length + 1; // "bull:"
     const names: string[] = [];
     let cursor = '0';
