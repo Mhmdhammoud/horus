@@ -169,7 +169,7 @@ export const horusConfigSchema = z.object({
   axon: z
     .object({
       /** Fail fast if the running Axon is not this version. */
-      pinnedVersion: z.string().default('1.0.6'),
+      pinnedVersion: z.string().default('1.0.7'),
     })
     .default({}),
   database: databaseSchema,
