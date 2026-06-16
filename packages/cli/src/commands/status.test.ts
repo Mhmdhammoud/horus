@@ -201,3 +201,103 @@ describe('runStatus — MongoDB (HOR-190)', () => {
     expect(output).toContain('discovered: 0 collection(s)');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Redis reachability reporting (parity with the other connectors)
+// ---------------------------------------------------------------------------
+
+import type { QueueRuntimeProvider } from '@horus/connectors';
+
+function writeRedisConfig(dir: string, redis: string): string {
+  const path = join(dir, 'horus.config.js');
+  writeFileSync(
+    path,
+    `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{
+      name: "production",
+      connectors: { redis: ${redis} },
+    }],
+  }],
+};
+`,
+    'utf8',
+  );
+  return path;
+}
+
+function makeQueueProvider(opts: {
+  ok: boolean;
+  detail?: string;
+  queues?: string[];
+}): QueueRuntimeProvider {
+  return {
+    id: 'bullmq',
+    kind: 'queue',
+    async health() {
+      return { ok: opts.ok, detail: opts.detail ?? (opts.ok ? 'ok' : 'unreachable') };
+    },
+    async analyzeQueues() {
+      return { prefix: 'bull', collectedAt: new Date().toISOString(), queues: [] };
+    },
+    async discoverQueues() {
+      return opts.queues ?? [];
+    },
+    toEvidence() {
+      return [];
+    },
+    async close() {},
+  };
+}
+
+async function captureRedisStatus(
+  configPath: string,
+  factory: (() => QueueRuntimeProvider | null) | null,
+): Promise<{ output: string; code: number }> {
+  const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const code = await runStatus(configPath, {
+    project: 'my-api',
+    env: 'production',
+    _queueFactory: factory ?? undefined,
+  });
+  const output = spy.mock.calls.map((c) => c.join(' ')).join('\n');
+  spy.mockRestore();
+  return { output, code };
+}
+
+describe('runStatus — Redis (reachability parity)', () => {
+  it('shows reachable with discovered queue count when Redis pings ok', async () => {
+    const path = writeRedisConfig(tempDir(), '{ url: "redis://:pw@127.0.0.1:6379/1" }');
+    const provider = makeQueueProvider({ ok: true, queues: ['a', 'b', 'c'] });
+    const { output } = await captureRedisStatus(path, () => provider);
+    expect(output).toMatch(/Redis[\s\S]*reachable/);
+    expect(output).toContain('3 queue(s)');
+    // Reachable Redis must NOT read as the neutral "configured" wording.
+    expect(output).not.toMatch(/Redis[\s\S]*?configured ·/);
+  });
+
+  it('shows unreachable and fails the env when Redis ping fails', async () => {
+    const path = writeRedisConfig(tempDir(), '{ url: "redis://127.0.0.1:6399" }');
+    const provider = makeQueueProvider({ ok: false, detail: 'connect ECONNREFUSED' });
+    const { output, code } = await captureRedisStatus(path, () => provider);
+    expect(output).toMatch(/Redis[\s\S]*unreachable/);
+    expect(code).toBe(1);
+  });
+
+  it('labels an auth failure distinctly', async () => {
+    const path = writeRedisConfig(tempDir(), '{ url: "redis://:wrong@127.0.0.1:6379" }');
+    const provider = makeQueueProvider({ ok: false, detail: 'WRONGPASS invalid username-password pair' });
+    const { output } = await captureRedisStatus(path, () => provider);
+    expect(output).toMatch(/Redis[\s\S]*auth failed/);
+  });
+
+  it('does not leak the Redis password', async () => {
+    const path = writeRedisConfig(tempDir(), '{ url: "redis://:supersecret@127.0.0.1:6379/1" }');
+    const provider = makeQueueProvider({ ok: true, queues: [] });
+    const { output } = await captureRedisStatus(path, () => provider);
+    expect(output).not.toContain('supersecret');
+  });
+});

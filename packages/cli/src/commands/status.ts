@@ -15,7 +15,9 @@ import {
   logsForEnv,
   metricsForEnv,
   mongoForEnv,
+  queueForEnv,
   type StateProvider,
+  type QueueRuntimeProvider,
 } from '@horus/connectors';
 import { checkDatabase } from '@horus/db';
 
@@ -37,6 +39,7 @@ async function checkEnv(
   renv: ResolvedEnvironment,
   deps?: {
     mongoFactory?: (renv: ResolvedEnvironment) => StateProvider | null;
+    queueFactory?: (renv: ResolvedEnvironment) => QueueRuntimeProvider | null;
   },
 ): Promise<boolean> {
   const header =
@@ -177,13 +180,46 @@ async function checkEnv(
     );
   }
 
-  // Redis
+  // Redis — probe reachability like every other connector instead of just echoing
+  // the URL. Previously this showed a neutral "configured" even though connect/doctor/
+  // queues --live could all reach Redis, which read as inconsistent.
   const redisCfg = renv.connectors.redis;
   if (redisCfg?.url) {
     const safeUrl = redactRedisUrl(redisCfg.url);
-    console.log(
-      `    ${mark('pending')} ${pc.bold('Redis')}           ${pc.dim(`configured · ${safeUrl}`)}`,
-    );
+    const queueProvider = (deps?.queueFactory ?? queueForEnv)(renv);
+    if (queueProvider) {
+      try {
+        const h = await queueProvider.health();
+        if (h.ok) {
+          // Reachable — surface the BullMQ prefix + discovered queue count, matching
+          // `horus queues --live`, so a wrong-DB/prefix (0 queues) is visible at a glance.
+          let queueInfo = '';
+          try {
+            const discovered = await queueProvider.discoverQueues();
+            queueInfo = ` · ${discovered.length} queue(s)`;
+          } catch {
+            /* discovery is best-effort; reachability already confirmed */
+          }
+          console.log(
+            `    ${mark(true)} ${pc.bold('Redis')}           ${pc.dim(`reachable · ${safeUrl}${queueInfo}`)}`,
+          );
+        } else {
+          // Distinguish an auth failure from a connection failure where Redis tells us.
+          const authFailed = /WRONGPASS|NOAUTH|invalid password/i.test(h.detail);
+          const state = authFailed ? 'auth failed' : 'unreachable';
+          console.log(
+            `    ${mark(false)} ${pc.bold('Redis')}           ${pc.dim(`${state} · ${safeUrl} · ${h.detail}`)}`,
+          );
+          allOk = false;
+        }
+      } finally {
+        await queueProvider.close().catch(() => {});
+      }
+    } else {
+      console.log(
+        `    ${mark('pending')} ${pc.bold('Redis')}           ${pc.dim(`configured · ${safeUrl}`)}`,
+      );
+    }
   } else {
     console.log(
       `    ${mark('pending')} ${pc.bold('Redis')}           ${pc.dim('not configured')}`,
@@ -218,6 +254,8 @@ export async function runStatus(
     env?: string;
     /** Inject a MongoDB provider factory for tests. */
     _mongoFactory?: (renv: ResolvedEnvironment) => StateProvider | null;
+    /** Inject a queue/Redis provider factory for tests. */
+    _queueFactory?: (renv: ResolvedEnvironment) => QueueRuntimeProvider | null;
   },
 ): Promise<number> {
   console.log(pc.bold(`\nHorus ${HORUS_VERSION}`));
@@ -277,7 +315,7 @@ export async function runStatus(
       console.error(pc.red((err as Error).message));
       return 1;
     }
-    const ok = await checkEnv(renv, { mongoFactory: opts?._mongoFactory });
+    const ok = await checkEnv(renv, { mongoFactory: opts?._mongoFactory, queueFactory: opts?._queueFactory });
     return ok ? 0 : 1;
   }
 
@@ -292,7 +330,7 @@ export async function runStatus(
       allHealthy = false;
       continue;
     }
-    const ok = await checkEnv(renv, { mongoFactory: opts?._mongoFactory });
+    const ok = await checkEnv(renv, { mongoFactory: opts?._mongoFactory, queueFactory: opts?._queueFactory });
     if (!ok) allHealthy = false;
   }
 
