@@ -17,6 +17,8 @@ import {
   findRepoRoot,
   writeLocalConfig,
   registerProject,
+  discoverLocalConfig,
+  readLocalConfig,
   type HorusConfig,
   type LocalConfigFile,
 } from '@horus/core';
@@ -166,10 +168,8 @@ export async function runIndex(opts: {
     // Build the queue map.
     await stitchQueueMap(hostUrl, dbUrl, label);
 
-    // Write/register a local .horus only when we set up a NEW host (a genuinely new
-    // repo). Reusing an existing host means the repo is already configured (centrally
-    // or via a prior `horus index`), so we must not shadow it with a connector-less file.
     if (spawned && !isConfigured) {
+      // Brand new repo — write a full local config and register it.
       const file: LocalConfigFile = {
         version: 1,
         project: {
@@ -187,6 +187,25 @@ export async function runIndex(opts: {
           `  investigate: horus investigate --name ${name} "<hint>"  (or from this repo: horus investigate "<hint>")`,
         ),
       );
+    } else if (spawned && !configuredHost) {
+      // Config exists (e.g. from `horus init`) but had no source host set.
+      // Patch the first repository entry with the newly started host URL so that
+      // `doctor`, `investigate`, and other source-backed commands find it.
+      const existingPath = discoverLocalConfig(root);
+      if (existingPath) {
+        const file = readLocalConfig(existingPath);
+        const project = file.project as Record<string, unknown>;
+        const repos = project['repositories'] as Array<Record<string, unknown>> | undefined;
+        if (repos && repos.length > 0) {
+          repos[0]!['source'] = { hostUrl };
+        }
+        writeLocalConfig(root, file);
+        registerProject(label, root, existingPath);
+        console.log(`${pc.green('✓')} Indexed ${pc.bold(label)} — source host registered at ${hostUrl}`);
+        console.log(pc.dim(`  ${existingPath}`));
+      } else {
+        console.log(`${pc.green('✓')} Indexed ${pc.bold(label)} ${pc.dim('(queue map refreshed)')}`);
+      }
     } else {
       console.log(
         `${pc.green('✓')} Indexed ${pc.bold(label)} ${pc.dim('(queue map refreshed)')}`,
