@@ -1,6 +1,7 @@
 import pc from 'picocolors';
 import { loadConfig } from '@horus/core';
 import { createDb, listInvestigations } from '@horus/db';
+import { formatDateTime } from '../lib/format.js';
 
 export async function runInvestigations(opts: {
   config?: string;
@@ -14,7 +15,7 @@ export async function runInvestigations(opts: {
       console.log('No investigations yet. Run: horus investigate "<hint>"');
     } else {
       for (const row of rows) {
-        const ts = row.createdAt.toISOString();
+        const ts = formatDateTime(row.createdAt);
         const title = (row.title ?? '').length > 60
           ? (row.title ?? '').slice(0, 57) + '...'
           : (row.title ?? '');

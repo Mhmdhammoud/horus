@@ -283,6 +283,13 @@ export function renderReport(r: InvestigationReport): string {
   lines.push('');
 
   lines.push('## Hypotheses');
+  const allUnconfirmed =
+    r.hypotheses.length > 0 && r.hypotheses.every((h) => h.verdict === 'unconfirmed');
+  if (allUnconfirmed) {
+    lines.push(
+      '_All hypotheses below are unconfirmed placeholders — runtime evidence is required to validate them._',
+    );
+  }
   if (r.hypotheses.length === 0) {
     lines.push('(none)');
   } else {
@@ -468,6 +475,13 @@ export function reportToMarkdown(r: InvestigationReport): string {
   out.push('');
 
   out.push('## Hypotheses');
+  const mdAllUnconfirmed =
+    r.hypotheses.length > 0 && r.hypotheses.every((h) => h.verdict === 'unconfirmed');
+  if (mdAllUnconfirmed) {
+    out.push(
+      '_All hypotheses below are unconfirmed placeholders — runtime evidence is required to validate them._',
+    );
+  }
   if (r.hypotheses.length === 0) {
     out.push('_none_');
   } else {

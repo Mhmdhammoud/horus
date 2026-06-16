@@ -168,6 +168,29 @@ describe('generatePostmortem', () => {
     }
   });
 
+  it('does not duplicate a gap nextSource that is already in nextActions', () => {
+    const gap = syntheticReport.gapAnalysis.gaps[0]!;
+    // Simulate the engine pushing gap.nextSource into report.nextActions.
+    const reportWithDup: InvestigationReport = {
+      ...syntheticReport,
+      nextActions: [gap.nextSource, ...syntheticReport.nextActions],
+    };
+    const out = generatePostmortem(reportWithDup);
+
+    // Isolate the Follow-up actions section for the assertion (nextSource also
+    // appears in Lessons learned and Impact, which is intentional).
+    const followUpSection = out.split('## Follow-up actions')[1] ?? '';
+
+    // The raw nextSource should appear only inside the single clean merged action.
+    const rawMatches = followUpSection.split(gap.nextSource).length - 1;
+    expect(rawMatches).toBe(1);
+    const cleanAction = `${gap.nextSource} to close the '${gap.dimension}' evidence gap`;
+    expect(followUpSection).toContain(cleanAction);
+
+    // The old noisy "Wire Add ..." phrasing should not be present.
+    expect(followUpSection).not.toContain(`Wire ${gap.nextSource}`);
+  });
+
   it('includes the summary text', () => {
     const out = generatePostmortem(syntheticReport);
     expect(out).toContain(syntheticReport.summary);

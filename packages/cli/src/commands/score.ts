@@ -1,6 +1,7 @@
 import pc from 'picocolors';
 import { loadConfig } from '@horus/core';
 import { createDb, getInvestigation, listInvestigationsWithReports } from '@horus/db';
+import { formatDateTime } from '../lib/format.js';
 import {
   scoreInvestigation,
   renderScore,
@@ -58,7 +59,7 @@ export async function runScores(opts: {
         '  ' +
           String(s.score).padStart(3) +
           '/100  ' +
-          (s.createdAt ? new Date(s.createdAt).toISOString() : '') +
+          formatDateTime(s.createdAt) +
           '  ' +
           s.id +
           '  ' +

@@ -80,6 +80,44 @@ export interface InvestigationReport {
    * Present only for hypotheses with verdict 'supported' or 'weakened'.
    */
   causeChains?: CauseChain[];
+  /**
+   * Persisted AI judgment stored alongside the deterministic report (HOR-198).
+   * Present only when --ai was used and the provider succeeded.
+   * Deterministic scoring remains authoritative; this field is an annotation only.
+   */
+  aiJudgment?: StoredAIJudgment;
+}
+
+/**
+ * AI judgment persisted as part of the investigation report (HOR-198).
+ * Mirrors NarrativeOutput from @horus/ai but defined here so @horus/engine
+ * stays decoupled from @horus/ai.
+ */
+export interface StoredAIJudgment {
+  what: string;
+  why: string;
+  whereNext: string[];
+  citations: Array<{ evidenceId: string; rationale?: string }>;
+  confidence: number;
+  mentionedServices?: string[];
+  hypothesisJudgments?: Array<{
+    hypothesisId: string;
+    category: string;
+    verdict: 'supported' | 'weakened' | 'eliminated' | 'unconfirmed';
+    rationale: string;
+    citedEvidenceIds: string[];
+    confidence: number;
+  }>;
+  rootCauseAssessment?: {
+    summary: string;
+    primaryHypothesisId?: string;
+    citedEvidenceIds: string[];
+    uncertainty: 'low' | 'medium' | 'high';
+  };
+  /** AI provider name (e.g. 'anthropic') or 'deterministic' for fallback. */
+  provider: string;
+  /** ISO 8601 timestamp when the judgment was generated. */
+  generatedAt: string;
 }
 
 /** Re-exported for convenience so callers can type flow steps without @horus/core. */

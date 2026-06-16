@@ -35,6 +35,20 @@ export async function runAsk(
     const report = migrateReport(row.report) as InvestigationReport;
     const v = refineInvestigation(report, directive);
     console.log(opts.json ? refinedToJSON(report, v) : renderRefined(report, v));
+
+    // Supplement answer with stored AI judgment when available (HOR-198)
+    if (!opts.json && report.aiJudgment) {
+      const j = report.aiJudgment;
+      console.log('');
+      console.log(pc.dim('─'.repeat(60)));
+      console.log(pc.dim(`Stored AI judgment (${j.provider}, ${j.generatedAt}):`));
+      if (j.rootCauseAssessment) {
+        console.log(pc.bold('Root cause (AI):'), j.rootCauseAssessment.summary);
+        console.log(pc.dim(`Uncertainty: ${j.rootCauseAssessment.uncertainty}`));
+      } else {
+        console.log(pc.bold('AI Why:'), j.why);
+      }
+    }
   } catch (err) {
     // A malformed id is not a valid UUID; Postgres rejects the cast with
     // SQLSTATE 22P02. Treat that the same as "no such investigation" rather

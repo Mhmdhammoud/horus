@@ -2,6 +2,18 @@ import { desc, eq } from 'drizzle-orm';
 import type { HorusDb } from './client.js';
 import { investigations } from './schema.js';
 
+/** Update the stored report JSON blob for an investigation (used to persist AI judgment). */
+export async function updateInvestigationReport(
+  db: HorusDb,
+  id: string,
+  report: unknown,
+): Promise<void> {
+  await db
+    .update(investigations)
+    .set({ report })
+    .where(eq(investigations.id, id));
+}
+
 export async function getInvestigation(db: HorusDb, id: string) {
   const rows = await db
     .select()

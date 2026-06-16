@@ -269,9 +269,14 @@ export function generatePostmortem(r: InvestigationReport): string {
   lines.push('## Follow-up actions');
   lines.push('');
 
-  const seen = new Set<string>();
+  // Merge structural next actions with gap-based actions so connector follow-ups
+  // appear once, in clean language, tied to the dimension they close. This avoids
+  // the noisy "Wire Add ..." duplication when gap.nextSource was already pushed
+  // into report.nextActions by the engine.
   const checkboxItems: string[] = [];
+  const seen = new Set<string>();
 
+  // 1. Structural actions from the investigation pipeline (deduplicated).
   for (const action of r.nextActions) {
     if (!seen.has(action)) {
       seen.add(action);
@@ -279,14 +284,26 @@ export function generatePostmortem(r: InvestigationReport): string {
     }
   }
 
+  // 2. Gap actions. If a gap's nextSource is already present as a raw structural
+  //    action, replace that raw action with a single clean item that names both
+  //    the action and the dimension it closes. Otherwise append the clean item.
+  const seenGapSources = new Set<string>();
   for (const gap of r.gapAnalysis.gaps) {
-    // If the raw nextSource action is already listed from r.nextActions, skip the
-    // compound "Wire..." wrapper — it would duplicate the same instruction.
-    if (seen.has(gap.nextSource)) continue;
-    const wireAction = `Wire ${gap.nextSource} to close the '${gap.dimension}' evidence gap`;
-    if (!seen.has(wireAction)) {
-      seen.add(wireAction);
-      checkboxItems.push(wireAction);
+    if (seenGapSources.has(gap.nextSource)) continue;
+    seenGapSources.add(gap.nextSource);
+
+    const cleanGapAction = `${gap.nextSource} to close the '${gap.dimension}' evidence gap`;
+    if (seen.has(gap.nextSource)) {
+      // Replace the raw nextSource action with the merged clean action.
+      const idx = checkboxItems.indexOf(gap.nextSource);
+      if (idx !== -1 && !seen.has(cleanGapAction)) {
+        checkboxItems[idx] = cleanGapAction;
+        seen.delete(gap.nextSource);
+        seen.add(cleanGapAction);
+      }
+    } else if (!seen.has(cleanGapAction)) {
+      seen.add(cleanGapAction);
+      checkboxItems.push(cleanGapAction);
     }
   }
 

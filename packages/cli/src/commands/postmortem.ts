@@ -6,7 +6,7 @@ import { createDb, getInvestigation } from '@horus/db';
 import { generatePostmortem, migrateReport } from '@horus/engine';
 import type { InvestigationReport } from '@horus/engine';
 import { renderNarrative, AnthropicNarrativeProvider } from '@horus/ai';
-import { buildNarrativeInput } from './investigate.js';
+import { buildNarrativeInput, narrativeOutputToStoredJudgment } from './investigate.js';
 
 /**
  * HOR-26 — Draft an editable postmortem from a persisted investigation.
@@ -25,6 +25,8 @@ export async function runPostmortem(
     _report?: InvestigationReport;
     aiSummary?: boolean;
     aiModel?: string;
+    /** Re-run AI even if a stored judgment already exists. */
+    refreshAi?: boolean;
   },
 ): Promise<number> {
   const log = opts.write ?? ((line: string) => console.log(line));
@@ -54,24 +56,52 @@ export async function runPostmortem(
     let content = generatePostmortem(report);
 
     if (opts.aiSummary) {
-      const narrativeInput = buildNarrativeInput(report);
-      const provider = new AnthropicNarrativeProvider({ model: opts.aiModel });
-      const { output, fromProvider, validationErrors } = await renderNarrative(narrativeInput, { provider });
-
-      if (!fromProvider) {
-        content += `\n\n## AI Summary\n\n_AI summary unavailable: ${validationErrors?.[0] ?? 'provider error'}_\n`;
-      } else {
+      // Use stored AI judgment when available (HOR-198); only call AI if --refresh-ai or no stored judgment
+      const storedJudgment = report.aiJudgment;
+      if (storedJudgment && !opts.refreshAi) {
         content += '\n\n## AI Summary\n\n';
-        content += `**What happened:** ${output.what}\n\n`;
-        content += `**Why:** ${output.why}\n`;
-        if (output.whereNext.length > 0) {
+        content += `_Stored AI judgment (provider: ${storedJudgment.provider}, generated: ${storedJudgment.generatedAt})_\n\n`;
+        content += `**What happened:** ${storedJudgment.what}\n\n`;
+        content += `**Why:** ${storedJudgment.why}\n`;
+        if (storedJudgment.rootCauseAssessment) {
+          content += `\n**Root cause (AI):** ${storedJudgment.rootCauseAssessment.summary}\n`;
+          content += `_(uncertainty: ${storedJudgment.rootCauseAssessment.uncertainty})_\n`;
+        }
+        if (storedJudgment.whereNext.length > 0) {
           content += '\n**Next steps:**\n';
-          for (const step of output.whereNext) {
+          for (const step of storedJudgment.whereNext) {
             content += `- ${step}\n`;
           }
         }
-        if (output.citations.length > 0) {
-          content += `\n**Cited evidence:** ${output.citations.map((c) => c.evidenceId).join(', ')}\n`;
+        if (storedJudgment.citations.length > 0) {
+          content += `\n**Cited evidence:** ${storedJudgment.citations.map((c) => c.evidenceId).join(', ')}\n`;
+        }
+      } else {
+        const narrativeInput = buildNarrativeInput(report);
+        const provider = new AnthropicNarrativeProvider({ model: opts.aiModel });
+        const { output, fromProvider, validationErrors } = await renderNarrative(narrativeInput, { provider });
+
+        if (!fromProvider) {
+          content += `\n\n## AI Summary\n\n_AI summary unavailable: ${validationErrors?.[0] ?? 'provider error'}_\n`;
+        } else {
+          content += '\n\n## AI Summary\n\n';
+          content += `**What happened:** ${output.what}\n\n`;
+          content += `**Why:** ${output.why}\n`;
+          if (output.rootCauseAssessment) {
+            content += `\n**Root cause (AI):** ${output.rootCauseAssessment.summary}\n`;
+            content += `_(uncertainty: ${output.rootCauseAssessment.uncertainty})_\n`;
+          }
+          if (output.whereNext.length > 0) {
+            content += '\n**Next steps:**\n';
+            for (const step of output.whereNext) {
+              content += `- ${step}\n`;
+            }
+          }
+          if (output.citations.length > 0) {
+            content += `\n**Cited evidence:** ${output.citations.map((c) => c.evidenceId).join(', ')}\n`;
+          }
+          // Persist AI judgment for future use (HOR-198) — best effort via report mutation
+          report.aiJudgment = narrativeOutputToStoredJudgment(output, 'anthropic');
         }
       }
     }

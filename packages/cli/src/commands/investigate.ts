@@ -1,11 +1,11 @@
 import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
 import { codeForEnv, logsForEnv, mongoForEnv, queueForEnv, metricsForEnv } from '@horus/connectors';
-import { createDb } from '@horus/db';
+import { createDb, updateInvestigationReport } from '@horus/db';
 import { investigate, renderReport, reportToJSON, reportToMarkdown } from '@horus/engine';
-import type { InvestigationReport } from '@horus/engine';
+import type { InvestigationReport, StoredAIJudgment } from '@horus/engine';
 import { renderNarrative, AnthropicNarrativeProvider } from '@horus/ai';
-import type { NarrativeInput } from '@horus/ai';
+import type { NarrativeInput, NarrativeOutput } from '@horus/ai';
 import type { Evidence } from '@horus/engine';
 
 function extractEvidenceExcerpt(e: Evidence): string | undefined {
@@ -51,6 +51,75 @@ export function buildNarrativeInput(report: InvestigationReport): NarrativeInput
       supportingEvidenceIds: h.supportingEvidenceIds,
     })),
   };
+}
+
+/** Map a NarrativeOutput to the StoredAIJudgment shape for persistence. */
+export function narrativeOutputToStoredJudgment(
+  output: NarrativeOutput,
+  provider: string,
+): StoredAIJudgment {
+  const judgment: StoredAIJudgment = {
+    what: output.what,
+    why: output.why,
+    whereNext: output.whereNext,
+    citations: output.citations,
+    confidence: output.confidence,
+    provider,
+    generatedAt: new Date().toISOString(),
+  };
+  if (output.mentionedServices) judgment.mentionedServices = output.mentionedServices;
+  if (output.hypothesisJudgments) judgment.hypothesisJudgments = output.hypothesisJudgments;
+  if (output.rootCauseAssessment) judgment.rootCauseAssessment = output.rootCauseAssessment;
+  return judgment;
+}
+
+/** Render a stored AI judgment to the console. */
+export function renderStoredAIJudgment(
+  judgment: StoredAIJudgment,
+  write: (line: string) => void = (l) => console.log(l),
+): void {
+  const sep = '─'.repeat(60);
+  write(`\n${sep}`);
+  write(pc.bold('AI Judgment') + pc.dim(` (confidence: ${(judgment.confidence * 100).toFixed(0)}%, provider: ${judgment.provider})`));
+  write(sep);
+
+  if (judgment.hypothesisJudgments && judgment.hypothesisJudgments.length > 0) {
+    write(pc.bold('Hypothesis verdicts:'));
+    for (const j of judgment.hypothesisJudgments) {
+      const verdictColor =
+        j.verdict === 'supported' ? pc.green :
+        j.verdict === 'weakened' ? pc.yellow :
+        j.verdict === 'eliminated' ? pc.red : pc.dim;
+      write(`  ${verdictColor(`[${j.verdict}]`)} ${j.category}` + pc.dim(` (${(j.confidence * 100).toFixed(0)}%)`));
+      write(pc.dim(`    ${j.rationale}`));
+    }
+    write('');
+  }
+
+  if (judgment.rootCauseAssessment) {
+    const rca = judgment.rootCauseAssessment;
+    const uncertaintyColor =
+      rca.uncertainty === 'low' ? pc.green :
+      rca.uncertainty === 'medium' ? pc.yellow : pc.red;
+    write(pc.bold('Root cause assessment:') + pc.dim(` uncertainty: ${uncertaintyColor(rca.uncertainty)}`));
+    write(rca.summary);
+    if (rca.citedEvidenceIds.length > 0) {
+      write(pc.dim(`  Cited: ${rca.citedEvidenceIds.join(', ')}`));
+    }
+    write('');
+  }
+
+  write(pc.bold('What:') + ' ' + judgment.what);
+  write(pc.bold('Why:') + ' ' + judgment.why);
+  if (judgment.whereNext.length > 0) {
+    write(pc.bold('Next steps:'));
+    for (const step of judgment.whereNext) {
+      write(`  • ${step}`);
+    }
+  }
+  if (judgment.citations.length > 0) {
+    write(pc.dim(`\nCited evidence: ${judgment.citations.map((c) => c.evidenceId).join(', ')}`));
+  }
 }
 
 export async function runInvestigate(
@@ -155,57 +224,15 @@ export async function runInvestigate(
             console.error(pc.dim(`    ${validationErrors[0]}`));
           }
         } else {
-          const sep = '─'.repeat(60);
-          console.log(`\n${sep}`);
-          console.log(pc.bold('AI Judgment') + pc.dim(` (confidence: ${(output.confidence * 100).toFixed(0)}%)`));
-          console.log(sep);
-
-          // Structured hypothesis judgments (HOR-197)
-          if (output.hypothesisJudgments && output.hypothesisJudgments.length > 0) {
-            console.log(pc.bold('Hypothesis verdicts:'));
-            for (const j of output.hypothesisJudgments) {
-              const verdictColor =
-                j.verdict === 'supported' ? pc.green :
-                j.verdict === 'weakened' ? pc.yellow :
-                j.verdict === 'eliminated' ? pc.red : pc.dim;
-              console.log(
-                `  ${verdictColor(`[${j.verdict}]`)} ${j.category}` +
-                pc.dim(` (${(j.confidence * 100).toFixed(0)}%)`),
-              );
-              console.log(pc.dim(`    ${j.rationale}`));
-            }
-            console.log('');
+          // Persist AI judgment in the report and update DB (HOR-198)
+          const stored = narrativeOutputToStoredJudgment(output, 'anthropic');
+          report.aiJudgment = stored;
+          try {
+            await updateInvestigationReport(db, report.id, report);
+          } catch {
+            // best-effort — display still works even if DB update fails
           }
-
-          // Structured root cause assessment (HOR-197)
-          if (output.rootCauseAssessment) {
-            const rca = output.rootCauseAssessment;
-            const uncertaintyColor =
-              rca.uncertainty === 'low' ? pc.green :
-              rca.uncertainty === 'medium' ? pc.yellow : pc.red;
-            console.log(
-              pc.bold('Root cause assessment:') +
-              pc.dim(` uncertainty: ${uncertaintyColor(rca.uncertainty)}`),
-            );
-            console.log(rca.summary);
-            if (rca.citedEvidenceIds.length > 0) {
-              console.log(pc.dim(`  Cited: ${rca.citedEvidenceIds.join(', ')}`));
-            }
-            console.log('');
-          }
-
-          // Narrative sections
-          console.log(pc.bold('What:'), output.what);
-          console.log(pc.bold('Why:'), output.why);
-          if (output.whereNext.length > 0) {
-            console.log(pc.bold('Next steps:'));
-            for (const step of output.whereNext) {
-              console.log(`  • ${step}`);
-            }
-          }
-          if (output.citations.length > 0) {
-            console.log(pc.dim(`\nCited evidence: ${output.citations.map((c) => c.evidenceId).join(', ')}`));
-          }
+          renderStoredAIJudgment(stored);
         }
       }
     } finally {

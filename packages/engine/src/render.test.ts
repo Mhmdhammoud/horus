@@ -676,6 +676,133 @@ describe('reportToMarkdown — why confidence is not higher (HOR-105)', () => {
   });
 });
 
+// ── Source-only hypothesis placeholder note (HOR-183) ─────────────────────────
+
+describe('renderReport — source-only hypothesis placeholder note', () => {
+  it('adds a placeholder note when every hypothesis is unconfirmed', () => {
+    const r = makeReport({
+      hypotheses: [
+        {
+          id: 'hyp-1',
+          category: 'external-api-latency',
+          statement: 'An upstream API is slow.',
+          confidence: 0.2,
+          priorConfidence: 0.2,
+          verdict: 'unconfirmed',
+          supportingPresent: 0,
+          contradictingPresent: 0,
+          rationale: '0 supporting / 0 contradicting evidence present.',
+          supportingEvidenceIds: [],
+          contradictingEvidenceIds: [],
+          missingEvidence: ['Request latency metrics'],
+        },
+      ],
+    });
+    const output = renderReport(r);
+    expect(output).toContain('All hypotheses below are unconfirmed placeholders');
+  });
+
+  it('omits the placeholder note when at least one hypothesis is supported', () => {
+    const r = makeReport({
+      hypotheses: [
+        {
+          id: 'hyp-1',
+          category: 'external-api-latency',
+          statement: 'An upstream API is slow.',
+          confidence: 0.2,
+          priorConfidence: 0.2,
+          verdict: 'unconfirmed',
+          supportingPresent: 0,
+          contradictingPresent: 0,
+          rationale: '0 supporting / 0 contradicting evidence present.',
+          supportingEvidenceIds: [],
+          contradictingEvidenceIds: [],
+          missingEvidence: ['Request latency metrics'],
+        },
+        {
+          id: 'hyp-2',
+          category: 'deployment-regression',
+          statement: 'A recent change introduced the fault.',
+          confidence: 0.65,
+          priorConfidence: 0.5,
+          verdict: 'supported',
+          supportingPresent: 1,
+          contradictingPresent: 0,
+          rationale: '1 supporting / 0 contradicting evidence present.',
+          supportingEvidenceIds: ['ev-1'],
+          contradictingEvidenceIds: [],
+          missingEvidence: [],
+        },
+      ],
+    });
+    expect(renderReport(r)).not.toContain('All hypotheses below are unconfirmed placeholders');
+  });
+
+  it('omits the placeholder note when there are no hypotheses', () => {
+    expect(renderReport(makeReport())).not.toContain('All hypotheses below are unconfirmed placeholders');
+  });
+});
+
+describe('reportToMarkdown — source-only hypothesis placeholder note', () => {
+  it('adds a placeholder note when every hypothesis is unconfirmed', () => {
+    const r = makeReport({
+      hypotheses: [
+        {
+          id: 'hyp-1',
+          category: 'retry-storm',
+          statement: 'A retry storm is amplifying load.',
+          confidence: 0.15,
+          priorConfidence: 0.15,
+          verdict: 'unconfirmed',
+          supportingPresent: 0,
+          contradictingPresent: 0,
+          rationale: '0 supporting / 0 contradicting evidence present.',
+          supportingEvidenceIds: [],
+          contradictingEvidenceIds: [],
+          missingEvidence: ['Retry/error logs'],
+        },
+      ],
+    });
+    expect(reportToMarkdown(r)).toContain('All hypotheses below are unconfirmed placeholders');
+  });
+
+  it('omits the placeholder note when at least one hypothesis is supported', () => {
+    const r = makeReport({
+      hypotheses: [
+        {
+          id: 'hyp-1',
+          category: 'retry-storm',
+          statement: 'A retry storm is amplifying load.',
+          confidence: 0.15,
+          priorConfidence: 0.15,
+          verdict: 'unconfirmed',
+          supportingPresent: 0,
+          contradictingPresent: 0,
+          rationale: '0 supporting / 0 contradicting evidence present.',
+          supportingEvidenceIds: [],
+          contradictingEvidenceIds: [],
+          missingEvidence: ['Retry/error logs'],
+        },
+        {
+          id: 'hyp-2',
+          category: 'deployment-regression',
+          statement: 'A recent change introduced the fault.',
+          confidence: 0.65,
+          priorConfidence: 0.5,
+          verdict: 'supported',
+          supportingPresent: 1,
+          contradictingPresent: 0,
+          rationale: '1 supporting / 0 contradicting evidence present.',
+          supportingEvidenceIds: ['ev-1'],
+          contradictingEvidenceIds: [],
+          missingEvidence: [],
+        },
+      ],
+    });
+    expect(reportToMarkdown(r)).not.toContain('All hypotheses below are unconfirmed placeholders');
+  });
+});
+
 // ── Recent changes rendering (HOR-94) ────────────────────────────────────────
 
 import type { BoundedGitChange } from './git-collector.js';

@@ -474,8 +474,9 @@ Examples:
     .option('--format <fmt>', 'text | markdown | json', 'text')
     .option('--ai', 'enrich report with AI narrative (requires ANTHROPIC_API_KEY; falls back to deterministic on failure)')
     .option('--ai-model <model>', 'AI model for --ai (default: claude-opus-4-8)')
-    .action(async (id: string, opts: { config?: string; format?: string; ai?: boolean; aiModel?: string }) => {
-      process.exitCode = await runReplay(id, { config: opts.config, format: opts.format, ai: opts.ai, aiModel: opts.aiModel });
+    .option('--refresh-ai', 're-run AI even if a stored judgment already exists')
+    .action(async (id: string, opts: { config?: string; format?: string; ai?: boolean; aiModel?: string; refreshAi?: boolean }) => {
+      process.exitCode = await runReplay(id, { config: opts.config, format: opts.format, ai: opts.ai, aiModel: opts.aiModel, refreshAi: opts.refreshAi });
     })
     .addHelpText('after', `
 Examples:
@@ -484,6 +485,7 @@ Examples:
   horus replay <id> --format json
   horus replay <id> --ai
   horus replay <id> --ai --ai-model claude-sonnet-4-6
+  horus replay <id> --ai --refresh-ai
 
   (Use 'horus investigations' to list saved investigation ids.)
 `);
@@ -496,8 +498,9 @@ Examples:
     .option('--force', 'overwrite the output file if it already exists')
     .option('--ai-summary', 'append an AI-generated summary section (requires ANTHROPIC_API_KEY; falls back gracefully)')
     .option('--ai-model <model>', 'AI model for --ai-summary (default: claude-opus-4-8)')
-    .action(async (id: string, opts: { config?: string; output?: string; force?: boolean; aiSummary?: boolean; aiModel?: string }) => {
-      process.exitCode = await runPostmortem(id, { config: opts.config, output: opts.output, force: opts.force, aiSummary: opts.aiSummary, aiModel: opts.aiModel });
+    .option('--refresh-ai', 're-run AI even if a stored judgment already exists')
+    .action(async (id: string, opts: { config?: string; output?: string; force?: boolean; aiSummary?: boolean; aiModel?: string; refreshAi?: boolean }) => {
+      process.exitCode = await runPostmortem(id, { config: opts.config, output: opts.output, force: opts.force, aiSummary: opts.aiSummary, aiModel: opts.aiModel, refreshAi: opts.refreshAi });
     })
     .addHelpText('after', `
 Examples:
@@ -506,6 +509,7 @@ Examples:
   horus postmortem <id> --output ./postmortem.md --force
   horus postmortem <id> --ai-summary
   horus postmortem <id> --output ./postmortem.md --ai-summary --ai-model claude-sonnet-4-6
+  horus postmortem <id> --ai-summary --refresh-ai
 
   (Use 'horus investigations' to list saved investigation ids.)
 `);

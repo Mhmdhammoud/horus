@@ -33,6 +33,7 @@ export {
   getInvestigation,
   listInvestigations,
   listInvestigationsWithReports,
+  updateInvestigationReport,
 } from './investigations.js';
 export { runMigrations } from './migrate.js';
 export { checkDatabase, EXPECTED_TABLES, type DbHealth } from './health.js';
