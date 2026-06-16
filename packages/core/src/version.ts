@@ -1,5 +1,5 @@
 /** Horus release version. */
-export const HORUS_VERSION = '0.1.1';
+export const HORUS_VERSION = '0.1.2';
 
 /**
  * The exact Axon version Horus is validated and pinned against. The Axon provider
