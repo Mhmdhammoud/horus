@@ -298,6 +298,23 @@ export function renderReport(r: InvestigationReport): string {
   }
   lines.push('');
 
+  if (r.causeChains !== undefined && r.causeChains.length > 0) {
+    lines.push('## Cause chains');
+    for (const chain of r.causeChains) {
+      lines.push(`  [${chain.confidence.toFixed(2)}] ${chain.category}: ${chain.summary}`);
+      for (let i = 0; i < chain.steps.length; i++) {
+        const step = chain.steps[i]!;
+        const prefix = i === chain.steps.length - 1 ? '    └─' : '    ├─';
+        const evCite =
+          step.evidenceIds.length > 0
+            ? ` (evidence: ${step.evidenceIds.map(shortId).join(', ')})`
+            : '';
+        lines.push(`${prefix} [${step.role}] ${step.label}${evCite}`);
+      }
+    }
+    lines.push('');
+  }
+
   lines.push('## Evidence gaps (what we don\'t know)');
   if (r.gapAnalysis.gaps.length === 0) {
     lines.push('(no major evidence gaps)');

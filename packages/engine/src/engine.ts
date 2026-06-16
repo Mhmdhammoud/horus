@@ -43,6 +43,7 @@ import {
   eq,
 } from '@horus/db';
 import { buildGraph } from './graph.js';
+import { buildCauseChains } from './cause-chain.js';
 import { rankCauses, type CauseInput } from './score-cause.js';
 import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
@@ -749,10 +750,14 @@ export async function investigate(
     queueStarvationEvIdsByQueue,
     queueMetricEvIdsByQueue,
     sinceProvided: input.since !== undefined,
+    graph,
   });
 
   // e4. HYPOTHESIS VALIDATION (HOR-25) — adjust confidence + assign verdicts
   const validated = validateHypotheses(hyps, evidence);
+
+  // e4a. CAUSE CHAINS (HOR-196) — build ordered causal sequences for supported hypotheses
+  const causeChains = buildCauseChains(validated, evidence, graph, label);
 
   // f. FINDINGS (label kept as 'e' externally but shifted to 'f' internally)
   const findings: ReportFinding[] = [];
@@ -1139,6 +1144,7 @@ export async function investigate(
     confidence,
     nextActions,
     ownership: ownershipEstimate,
+    causeChains: causeChains.length > 0 ? causeChains : undefined,
     ...(recentChanges !== undefined ? { recentChanges } : {}),
   };
 

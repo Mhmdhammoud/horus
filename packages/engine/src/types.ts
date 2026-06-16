@@ -14,6 +14,7 @@ import type { CauseCandidate } from './score-cause.js';
 import type { OwnershipEstimate } from './ownership.js';
 import type { RuntimeSourceReport } from './source-status.js';
 import type { BoundedGitChange } from './git-collector.js';
+import type { CauseChain } from './cause-chain.js';
 
 export type { CauseCandidate };
 
@@ -73,6 +74,12 @@ export interface InvestigationReport {
   sourceStatus?: RuntimeSourceReport;
   /** Bounded git change summary collected near the incident window (HOR-94). */
   recentChanges?: BoundedGitChange;
+  /**
+   * Ordered causal chains derived from validated hypotheses and the evidence graph (HOR-196).
+   * Each chain shows trigger → propagation → symptom steps with cited evidence IDs.
+   * Present only for hypotheses with verdict 'supported' or 'weakened'.
+   */
+  causeChains?: CauseChain[];
 }
 
 /** Re-exported for convenience so callers can type flow steps without @horus/core. */

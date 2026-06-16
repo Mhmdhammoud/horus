@@ -154,18 +154,39 @@ export function generatePostmortem(r: InvestigationReport): string {
       );
     }
   } else {
-    if (supportedHypotheses.length > 0) {
-      lines.push('The following factors are supported by the collected evidence:');
+    if (r.causeChains !== undefined && r.causeChains.length > 0) {
+      lines.push('The following causal sequences are supported by the collected evidence:');
       lines.push('');
-      for (const h of supportedHypotheses) {
-        lines.push(
-          `- **${h.category}:** ${h.statement} _(confidence ${h.confidence.toFixed(2)})_`,
-        );
+      for (const chain of r.causeChains) {
+        lines.push(`### ${chain.category} _(confidence ${chain.confidence.toFixed(2)})_`);
+        lines.push('');
+        lines.push(chain.summary);
+        lines.push('');
+        for (let i = 0; i < chain.steps.length; i++) {
+          const step = chain.steps[i]!;
+          const num = i + 1;
+          const evCite =
+            step.evidenceIds.length > 0
+              ? ` — evidence: ${step.evidenceIds.map((id) => `\`${shortId(id)}\``).join(', ')}`
+              : '';
+          lines.push(`${num}. **[${step.role}]** ${step.label}${evCite}`);
+        }
+        lines.push('');
+      }
+    } else {
+      if (supportedHypotheses.length > 0) {
+        lines.push('The following factors are supported by the collected evidence:');
+        lines.push('');
+        for (const h of supportedHypotheses) {
+          lines.push(
+            `- **${h.category}:** ${h.statement} _(confidence ${h.confidence.toFixed(2)})_`,
+          );
+        }
       }
     }
 
     if (commitEvidence.length > 0) {
-      if (supportedHypotheses.length > 0) lines.push('');
+      if (supportedHypotheses.length > 0 || (r.causeChains?.length ?? 0) > 0) lines.push('');
       lines.push('Recent changes (commit evidence) present during this incident:');
       lines.push('');
       for (const e of commitEvidence) {

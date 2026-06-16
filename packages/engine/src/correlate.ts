@@ -21,7 +21,7 @@ export interface EvidenceGroup {
   evidenceIds: string[];
 }
 
-export interface CauseChain {
+export interface CorrelationChain {
   id: string;
   title: string;
   evidenceIds: string[];
@@ -37,7 +37,7 @@ export interface MissingEvidence {
 
 export interface CorrelationResult {
   groups: EvidenceGroup[];
-  chains: CauseChain[];
+  chains: CorrelationChain[];
   missing: MissingEvidence[];
 }
 
@@ -167,7 +167,7 @@ function buildGroups(evidence: Evidence[]): EvidenceGroup[] {
 // Cause chains
 // ---------------------------------------------------------------------------
 
-function buildChains(evidence: Evidence[]): CauseChain[] {
+function buildChains(evidence: Evidence[]): CorrelationChain[] {
   const queueEdges = evidence.filter((e) => e.kind === 'queue-edge');
   const commitEvs = evidence.filter((e) => e.kind === 'commit');
   const symbolEvs = evidence.filter((e) => e.kind === 'symbol');
@@ -184,7 +184,7 @@ function buildChains(evidence: Evidence[]): CauseChain[] {
     return sum / ids.length;
   }
 
-  const chains: CauseChain[] = [];
+  const chains: CorrelationChain[] = [];
 
   if (queueEdges.length > 0) {
     // One chain per queue-edge evidence item.
