@@ -14,7 +14,7 @@ import type { Evidence } from '@horus/core';
 // Public types
 // ---------------------------------------------------------------------------
 
-export type RefineMode = 'focus' | 'ignore' | 'none';
+export type RefineMode = 'focus' | 'ignore' | 'mixed' | 'none';
 
 export interface RefinedView {
   directive: string;
@@ -83,10 +83,111 @@ const STOP_WORDS = new Set([
 // Helpers
 // ---------------------------------------------------------------------------
 
-function detectMode(d: string): RefineMode {
+function hasFocusVerb(d: string): boolean {
+  return /\b(focus|only|just|concentrate|look at)\b/.test(d);
+}
+
+function hasIgnoreVerb(d: string): boolean {
+  return /\b(ignore|exclude|without|skip|drop)\b/.test(d);
+}
+
+function detectMode(d: string): 'focus' | 'ignore' | 'none' {
   if (/\b(ignore|exclude|without|skip|drop)\b/.test(d)) return 'ignore';
   if (/\b(focus|only|just|concentrate|look at)\b/.test(d)) return 'focus';
   return 'none';
+}
+
+/** Split a mixed directive into focus/ignore clauses by "and" / "," separators. */
+function splitIntoClauses(d: string): Array<{ clause: string; mode: 'focus' | 'ignore' }> {
+  const parts = d.split(/\s+and\s+|\s*,\s*/);
+  const clauses: Array<{ clause: string; mode: 'focus' | 'ignore' }> = [];
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (hasFocusVerb(trimmed)) clauses.push({ clause: trimmed, mode: 'focus' });
+    else if (hasIgnoreVerb(trimmed)) clauses.push({ clause: trimmed, mode: 'ignore' });
+  }
+  return clauses;
+}
+
+/** Apply a directive that contains both focus and ignore verbs — split, apply both. */
+function applyMixedDirective(r: InvestigationReport, directive: string, d: string): RefinedView {
+  const clauses = splitIntoClauses(d);
+
+  const focusClauses = clauses.filter((c) => c.mode === 'focus');
+  const ignoreClauses = clauses.filter((c) => c.mode === 'ignore');
+
+  const focusTopics = [...new Set(focusClauses.flatMap((c) => matchedTopics(c.clause)))];
+  const ignoreTopics = [...new Set(ignoreClauses.flatMap((c) => matchedTopics(c.clause)))];
+
+  // Text terms for clauses that didn't match any predefined topic
+  const focusTerms = focusClauses
+    .filter((c) => matchedTopics(c.clause).length === 0)
+    .flatMap((c) => extractSignificantTerms(c.clause));
+  const ignoreTerms = ignoreClauses
+    .filter((c) => matchedTopics(c.clause).length === 0)
+    .flatMap((c) => extractSignificantTerms(c.clause));
+
+  let hypotheses = r.hypotheses as ValidatedHypothesis[];
+  let evidence = r.evidence as Evidence[];
+  let suspectedCauses = r.suspectedCauses;
+
+  // Apply focus filter (topic-based first, text fallback second)
+  if (focusTopics.length > 0) {
+    const focusCategories = unionCategories(focusTopics);
+    const focusKinds = unionKinds(focusTopics);
+    const focusKeywords = topicKeywords(focusTopics);
+    hypotheses = hypotheses.filter((h) => focusCategories.includes(h.category));
+    evidence = evidence.filter((e) => focusKinds.includes(e.kind) || e.kind === 'symbol');
+    const filtered = suspectedCauses.filter((c) =>
+      focusKeywords.some((k) => c.title.toLowerCase().includes(k)),
+    );
+    suspectedCauses = filtered.length > 0 ? filtered : suspectedCauses;
+  } else if (focusTerms.length > 0) {
+    const matchesFocus = (text: string) => focusTerms.some((t) => text.toLowerCase().includes(t));
+    hypotheses = hypotheses.filter((h) => matchesFocus(h.statement) || matchesFocus(h.category));
+    evidence = evidence.filter((e) => matchesFocus(e.title) || matchesFocus(e.kind));
+    const filtered = suspectedCauses.filter((c) => matchesFocus(c.title));
+    suspectedCauses = filtered.length > 0 ? filtered : suspectedCauses;
+  }
+
+  // Apply ignore filter on top of whatever the focus filter produced
+  if (ignoreTopics.length > 0) {
+    const ignoreCategories = unionCategories(ignoreTopics);
+    const ignoreKinds = unionKinds(ignoreTopics);
+    const ignoreKeywords = topicKeywords(ignoreTopics);
+    hypotheses = hypotheses.filter((h) => !ignoreCategories.includes(h.category));
+    evidence = evidence.filter((e) => !ignoreKinds.includes(e.kind));
+    suspectedCauses = suspectedCauses.filter(
+      (c) => !ignoreKeywords.some((k) => c.title.toLowerCase().includes(k)),
+    );
+  }
+  if (ignoreTerms.length > 0) {
+    const matchesIgnore = (text: string) => ignoreTerms.some((t) => text.toLowerCase().includes(t));
+    hypotheses = hypotheses.filter((h) => !matchesIgnore(h.statement) && !matchesIgnore(h.category));
+    evidence = evidence.filter((e) => !matchesIgnore(e.title) && !matchesIgnore(e.kind));
+    suspectedCauses = suspectedCauses.filter((c) => !matchesIgnore(c.title));
+  }
+
+  const allTopics = [...new Set([...focusTopics, ...ignoreTopics])];
+
+  const focusDesc =
+    focusTopics.length > 0
+      ? `focus: ${focusTopics.join(', ')}`
+      : focusTerms.length > 0
+        ? `focus on: ${focusTerms.join(', ')}`
+        : null;
+  const ignoreDesc =
+    ignoreTopics.length > 0
+      ? `ignore: ${ignoreTopics.join(', ')}`
+      : ignoreTerms.length > 0
+        ? `ignore: ${ignoreTerms.join(', ')}`
+        : null;
+  const modeDesc = [focusDesc, ignoreDesc].filter(Boolean).join('; ');
+
+  const note =
+    modeDesc + ". Reused the saved investigation's evidence — no re-query of production.";
+
+  return { directive, mode: 'mixed', topics: allTopics, hypotheses, suspectedCauses, evidence, note };
 }
 
 function matchedTopics(d: string): string[] {
@@ -203,6 +304,15 @@ export function refineInvestigation(
   directive: string,
 ): RefinedView {
   const d = directive.toLowerCase();
+
+  // When the directive contains BOTH a focus verb and an ignore verb, split it
+  // into clauses and apply focus and ignore independently so neither overrides
+  // the other. Without this, detectMode() picks ignore first (regex order) and
+  // maps "focus on X and ignore Y" as a pure ignore directive.
+  if (hasFocusVerb(d) && hasIgnoreVerb(d)) {
+    return applyMixedDirective(r, directive, d);
+  }
+
   const mode = detectMode(d);
   const topics = matchedTopics(d);
 

@@ -228,4 +228,39 @@ describe('refineInvestigation', () => {
     const v = refineInvestigation(REPORT, directive);
     expect(v.directive).toBe(directive);
   });
+
+  // ── HOR-182: mixed directive support ──────────────────────────────────────
+
+  it('focus on deployment regression → mode focus, deployment hypothesis kept', () => {
+    const v = refineInvestigation(REPORT, 'focus on deployment regression');
+    expect(v.mode).toBe('focus');
+    const categories = v.hypotheses.map((h) => h.category);
+    expect(categories).toContain('deployment-regression');
+    expect(categories).not.toContain('queue-backlog');
+    expect(categories).not.toContain('infrastructure');
+  });
+
+  it('ignore logs and metrics → mode ignore, deployment-regression hypothesis is NOT removed', () => {
+    const v = refineInvestigation(REPORT, 'ignore logs and metrics');
+    expect(v.mode).toBe('ignore');
+    const categories = v.hypotheses.map((h) => h.category);
+    // "logs" and "metrics" don't map to deployment-regression; deployment must survive
+    expect(categories).toContain('deployment-regression');
+  });
+
+  it('mixed directive keeps deployment/recent changes in scope and mode is "mixed"', () => {
+    const v = refineInvestigation(
+      REPORT,
+      'focus on recent code changes and ignore missing runtime connectors',
+    );
+    expect(v.mode).toBe('mixed');
+    // deployment-regression hypothesis must be kept (not excluded by the ignore clause)
+    const categories = v.hypotheses.map((h) => h.category);
+    expect(categories).toContain('deployment-regression');
+    // note must mention no re-query
+    expect(v.note).toMatch(/no re-query of production/i);
+    // note must describe both focus and ignore
+    expect(v.note).toContain('focus');
+    expect(v.note).toContain('ignore');
+  });
 });

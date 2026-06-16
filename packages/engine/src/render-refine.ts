@@ -26,7 +26,9 @@ export function renderRefined(r: InvestigationReport, v: RefinedView): string {
       ? 'focus: ' + v.topics.join(', ')
       : v.mode === 'ignore'
         ? 'ignore: ' + v.topics.join(', ')
-        : 'none (all evidence returned)';
+        : v.mode === 'mixed'
+          ? 'focus+ignore' + (v.topics.length > 0 ? ': ' + v.topics.join(', ') : '')
+          : 'none (all evidence returned)';
   lines.push('  [mode: ' + modeLabel + '] reusing saved evidence, no re-query');
   lines.push('');
 
