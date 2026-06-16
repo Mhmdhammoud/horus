@@ -154,6 +154,57 @@ export function logWindowFrom(since: string | undefined): string {
   return new Date(now - 7 * 86_400_000).toISOString();
 }
 
+export type LogRelevanceClass = 'direct' | 'ambient';
+
+/**
+ * Classify a log signature's relevance to the investigation seed (HOR-156).
+ *
+ * A signature is 'direct' when its key or affected services share tokens with
+ * the seed name, hint, or service.  Everything else is 'ambient' — real
+ * production noise, but unrelated to the thing being investigated.
+ */
+export function classifyLogRelevance(
+  sigKey: string,
+  sigServices: string[],
+  seedTerms: string[],
+  inputService: string | undefined,
+): { relevanceClass: LogRelevanceClass; relevanceReason: string } {
+  if (seedTerms.length === 0) {
+    return { relevanceClass: 'direct', relevanceReason: 'no seed context — included by default' };
+  }
+
+  const keyTokens = tokenize(sigKey);
+  const serviceTokens = sigServices.flatMap((s) => tokenize(s));
+  const combined = [...keyTokens, ...serviceTokens];
+
+  const matchingTerms = seedTerms.filter(
+    (t) => combined.some((c) => c.includes(t) || t.includes(c)),
+  );
+
+  if (matchingTerms.length > 0) {
+    return {
+      relevanceClass: 'direct',
+      relevanceReason: `matches seed terms: ${matchingTerms.slice(0, 3).join(', ')}`,
+    };
+  }
+
+  // Service-scoped: if the log's services match the input service, treat as direct
+  if (
+    inputService &&
+    sigServices.some((s) => s.toLowerCase().includes(inputService.toLowerCase()))
+  ) {
+    return {
+      relevanceClass: 'direct',
+      relevanceReason: `from configured service: ${inputService}`,
+    };
+  }
+
+  return {
+    relevanceClass: 'ambient',
+    relevanceReason: 'no structural link to seed — ambient runtime noise',
+  };
+}
+
 /**
  * Derive the confidence for the queue-runtime anomaly finding.
  * Exported for unit testing — logic must stay in sync with the inline usage below.
@@ -352,6 +403,8 @@ export async function investigate(
   // dumps. Optional; never breaks the investigation on failure.
   let analysis: LogAnalysis | null = null;
   const logEvIds: string[] = [];
+  const directLogEvIds: string[] = [];
+  const ambientLogEvIds: string[] = [];
   let logsCollected = false;
   let logsCompatibilityError: string | undefined;
 
@@ -379,8 +432,23 @@ export async function investigate(
         analysis = await deps.logs.analyzeErrors({ service: input.service, from });
         logsCollected = true;
 
+        // Seed relevance terms: used to classify each signature as 'direct' or
+        // 'ambient' so unrelated high-volume errors don't dominate (HOR-156).
+        const seedBase = top.filePath.split('/').pop() ?? '';
+        const logSeedTerms = [
+          ...new Set([...tokenize(hint), ...tokenize(top.name), ...tokenize(seedBase)]),
+        ];
+
         for (const s of analysis.signatures.slice(0, 15)) {
+          const { relevanceClass, relevanceReason } = classifyLogRelevance(
+            s.key,
+            s.services,
+            logSeedTerms,
+            input.service,
+          );
+
           const tags: string[] = [];
+          if (relevanceClass === 'ambient') tags.push('ambient');
           if (s.isNew) tags.push('NEW');
           else if (s.ratio !== undefined && Number.isFinite(s.ratio) && s.ratio >= 1.5) {
             tags.push(`spike x${s.ratio.toFixed(1)}`);
@@ -402,16 +470,32 @@ export async function investigate(
               isNew: s.isNew ?? false,
               ratio: s.ratio ?? null,
               sampleMessage: s.sampleMessage ?? null,
+              relevanceClass,
+              relevanceReason,
             },
             {},
             s.lastSeen || undefined,
-            s.isNew ? 0.95 : s.ratio !== undefined && s.ratio >= 1.5 ? 0.9 : 0.8,
+            // Direct evidence: full recurrence weight. Ambient: demoted baseline.
+            // This prevents unrelated high-volume errors from inflating confidence.
+            relevanceClass === 'direct'
+              ? s.isNew
+                ? 0.95
+                : s.ratio !== undefined && s.ratio >= 1.5
+                  ? 0.90
+                  : 0.85
+              : s.isNew
+                ? 0.70
+                : s.ratio !== undefined && s.ratio >= 1.5
+                  ? 0.55
+                  : 0.35,
           );
           // Normalize recurrence signals to top-level Evidence fields so the
           // Cause Scoring Engine can read them without inspecting the payload.
           if (s.isNew) ev.isNew = s.isNew;
           if (typeof s.ratio === 'number' && Number.isFinite(s.ratio)) ev.ratio = s.ratio;
           logEvIds.push(ev.id);
+          if (relevanceClass === 'direct') directLogEvIds.push(ev.id);
+          else ambientLogEvIds.push(ev.id);
         }
       }
     } catch {
@@ -709,25 +793,53 @@ export async function investigate(
       analysis.affectedServices.length > 0
         ? analysis.affectedServices.join(', ')
         : (input.service ?? 'the service');
+
+    const hasDirectEvidence = directLogEvIds.length > 0;
+    const ambientCount = ambientLogEvIds.length;
+
+    // Summary finding — label when evidence is entirely ambient so users know
+    // these errors have no established link to the seed.
+    const ambientSuffix =
+      !hasDirectEvidence && ambientCount > 0
+        ? ` (${ambientCount} ambient — no direct link to seed established)`
+        : ambientCount > 0
+          ? ` (${directLogEvIds.length} direct, ${ambientCount} ambient)`
+          : '';
+
     findings.push({
       kind: 'observation',
-      title: `${analysis.signatures.length} error signature(s) (${newN} new, ${analysis.totalErrors} error(s)) — affected: ${affected}`,
-      confidence: 0.65,
+      title: `${analysis.signatures.length} error signature(s) (${newN} new, ${analysis.totalErrors} error(s)) — affected: ${affected}${ambientSuffix}`,
+      confidence: hasDirectEvidence ? 0.65 : 0.40,
       evidenceIds: logEvIds,
     });
 
-    const top = analysis.signatures[0];
-    if (top !== undefined) {
-      const flag = top.isNew
+    // Top-signature finding: prefer the top direct hit; fall back to top overall
+    // with an explicit "ambient" label so the user knows it's unlinked.
+    const topDirectId = directLogEvIds[0];
+    const topSig = analysis.signatures[0];
+    if (topDirectId !== undefined && topSig !== undefined) {
+      const flag = topSig.isNew
         ? ' (NEW)'
-        : top.ratio !== undefined && Number.isFinite(top.ratio) && top.ratio >= 1.5
-          ? ` (spike x${top.ratio.toFixed(1)})`
+        : topSig.ratio !== undefined && Number.isFinite(topSig.ratio) && topSig.ratio >= 1.5
+          ? ` (spike x${topSig.ratio.toFixed(1)})`
           : '';
       findings.push({
         kind: 'anomaly',
-        title: `Top error signature: ${top.key} — ${top.count}x${flag}, last ${shortTs(top.lastSeen)}`,
+        title: `Top error signature: ${topSig.key} — ${topSig.count}x${flag}, last ${shortTs(topSig.lastSeen)}`,
         confidence: 0.7,
-        evidenceIds: logEvIds.slice(0, 1),
+        evidenceIds: [topDirectId],
+      });
+    } else if (topSig !== undefined && ambientCount > 0) {
+      const flag = topSig.isNew
+        ? ' (NEW)'
+        : topSig.ratio !== undefined && Number.isFinite(topSig.ratio) && topSig.ratio >= 1.5
+          ? ` (spike x${topSig.ratio.toFixed(1)})`
+          : '';
+      findings.push({
+        kind: 'observation',
+        title: `Top error signature (ambient): ${topSig.key} — ${topSig.count}x${flag} — no structural link to seed`,
+        confidence: 0.35,
+        evidenceIds: ambientLogEvIds.slice(0, 1),
       });
     }
   }
@@ -930,7 +1042,12 @@ export async function investigate(
   });
 
   // g. confidence
-  const evidenceConfidence = computeWeightedEvidenceConfidence(evidence);
+  // Pass ambient log IDs so unlinked runtime noise is weighted like structural
+  // evidence rather than live confirmed signal (HOR-158).
+  const evidenceConfidence = computeWeightedEvidenceConfidence(
+    evidence,
+    ambientLogEvIds.length > 0 ? new Set(ambientLogEvIds) : undefined,
+  );
   const seedResolved = seeds.length > 0 ? 1 : 0;
   const confidence = clamp01(0.5 * evidenceConfidence + 0.5 * seedResolved);
 

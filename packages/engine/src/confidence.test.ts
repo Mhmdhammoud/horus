@@ -136,3 +136,78 @@ describe('computeWeightedEvidenceConfidence', () => {
     expect(result).toBeCloseTo(5.0 / 6, 5);
   });
 });
+
+// ---------------------------------------------------------------------------
+// computeWeightedEvidenceConfidence — ambient evidence cap (HOR-158)
+// ---------------------------------------------------------------------------
+
+describe('computeWeightedEvidenceConfidence — ambient evidence', () => {
+  it('ambient runtime evidence is capped at 0.6 (structural level), not 2.0', () => {
+    const items = Array.from({ length: 10 }, () => makeEv('log', 'logs', 1.0));
+    const ambientIds = new Set(items.map((e) => e.id));
+
+    const withAmbient = computeWeightedEvidenceConfidence(items, ambientIds);
+    const withDirect = computeWeightedEvidenceConfidence(items);
+
+    // Ambient: 10 × 0.5 × 1.0 = 5.0 per source, capped at 0.6 → 0.6/6 = 0.1
+    expect(withAmbient).toBeCloseTo(0.6 / 6, 5);
+    // Direct: same items capped at 2.0 → 2.0/6 ≈ 0.333
+    expect(withDirect).toBeCloseTo(2.0 / 6, 5);
+    // Ambient must be significantly lower than direct
+    expect(withAmbient).toBeLessThan(withDirect);
+  });
+
+  it('ambient evidence from same source does not exceed structural cap (0.6)', () => {
+    const items = Array.from({ length: 15 }, () => makeEv('log', 'logs', 0.35));
+    const ambientIds = new Set(items.map((e) => e.id));
+    const result = computeWeightedEvidenceConfidence(items, ambientIds);
+    // 15 × 0.5 × 0.35 = 2.625, capped at 0.6 → 0.6/6 = 0.1
+    expect(result).toBeCloseTo(0.6 / 6, 5);
+  });
+
+  it('mix of direct and ambient from same source: direct retains full runtime weight', () => {
+    const directItem = makeEv('log', 'logs', 0.90);
+    const ambientItems = Array.from({ length: 10 }, () => makeEv('log', 'logs', 0.35));
+    const ambientIds = new Set(ambientItems.map((e) => e.id));
+
+    const result = computeWeightedEvidenceConfidence(
+      [directItem, ...ambientItems],
+      ambientIds,
+    );
+
+    // direct: 1.5 × 0.90 = 1.35 (runtime bucket, capped at 2.0)
+    // ambient: 10 × 0.5 × 0.35 = 1.75, capped at 0.6 (ambient bucket)
+    // total = (1.35 + 0.6) / 6 = 1.95/6 ≈ 0.325
+    expect(result).toBeCloseTo(1.95 / 6, 4);
+  });
+
+  it('all-ambient evidence barely raises confidence above structural-only baseline', () => {
+    const structural = [makeEv('symbol', 'code', 1.0), makeEv('flow', 'code', 1.0)];
+    // Structural cap: min(0.5+0.5, 0.6) = 0.6 → 0.6/6 = 0.1
+    const baselineConf = computeWeightedEvidenceConfidence(structural);
+
+    const ambientLogs = Array.from({ length: 15 }, () => makeEv('log', 'logs', 0.35));
+    const ambientIds = new Set(ambientLogs.map((e) => e.id));
+    const withAmbientConf = computeWeightedEvidenceConfidence(
+      [...structural, ...ambientLogs],
+      ambientIds,
+    );
+
+    // Ambient adds at most 0.6 more to the numerator → (0.6 + 0.6) / 6 = 0.2
+    expect(withAmbientConf).toBeCloseTo(1.2 / 6, 4);
+    // The increase is modest: bounded by MAX_AMBIENT_RUNTIME_CONTRIBUTION
+    expect(withAmbientConf - baselineConf).toBeLessThanOrEqual(0.6 / 6 + 0.001);
+  });
+
+  it('ambient evidence IDs must be an exact set match — non-ambient items from same source keep full weight', () => {
+    const direct = makeEv('log', 'logs', 1.0);
+    const ambient = makeEv('log', 'logs', 0.35);
+    const ambientIds = new Set([ambient.id]); // only ambient.id is marked
+
+    const result = computeWeightedEvidenceConfidence([direct, ambient], ambientIds);
+    // direct: 1.5 × 1.0 = 1.5 in runtime bucket
+    // ambient: 0.5 × 0.35 = 0.175 in ambient bucket, capped at 0.6
+    // total: (1.5 + 0.175) / 6 = 1.675/6 ≈ 0.279
+    expect(result).toBeCloseTo(1.675 / 6, 4);
+  });
+});

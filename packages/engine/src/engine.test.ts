@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { queueFindingConfidence, logWindowFrom, looksDiffable } from './engine.js';
+import { queueFindingConfidence, logWindowFrom, looksDiffable, classifyLogRelevance } from './engine.js';
 
 // ---------------------------------------------------------------------------
 // logWindowFrom — duration parsing for --since (HOR-86)
@@ -133,5 +133,42 @@ describe('queueFindingConfidence', () => {
 
   it('returns 0.85 when only failures are present', () => {
     expect(queueFindingConfidence({ starvedCount: 0, backloggedCount: 0, failingCount: 1 })).toBe(0.85);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// classifyLogRelevance — seed-based log relevance classification (HOR-156)
+// ---------------------------------------------------------------------------
+
+describe('classifyLogRelevance', () => {
+  it('classifies as direct when signature key matches seed term', () => {
+    const r = classifyLogRelevance('E_SALE_TIMEOUT', [], ['sale', 'link'], undefined);
+    expect(r.relevanceClass).toBe('direct');
+  });
+
+  it('classifies as direct when a service matches seed term', () => {
+    const r = classifyLogRelevance('ERR_UNKNOWN', ['sales-service'], ['sale'], undefined);
+    expect(r.relevanceClass).toBe('direct');
+  });
+
+  it('classifies as ambient when neither key nor services match', () => {
+    const r = classifyLogRelevance('E_FULFILLMENT_SYNC_ERROR', ['scheduler-service'], ['sale', 'link'], undefined);
+    expect(r.relevanceClass).toBe('ambient');
+  });
+
+  it('classifies as direct when service matches inputService', () => {
+    const r = classifyLogRelevance('ERR_GENERIC', ['api-prod'], [], 'api-prod');
+    expect(r.relevanceClass).toBe('direct');
+  });
+
+  it('classifies as direct when seedTerms is empty (no seed context)', () => {
+    const r = classifyLogRelevance('ANY_ERROR', [], [], undefined);
+    expect(r.relevanceClass).toBe('direct');
+  });
+
+  it('includes a relevanceReason string in all cases', () => {
+    const r = classifyLogRelevance('E_SALE_TIMEOUT', [], ['sale'], undefined);
+    expect(typeof r.relevanceReason).toBe('string');
+    expect(r.relevanceReason.length).toBeGreaterThan(0);
   });
 });

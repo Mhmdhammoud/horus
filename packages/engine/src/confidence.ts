@@ -27,6 +27,11 @@ const MAX_RUNTIME_CONTRIBUTION = 2.0;
 // verbose code graph cannot saturate confidence the way runtime anomalies can.
 const MAX_STRUCTURAL_CONTRIBUTION = 0.6;
 
+// Ambient runtime evidence (runtime kind but not linked to the seed — see HOR-156)
+// should not masquerade as confirmed signal. Cap it at the same level as structural
+// so unrelated high-volume error noise cannot inflate confidence (HOR-158).
+const MAX_AMBIENT_RUNTIME_CONTRIBUTION = 0.6;
+
 // Normalize: 3 independent high-quality runtime sources at max contribution → 1.0.
 const NORMALIZATION = 6;
 
@@ -48,15 +53,33 @@ function clamp01(n: number): number {
  *
  * Separate caps ensure that a verbose code graph (many symbol/flow records)
  * cannot contribute as much as a runtime provider emitting live anomalies.
+ *
+ * @param ambientEvidenceIds - Optional set of evidence IDs classified as ambient
+ *   (runtime kind but not linked to the seed symbol via seed terms or service
+ *   match). Ambient evidence is weighted at 0.5 (like structural) and capped at
+ *   MAX_AMBIENT_RUNTIME_CONTRIBUTION (0.6) per source. This prevents unrelated
+ *   high-volume errors from inflating confidence as if they were confirmed signal
+ *   (HOR-158).
  */
-export function computeWeightedEvidenceConfidence(evidence: Evidence[]): number {
+export function computeWeightedEvidenceConfidence(
+  evidence: Evidence[],
+  ambientEvidenceIds?: Set<string>,
+): number {
   const runtimeBySource = new Map<string, number>();
+  const ambientBySource = new Map<string, number>();
   const structuralBySource = new Map<string, number>();
 
   for (const e of evidence) {
     const r = clamp01(e.relevance);
     if (RUNTIME_KINDS.has(e.kind)) {
-      runtimeBySource.set(e.source, (runtimeBySource.get(e.source) ?? 0) + 1.5 * r);
+      if (ambientEvidenceIds?.has(e.id)) {
+        // Ambient runtime evidence: no structural link to the seed established.
+        // Weight and cap it like structural evidence so noise doesn't masquerade
+        // as confirmed signal.
+        ambientBySource.set(e.source, (ambientBySource.get(e.source) ?? 0) + 0.5 * r);
+      } else {
+        runtimeBySource.set(e.source, (runtimeBySource.get(e.source) ?? 0) + 1.5 * r);
+      }
     } else {
       structuralBySource.set(e.source, (structuralBySource.get(e.source) ?? 0) + 0.5 * r);
     }
@@ -66,10 +89,14 @@ export function computeWeightedEvidenceConfidence(evidence: Evidence[]): number 
     (acc, w) => acc + Math.min(w, MAX_RUNTIME_CONTRIBUTION),
     0,
   );
+  const ambientSum = [...ambientBySource.values()].reduce(
+    (acc, w) => acc + Math.min(w, MAX_AMBIENT_RUNTIME_CONTRIBUTION),
+    0,
+  );
   const structuralSum = [...structuralBySource.values()].reduce(
     (acc, w) => acc + Math.min(w, MAX_STRUCTURAL_CONTRIBUTION),
     0,
   );
 
-  return clamp01((runtimeSum + structuralSum) / NORMALIZATION);
+  return clamp01((runtimeSum + ambientSum + structuralSum) / NORMALIZATION);
 }
