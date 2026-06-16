@@ -17,45 +17,35 @@ import { createServer } from 'node:net';
 
 const exec = promisify(execFile);
 
-/**
- * Preferred binary name, with `axon` as legacy fallback for users who have not yet
- * reinstalled the source-intelligence backend under the new Horus-owned name.
- */
-const SOURCE_BINARIES = ['horus-source', 'axon'] as const;
+const SOURCE_BINARY = 'horus-source';
 
-/** Resolve the first available source-intelligence binary, or null if neither is on PATH. */
-async function resolveSourceBin(): Promise<string | null> {
-  for (const bin of SOURCE_BINARIES) {
-    try {
-      await exec(bin, ['--version'], { timeout: 5000 });
-      return bin;
-    } catch {
-      // try next candidate
-    }
+/** Resolve the source-intelligence binary, or null if it is not on PATH. */
+export async function resolveSourceBin(): Promise<string | null> {
+  try {
+    await exec(SOURCE_BINARY, ['--version'], { timeout: 5000 });
+    return SOURCE_BINARY;
+  } catch {
+    return null;
   }
-  return null;
 }
 
-/** Is the source-intelligence backend binary (`horus-source` or legacy `axon`) on PATH? */
+/** Is the `horus-source` binary on PATH? */
 export async function axonAvailable(): Promise<boolean> {
   return (await resolveSourceBin()) !== null;
 }
 
 /**
- * Return the installed source-intelligence backend version string (e.g. "1.0.1"),
- * or null if no binary is on PATH or the version cannot be parsed.
+ * Return the installed `horus-source` version string (e.g. "1.0.1"),
+ * or null if the binary is not on PATH or the version cannot be parsed.
  */
 export async function getAxonVersion(): Promise<string | null> {
-  for (const bin of SOURCE_BINARIES) {
-    try {
-      const { stdout } = await exec(bin, ['--version'], { timeout: 5000 });
-      const match = stdout.trim().match(/(\d+\.\d+\.\d+)/);
-      if (match?.[1]) return match[1];
-    } catch {
-      // try next candidate
-    }
+  try {
+    const { stdout } = await exec(SOURCE_BINARY, ['--version'], { timeout: 5000 });
+    const match = stdout.trim().match(/(\d+\.\d+\.\d+)/);
+    return match?.[1] ?? null;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 /** Has the repo been analyzed? Checks `.horus/source/` first, falls back to legacy `.axon/`. */
@@ -63,10 +53,10 @@ export function isAnalyzed(root: string): boolean {
   return existsSync(join(root, '.horus', 'source')) || existsSync(join(root, '.axon'));
 }
 
-/** Run `horus-source analyze .` (or legacy `axon analyze .`) in the repo. Throws on failure. */
+/** Run `horus-source analyze .` in the repo. Throws on failure. */
 export async function analyzeRepo(root: string): Promise<void> {
   const bin = await resolveSourceBin();
-  if (!bin) throw new Error('Source-intelligence backend not found. Install horus-source.');
+  if (!bin) throw new Error('horus-source not found on PATH. Install it: pip install horus-source');
   await exec(bin, ['analyze', '.'], {
     cwd: root,
     timeout: 900_000,
@@ -140,24 +130,25 @@ export function readSpawnedHost(root: string): SpawnedHostRecord | null {
 }
 
 /**
- * Spawn `horus-source host --port <port>` (or legacy `axon host --port <port>`) as a detached
- * background source-intelligence host in `root`, logging to `.horus/source-host.log`. Records
- * the PID in `.horus/spawned-host.json` for safe teardown. Returns immediately — poll `waitForHost`.
+ * Spawn `horus-source host --port <port>` as a detached background host in `root`,
+ * logging to `.horus/source-host.log`. Records the PID in `.horus/spawned-host.json`
+ * for safe teardown. Returns immediately — poll `waitForHost`.
  */
-export function startHost(root: string, port: number, bin = 'horus-source'): void {
+export function startHost(root: string, port: number): void {
   mkdirSync(join(root, '.horus'), { recursive: true });
   const logPath = join(root, '.horus', 'source-host.log');
   const fd = openSync(logPath, 'a');
-  const child = spawn(bin, ['host', '--port', String(port)], {
+  const child = spawn(SOURCE_BINARY, ['host', '--port', String(port)], {
     cwd: root,
     detached: true,
     stdio: ['ignore', fd, fd],
   });
 
-  // If the preferred binary is missing, retry with the legacy `axon` binary.
   child.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'ENOENT' && bin === 'horus-source') {
-      startHost(root, port, 'axon');
+    if (err.code === 'ENOENT') {
+      process.stderr.write(
+        '\nhorus-source not found on PATH. Install it: pip install horus-source\n',
+      );
     }
   });
 

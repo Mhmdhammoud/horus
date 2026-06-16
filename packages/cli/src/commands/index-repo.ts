@@ -1,12 +1,12 @@
 /**
  * `horus index` — build the queue map for a project (HOR-6), and (HOR-37) make it
- * the one-command setup: auto-detect the repo, ensure Axon is hosting it, stitch the
- * queue boundaries, and (for new repos) write/register a `.horus/config.json`.
+ * the one-command setup: auto-detect the repo, ensure horus-source is hosting it,
+ * stitch the queue boundaries, and (for new repos) write/register a `.horus/config.json`.
  *
- * Host model: Axon runs at most ONE host per repo (single-writer Kùzu lock), but
- * different repos run their own hosts on their own ports concurrently. So `horus
+ * Host model: horus-source runs at most ONE host per repo (single-writer Kùzu lock),
+ * but different repos run their own hosts on their own ports concurrently. So `horus
  * index` NEVER starts a second host for a repo that already has one — it reuses it
- * (from the resolved config, or from Axon's own `.axon/host.json`).
+ * (from the resolved config, or from `.horus/source/host.json`).
  */
 
 import { basename, resolve } from 'node:path';
@@ -119,7 +119,7 @@ export async function runIndex(opts: {
     const label = configuredProject ?? name;
 
     // Resolve a healthy host WITHOUT ever double-starting one for this repo.
-    // Candidates in priority: the configured host, then Axon's own host.json.
+    // Candidates in priority: the configured host, then the host recorded in host.json.
     let hostUrl: string | undefined;
     let spawned = false;
     for (const candidate of [configuredHost, readSourceHostUrl(root) ?? undefined]) {
@@ -136,7 +136,7 @@ export async function runIndex(opts: {
       // No host running for this repo — set one up.
       console.log(pc.bold(`Indexing ${label}`) + pc.dim(`  (${root})`));
       if (!(await sourceAvailable())) {
-        console.error(pc.red('Source-intelligence backend not found on PATH. Install it (see `horus setup`) and retry.'));
+        console.error(pc.red('horus-source not found on PATH. Install it: pip install horus-source'));
         return 1;
       }
       if (!isAnalyzed(root)) {

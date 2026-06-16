@@ -30,16 +30,21 @@ export type {
   SourceHealth,
 } from './types.js';
 
-import { axonAvailable, getAxonVersion, readAxonHostUrl } from './lifecycle.js';
+import { axonAvailable, getAxonVersion, readAxonHostUrl, resolveSourceBin } from './lifecycle.js';
 
-/** Is the source-intelligence backend binary on PATH? */
+/** Is `horus-source` on PATH? */
 export function sourceAvailable(): Promise<boolean> {
   return axonAvailable();
 }
 
-/** Return the installed source-intelligence backend version, or null. */
+/** Return the installed `horus-source` version, or null if not found. */
 export function getSourceVersion(): Promise<string | null> {
   return getAxonVersion();
+}
+
+/** Resolve the active source-intelligence binary name, or null if not installed. */
+export function getActiveSourceBin(): Promise<string | null> {
+  return resolveSourceBin();
 }
 
 /**
