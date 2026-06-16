@@ -10,3 +10,4 @@ coverage/
 *.log
 .homebrew-archives/
 apps/horus/README.md
+tmp/
