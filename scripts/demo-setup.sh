@@ -146,7 +146,7 @@ fi
 printf '\n  %s\n\n' "$(bold 'Source-intelligence host')"
 
 SOURCE_OK=0
-if command -v axon &>/dev/null; then
+if command -v horus-source &>/dev/null || command -v axon &>/dev/null; then
   pass "source-intelligence backend found"
   # Check if a source-intelligence host is reachable on the default port
   if curl -sf http://127.0.0.1:8420/health >/dev/null 2>&1; then
@@ -158,8 +158,8 @@ if command -v axon &>/dev/null; then
   fi
 else
   warn "source-intelligence backend not installed (source features will be unavailable)"
-  hint "Install: uv tool install axoniq  (Python 3.11+ required)"
-  hint "Or: pip install axoniq"
+  hint "Install (Python 3.11+ required):"
+  hint "  pip install git+https://github.com/Mhmdhammoud/axon"
 fi
 
 # ── 5. Readiness summary ────────────────────────────────────────────────────────

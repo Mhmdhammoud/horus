@@ -18,7 +18,6 @@
 #   - "`axon` not found"     same, backtick variant
 #   - ".axon/"               on-disk directory created by the axon binary
 #   - "--axon"               the --axon <url> CLI flag (config key cannot be renamed yet)
-#   - "axoniq"               PyPI package name (upstream; Horus cannot rename it)
 #   - "axon --version"       binary version probe
 
 set -euo pipefail
@@ -74,11 +73,6 @@ while IFS= read -r match; do
     continue
   fi
 
-  # PyPI package name
-  if echo "$text" | grep -qiE 'axoniq'; then
-    continue
-  fi
-
   violations=$((violations + 1))
   violation_lines+=("  $file:$linenum: $text")
 done < <(
@@ -123,11 +117,6 @@ while IFS= read -r match; do
   if echo "$text" | grep -qiE '\baxon\.(hostUrl|version|port|pinnedVersion)\b|\brepo\.axon\b'; then
     continue
   fi
-  # PyPI package name
-  if echo "$text" | grep -qiE 'axoniq'; then
-    continue
-  fi
-
   violations=$((violations + 1))
   violation_lines+=("  $file:$linenum: $text")
 done < <(
@@ -153,5 +142,4 @@ echo "  axon host / axon analyze / axon serve  — CLI binary commands"
 echo "  'axon' / \`axon\` not found              — binary name in error messages"
 echo "  --axon <url>                            — config flag (cannot rename yet)"
 echo "  .axon/ directory                        — on-disk artifact of the axon binary"
-echo "  axoniq                                  — PyPI package name (upstream)"
 exit 1
