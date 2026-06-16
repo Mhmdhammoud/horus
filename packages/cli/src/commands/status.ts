@@ -14,6 +14,8 @@ import {
   codeForEnv,
   logsForEnv,
   metricsForEnv,
+  mongoForEnv,
+  type StateProvider,
 } from '@horus/connectors';
 import { checkDatabase } from '@horus/db';
 
@@ -31,7 +33,12 @@ function mark(ok: boolean | 'pending'): string {
 }
 
 /** Print health status for one resolved environment. Returns true when healthy. */
-async function checkEnv(renv: ResolvedEnvironment): Promise<boolean> {
+async function checkEnv(
+  renv: ResolvedEnvironment,
+  deps?: {
+    mongoFactory?: (renv: ResolvedEnvironment) => StateProvider | null;
+  },
+): Promise<boolean> {
   const header =
     `  ${pc.bold(renv.project)} / ${pc.bold(renv.env)}` +
     (renv.readOnly ? pc.dim('  (read-only)') : '');
@@ -41,7 +48,9 @@ async function checkEnv(renv: ResolvedEnvironment): Promise<boolean> {
 
   // Axon — code intelligence, belongs to the project's repositories.
   if (renv.repositories.length === 0) {
-    console.log(`    ${mark('pending')} ${pc.bold('Source')}          ${pc.dim('no repositories configured')}`);
+    console.log(
+      `    ${mark('pending')} ${pc.bold('Source')}          ${pc.dim('no repositories configured')}`,
+    );
   }
   for (const repo of renv.repositories) {
     const axonHostUrl = repo.sourceHostUrl ?? repo.axonHostUrl;
@@ -69,7 +78,9 @@ async function checkEnv(renv: ResolvedEnvironment): Promise<boolean> {
     const axonDetail = health.ok
       ? `${repo.name} · responded ${health.status} · ${versionPart} at ${axonHostUrl}`
       : `${repo.name} · unreachable at ${axonHostUrl}`;
-    console.log(`    ${mark(health.ok)} ${pc.bold('Source')}          ${pc.dim(axonDetail)}`);
+    console.log(
+      `    ${mark(health.ok)} ${pc.bold('Source')}          ${pc.dim(axonDetail)}`,
+    );
     if (!health.ok) allOk = false;
   }
 
@@ -79,14 +90,18 @@ async function checkEnv(renv: ResolvedEnvironment): Promise<boolean> {
     const logsProvider = logsForEnv(renv);
     if (logsProvider) {
       const h = await logsProvider.health();
-      const idxDisplay = esCfg.indexPatterns ? esCfg.indexPatterns.join(', ') : esCfg.indexPattern;
+      const idxDisplay = esCfg.indexPatterns
+        ? esCfg.indexPatterns.join(', ')
+        : esCfg.indexPattern;
       const detail = h.ok
         ? `reachable · index ${idxDisplay}`
         : `unreachable · index ${idxDisplay}`;
       console.log(`    ${mark(h.ok)} ${pc.bold('Elasticsearch')}   ${pc.dim(detail)}`);
       if (!h.ok) allOk = false;
     } else {
-      const idxDisplay = esCfg.indexPatterns ? esCfg.indexPatterns.join(', ') : esCfg.indexPattern;
+      const idxDisplay = esCfg.indexPatterns
+        ? esCfg.indexPatterns.join(', ')
+        : esCfg.indexPattern;
       console.log(
         `    ${mark(false)} ${pc.bold('Elasticsearch')}   ${pc.dim(`configured (index ${idxDisplay}) but ES_URL not set`)}`,
       );
@@ -124,22 +139,55 @@ async function checkEnv(renv: ResolvedEnvironment): Promise<boolean> {
   // MongoDB
   const mongoCfg = renv.connectors.mongodb;
   if (mongoCfg) {
-    const collCount = mongoCfg.collections.length;
-    const detail =
-      `configured: db ${mongoCfg.database}, ${collCount} collection(s)` +
-      pc.dim(' (provider: HOR-33)');
-    console.log(`    ${mark('pending')} ${pc.bold('MongoDB')}         ${pc.dim(detail)}`);
+    const mongo = (deps?.mongoFactory ?? mongoForEnv)(renv);
+    if (mongo) {
+      try {
+        const h = await mongo.health();
+        if (!h.ok) {
+          console.log(
+            `    ${mark(false)} ${pc.bold('MongoDB')}        ${pc.dim(`unreachable · db ${mongoCfg.database}`)}`,
+          );
+          allOk = false;
+        } else {
+          const allowlist = mongoCfg.collections;
+          const allowlistPart =
+            allowlist.length === 0 ? 'allowlist: all' : `allowlist: ${allowlist.length}`;
+          const discovered = mongo.listCollections
+            ? await mongo.listCollections()
+            : undefined;
+          const discoveredPart = discovered
+            ? ` · discovered: ${discovered.length} collection(s)`
+            : '';
+          const detail = `reachable · db ${mongoCfg.database} · ${allowlistPart}${discoveredPart}`;
+          console.log(
+            `    ${mark(true)} ${pc.bold('MongoDB')}         ${pc.dim(detail)}`,
+          );
+        }
+      } finally {
+        await mongo.close();
+      }
+    } else {
+      console.log(
+        `    ${mark(false)} ${pc.bold('MongoDB')}        ${pc.dim(`configured (db ${mongoCfg.database}) but Mongo URL not set`)}`,
+      );
+    }
   } else {
-    console.log(`    ${mark('pending')} ${pc.bold('MongoDB')}         ${pc.dim('not configured')}`);
+    console.log(
+      `    ${mark('pending')} ${pc.bold('MongoDB')}         ${pc.dim('not configured')}`,
+    );
   }
 
   // Redis
   const redisCfg = renv.connectors.redis;
   if (redisCfg?.url) {
     const safeUrl = redactRedisUrl(redisCfg.url);
-    console.log(`    ${mark('pending')} ${pc.bold('Redis')}           ${pc.dim(`configured · ${safeUrl}`)}`);
+    console.log(
+      `    ${mark('pending')} ${pc.bold('Redis')}           ${pc.dim(`configured · ${safeUrl}`)}`,
+    );
   } else {
-    console.log(`    ${mark('pending')} ${pc.bold('Redis')}           ${pc.dim('not configured')}`);
+    console.log(
+      `    ${mark('pending')} ${pc.bold('Redis')}           ${pc.dim('not configured')}`,
+    );
   }
 
   console.log('');
@@ -164,10 +212,18 @@ function redactRedisUrl(raw: string): string {
 
 export async function runStatus(
   configPath?: string,
-  opts?: { name?: string; project?: string; env?: string },
+  opts?: {
+    name?: string;
+    project?: string;
+    env?: string;
+    /** Inject a MongoDB provider factory for tests. */
+    _mongoFactory?: (renv: ResolvedEnvironment) => StateProvider | null;
+  },
 ): Promise<number> {
   console.log(pc.bold(`\nHorus ${HORUS_VERSION}`));
-  console.log(pc.dim(`pinned backend: ${PINNED_SOURCE_VERSION} · transport: HTTP/MCP only\n`));
+  console.log(
+    pc.dim(`pinned backend: ${PINNED_SOURCE_VERSION} · transport: HTTP/MCP only\n`),
+  );
 
   let config: HorusConfig | undefined;
   const checks: Check[] = [];
@@ -197,8 +253,12 @@ export async function runStatus(
   // --- Postgres (always shown, not project-scoped) ---
   const dbUrl = config.database.url;
   const h = await checkDatabase(dbUrl);
-  console.log(`  ${mark(h.reachable)} ${pc.bold('Postgres')}  ${pc.dim(h.reachableDetail)}`);
-  console.log(`  ${mark(h.schemaReady)} ${pc.bold('Schema')}    ${pc.dim(h.schemaDetail)}`);
+  console.log(
+    `  ${mark(h.reachable)} ${pc.bold('Postgres')}  ${pc.dim(h.reachableDetail)}`,
+  );
+  console.log(
+    `  ${mark(h.schemaReady)} ${pc.bold('Schema')}    ${pc.dim(h.schemaDetail)}`,
+  );
   console.log('');
 
   // --- Project / environment matrix ---
@@ -217,7 +277,7 @@ export async function runStatus(
       console.error(pc.red((err as Error).message));
       return 1;
     }
-    const ok = await checkEnv(renv);
+    const ok = await checkEnv(renv, { mongoFactory: opts?._mongoFactory });
     return ok ? 0 : 1;
   }
 
@@ -232,7 +292,7 @@ export async function runStatus(
       allHealthy = false;
       continue;
     }
-    const ok = await checkEnv(renv);
+    const ok = await checkEnv(renv, { mongoFactory: opts?._mongoFactory });
     if (!ok) allHealthy = false;
   }
 

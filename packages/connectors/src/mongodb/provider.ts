@@ -23,6 +23,8 @@ import {
 export interface StateProvider extends Provider {
   analyzeState(opts?: { staleHours?: number }): Promise<StateAnalysis>;
   toEvidence(analysis: StateAnalysis): Evidence[];
+  /** List collections in the configured database (lightweight, no analysis). */
+  listCollections?(): Promise<string[]>;
   /** Close the underlying connection so the process can exit. */
   close(): Promise<void>;
 }
@@ -92,7 +94,13 @@ export class MongoStateProvider implements StateProvider {
       }
     }
 
-    return { database: this.opts.database, staleHours, legacyHours, collections, autoDiscovered };
+    return {
+      database: this.opts.database,
+      staleHours,
+      legacyHours,
+      collections,
+      autoDiscovered,
+    };
   }
 
   toEvidence(analysis: StateAnalysis): Evidence[] {
@@ -101,6 +109,10 @@ export class MongoStateProvider implements StateProvider {
 
   async health(): Promise<HealthStatus> {
     return this.client.health();
+  }
+
+  async listCollections(): Promise<string[]> {
+    return this.client.listCollections();
   }
 
   async close(): Promise<void> {
