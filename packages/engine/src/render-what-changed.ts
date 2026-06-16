@@ -9,6 +9,11 @@ export function renderWhatChanged(r: WhatChangedReport): string {
 
   lines.push('# What changed');
   lines.push('');
+  // Show the effective window so users can understand why counts may differ from horus timeline
+  // (which uses all history when --since is not provided).
+  const sinceLabel = r.window.since ?? '(all history)';
+  const untilLabel = r.window.until ?? 'HEAD';
+  lines.push('Range: ' + sinceLabel + ' → ' + untilLabel);
   lines.push(r.summary);
   lines.push('');
   lines.push('> ' + r.note);
@@ -47,6 +52,11 @@ export function renderWhatChanged(r: WhatChangedReport): string {
     lines.push(
       '## Affected flows: ' + r.changeImpact.affectedFlows.length + ' execution flow(s) affected',
     );
+    if (r.changeImpact.affectedFlows.length > 0) {
+      for (const f of r.changeImpact.affectedFlows) {
+        lines.push('  - ' + f.flowName);
+      }
+    }
   }
 
   return lines.join('\n');

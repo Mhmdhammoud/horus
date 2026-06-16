@@ -56,13 +56,19 @@ export async function reconstructChangeTimeline(
     }
   }
 
+  // Strip trailing period from impact.summary before embedding — we add our own.
+  const impactPart =
+    impact !== null
+      ? '; ' + (impact.summary.endsWith('.') ? impact.summary.slice(0, -1) : impact.summary)
+      : '';
+
   const summary =
     commits.length +
     ' commit(s)' +
     (service !== undefined ? ' touching ' + service : '') +
     ' in window' +
     (input.since !== undefined ? ' since ' + input.since : '') +
-    (impact !== null ? '; ' + impact.summary : '') +
+    impactPart +
     '.';
 
   const note =

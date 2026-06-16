@@ -14,6 +14,11 @@ export function renderChangeTimeline(t: ChangeTimeline): string {
   lines.push('');
 
   lines.push('## Summary');
+  // Show the effective window so users understand why counts may differ from horus what-changed
+  // (which defaults to 7 days) or horus changes (which takes explicit refs).
+  const sinceLabel = t.window.since ?? '(all history)';
+  const untilLabel = t.window.until ?? 'HEAD';
+  lines.push('Range: ' + sinceLabel + ' → ' + untilLabel);
   lines.push(t.summary);
   lines.push('');
 
@@ -47,12 +52,14 @@ export function renderChangeTimeline(t: ChangeTimeline): string {
   if (t.changeImpact !== null) {
     lines.push('');
     lines.push('## Change impact');
-    lines.push(
-      t.changeImpact.summary +
-        ' Affected flows: ' +
-        t.changeImpact.affectedFlows.length +
-        '.',
-    );
+    // Show the exact git refs so users can cross-reference with horus changes <base> <compare>.
+    lines.push('Git range: ' + t.changeImpact.base + '..' + t.changeImpact.compare);
+    lines.push(t.changeImpact.summary);
+    if (t.changeImpact.affectedFlows.length > 0) {
+      for (const f of t.changeImpact.affectedFlows) {
+        lines.push('  - ' + f.flowName);
+      }
+    }
   }
 
   return lines.join('\n');
