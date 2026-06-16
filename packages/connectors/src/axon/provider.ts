@@ -78,13 +78,56 @@ export class AxonCodeProvider implements CodeProvider {
     const h = await this.client.health();
     return {
       ok: h.ok,
-      detail: h.ok ? 'Axon host responded ' + h.status : 'Axon host unreachable',
+      detail: h.ok ? 'Source intelligence host responded ' + h.status : 'Source intelligence host unreachable',
     };
   }
 
   async searchSymbols(query: string, limit = 10): Promise<Symbol[]> {
-    const res = await this.client.search(query, limit);
-    return res.map((r) => ({ id: r.nodeId, name: r.name, filePath: r.filePath }));
+    const E = this.escapeId(query);
+
+    // Phase 1: deterministic exact-name lookup via Cypher.
+    // Vector search can rank unrelated symbols above exact-name hits when embedding
+    // similarity is misleading (HOR-164). An exact Cypher match is always authoritative.
+    const exactQuery =
+      `MATCH (n) WHERE toLower(n.name) = toLower("${E}") AND NOT n:File ` +
+      `RETURN n.id, n.name, n.file_path LIMIT ${limit}`;
+
+    // Phase 2: semantic search — run in parallel with Phase 1.
+    const [exactRows, semanticRes] = await Promise.all([
+      this.rows(exactQuery).catch((): unknown[][] => []),
+      this.client.search(query, limit),
+    ]);
+
+    const exactSymbols: Symbol[] = exactRows.map((row) => ({
+      id: String(row[0] ?? ''),
+      name: String(row[1] ?? ''),
+      filePath: String(row[2] ?? ''),
+    }));
+
+    const exactIds = new Set(exactSymbols.map((s) => s.id));
+    const ql = query.toLowerCase();
+
+    // Re-rank semantic results: partial name matches above pure embedding-only matches,
+    // File-label results below all symbol matches.
+    const semantic = semanticRes
+      .filter((r) => !exactIds.has(r.nodeId))
+      .map((r) => {
+        const nl = r.name.toLowerCase();
+        const isFile = r.label === 'File';
+        let rank = 0;
+        if (!isFile && (nl.includes(ql) || ql.includes(nl))) rank = 2;
+        else if (isFile && (nl.includes(ql) || ql.includes(nl))) rank = 1;
+        return { r, rank };
+      });
+
+    semantic.sort((a, b) => b.rank - a.rank || b.r.score - a.r.score);
+
+    const combined: Symbol[] = [
+      ...exactSymbols,
+      ...semantic.map(({ r }) => ({ id: r.nodeId, name: r.name, filePath: r.filePath })),
+    ];
+
+    return combined.slice(0, limit);
   }
 
   async context(symbolId: string): Promise<SymbolContext> {
