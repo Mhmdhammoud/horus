@@ -3,10 +3,11 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runGenerateConfig } from './generate-config.js';
+import { writeLocalConfig } from '@horus/core';
 
 const dirs: string[] = [];
 
@@ -133,5 +134,80 @@ describe('runGenerateConfig — overwrite protection', () => {
     expect(code).toBe(0);
     expect(readFileSync(outPath, 'utf8')).not.toBe('old content');
     expect(readFileSync(outPath, 'utf8')).toContain('export default');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Project-aware behavior (HOR-191)
+// ---------------------------------------------------------------------------
+
+function initProject(dir: string, name: string) {
+  writeLocalConfig(dir, {
+    version: 1,
+    project: {
+      name,
+      repositories: [{ name, path: dir, source: { hostUrl: 'http://127.0.0.1:8420' } }],
+      environments: [{ name: 'production', readOnly: true, connectors: {} }],
+    },
+  });
+}
+
+describe('runGenerateConfig — project-aware (HOR-191)', () => {
+  it('defaults to horus.config.example.js when .horus/config.json exists', async () => {
+    const dir = tempDir();
+    initProject(dir, 'maison-safqa');
+
+    const code = await runGenerateConfig({ cwd: dir, write: () => {} });
+    expect(code).toBe(0);
+    expect(existsSync(join(dir, 'horus.config.example.js'))).toBe(true);
+    expect(existsSync(join(dir, 'horus.config.js'))).toBe(false);
+  });
+
+  it('prefills project name and repo path from .horus/config.json', async () => {
+    const dir = tempDir();
+    initProject(dir, 'maison-safqa');
+
+    await runGenerateConfig({ cwd: dir, write: () => {} });
+    const content = readFileSync(join(dir, 'horus.config.example.js'), 'utf8');
+    expect(content).toContain('maison-safqa');
+    expect(content).toContain(dir);
+    expect(content).not.toContain('my-project');
+  });
+
+  it('warns that .horus/config.json already exists', async () => {
+    const dir = tempDir();
+    initProject(dir, 'maison-safqa');
+
+    const { lines } = await capture((write) => runGenerateConfig({ cwd: dir, write }));
+    const output = lines.join('\n');
+    expect(output).toContain('.horus/config.json');
+    expect(output).toContain('horus.config.js');
+  });
+
+  it('allows --out to override the sample default', async () => {
+    const dir = tempDir();
+    initProject(dir, 'maison-safqa');
+
+    const custom = join(dir, 'my-config.js');
+    const code = await runGenerateConfig({ cwd: dir, out: custom, write: () => {} });
+    expect(code).toBe(0);
+    expect(existsSync(custom)).toBe(true);
+    expect(existsSync(join(dir, 'horus.config.example.js'))).toBe(false);
+  });
+
+  it('still allows --name and --repo to override project defaults', async () => {
+    const dir = tempDir();
+    initProject(dir, 'maison-safqa');
+
+    await runGenerateConfig({
+      cwd: dir,
+      name: 'override-name',
+      repo: '/repos/override',
+      write: () => {},
+    });
+    const content = readFileSync(join(dir, 'horus.config.example.js'), 'utf8');
+    expect(content).toContain('override-name');
+    expect(content).toContain('/repos/override');
+    expect(content).not.toContain('maison-safqa');
   });
 });
