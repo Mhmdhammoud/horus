@@ -128,7 +128,7 @@ describe('runSetup — Axon binary not found', () => {
   it('output explains how to install the source-intelligence backend', async () => {
     const { lines } = await captureOutput((write) => runSetup({ write }));
     const output = lines.join('\n');
-    expect(output).toContain('pip install git+https://github.com/Mhmdhammoud/axon');
+    expect(output).toContain('pip install horus-source');
   });
 });
 

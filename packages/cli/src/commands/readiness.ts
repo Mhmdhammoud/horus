@@ -130,7 +130,7 @@ export async function runReadiness(opts?: {
       status: 'warn',
       blocking: false,
       detail: 'not installed — source intelligence unavailable',
-      next: `pip install git+https://github.com/Mhmdhammoud/axon`,
+      next: `pip install horus-source`,
     });
   } else if (sourceVersion !== PINNED_SOURCE_VERSION) {
     checks.push({
@@ -138,7 +138,7 @@ export async function runReadiness(opts?: {
       status: 'warn',
       blocking: false,
       detail: `version mismatch (installed: ${sourceVersion}, required: ${PINNED_SOURCE_VERSION})`,
-      next: `pip install git+https://github.com/Mhmdhammoud/axon`,
+      next: `pip install horus-source`,
     });
   } else {
     checks.push({

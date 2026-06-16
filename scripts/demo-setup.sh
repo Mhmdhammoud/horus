@@ -159,7 +159,7 @@ if command -v horus-source &>/dev/null || command -v axon &>/dev/null; then
 else
   warn "source-intelligence backend not installed (source features will be unavailable)"
   hint "Install (Python 3.11+ required):"
-  hint "  pip install git+https://github.com/Mhmdhammoud/axon"
+  hint "  pip install horus-source"
 fi
 
 # ── 5. Readiness summary ────────────────────────────────────────────────────────

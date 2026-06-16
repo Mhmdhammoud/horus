@@ -187,7 +187,7 @@ describe('horus readiness — partial (DB pass, optional items missing)', () => 
       _sourceVersion: async () => null,
       _loadConfig: async () => { throw new Error('no config'); },
     });
-    expect(lines(out)).toContain('pip install git+https://github.com/Mhmdhammoud/axon');
+    expect(lines(out)).toContain('pip install horus-source');
   });
 
   it('global config missing — shows generate-config hint', async () => {
