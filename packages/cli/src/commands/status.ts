@@ -79,14 +79,16 @@ async function checkEnv(renv: ResolvedEnvironment): Promise<boolean> {
     const logsProvider = logsForEnv(renv);
     if (logsProvider) {
       const h = await logsProvider.health();
+      const idxDisplay = esCfg.indexPatterns ? esCfg.indexPatterns.join(', ') : esCfg.indexPattern;
       const detail = h.ok
-        ? `reachable · index ${esCfg.indexPattern}`
-        : `unreachable · index ${esCfg.indexPattern}`;
+        ? `reachable · index ${idxDisplay}`
+        : `unreachable · index ${idxDisplay}`;
       console.log(`    ${mark(h.ok)} ${pc.bold('Elasticsearch')}   ${pc.dim(detail)}`);
       if (!h.ok) allOk = false;
     } else {
+      const idxDisplay = esCfg.indexPatterns ? esCfg.indexPatterns.join(', ') : esCfg.indexPattern;
       console.log(
-        `    ${mark(false)} ${pc.bold('Elasticsearch')}   ${pc.dim(`configured (index ${esCfg.indexPattern}) but ES_URL not set`)}`,
+        `    ${mark(false)} ${pc.bold('Elasticsearch')}   ${pc.dim(`configured (index ${idxDisplay}) but ES_URL not set`)}`,
       );
     }
   } else {
@@ -101,7 +103,10 @@ async function checkEnv(renv: ResolvedEnvironment): Promise<boolean> {
     const metricsProvider = metricsForEnv(renv);
     if (metricsProvider) {
       const h = await metricsProvider.health();
-      const dashSuffix = grafanaCfg.dashboard ? ` · dashboard ${grafanaCfg.dashboard}` : '';
+      const dashDisplay = grafanaCfg.dashboards
+        ? grafanaCfg.dashboards.join(', ')
+        : grafanaCfg.dashboard;
+      const dashSuffix = dashDisplay ? ` · dashboards: ${dashDisplay}` : '';
       const detail = h.ok ? `reachable${dashSuffix}` : `unreachable${dashSuffix}`;
       console.log(`    ${mark(h.ok)} ${pc.bold('Grafana')}         ${pc.dim(detail)}`);
       if (!h.ok) allOk = false;
@@ -128,8 +133,33 @@ async function checkEnv(renv: ResolvedEnvironment): Promise<boolean> {
     console.log(`    ${mark('pending')} ${pc.bold('MongoDB')}         ${pc.dim('not configured')}`);
   }
 
+  // Redis
+  const redisCfg = renv.connectors.redis;
+  if (redisCfg?.url) {
+    const safeUrl = redactRedisUrl(redisCfg.url);
+    console.log(`    ${mark('pending')} ${pc.bold('Redis')}           ${pc.dim(`configured · ${safeUrl}`)}`);
+  } else {
+    console.log(`    ${mark('pending')} ${pc.bold('Redis')}           ${pc.dim('not configured')}`);
+  }
+
   console.log('');
   return allOk;
+}
+
+/** Mask password in a Redis URL for safe display. */
+function redactRedisUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    if (u.password) {
+      u.password = '***';
+    }
+    if (u.username) {
+      u.username = u.username === '' ? '' : '***';
+    }
+    return u.toString();
+  } catch {
+    return raw.replace(/\/\/:?[^@]*@/, '//:***@');
+  }
 }
 
 export async function runStatus(

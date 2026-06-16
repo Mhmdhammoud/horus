@@ -90,7 +90,7 @@ export function metricsForEnv(renv: ResolvedEnvironment): MetricsProvider | null
   if (!g || !g.url) return null;
   return new GrafanaMetricsProvider(
     new GrafanaClient({ baseUrl: g.url, username: g.username, password: g.password }),
-    { defaultStep: 60 },
+    { defaultStep: 60, dashboardUids: g.dashboards },
   );
 }
 

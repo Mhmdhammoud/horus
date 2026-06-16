@@ -25,7 +25,7 @@ import {
   patchLocalConnector,
   ensureCredentialGitignore,
 } from '@horus/core';
-import { ElasticsearchClient, MongoStateClient } from '@horus/connectors';
+import { ElasticsearchClient, MongoStateClient, GrafanaClient } from '@horus/connectors';
 
 export interface ConnectOpts {
   env?: string;
@@ -33,10 +33,14 @@ export interface ConnectOpts {
   username?: string;
   password?: string;
   indexPattern?: string;
+  /** Multiple index patterns selected during interactive discovery. */
+  indexPatterns?: string[];
   service?: string;
   database?: string;
   collections?: string;
   dashboard?: string;
+  /** Multiple dashboard UIDs selected during interactive discovery. */
+  dashboardUids?: string[];
   noTest?: boolean;
 }
 
@@ -148,8 +152,20 @@ async function fillInteractive(type: ConnectorType, opts: ConnectOpts): Promise<
       filled.username = filled.username ?? ((await ask('Username', '', false)) || undefined);
       filled.password =
         filled.password ?? ((await askPassword('Password')) || undefined);
-      filled.indexPattern =
-        filled.indexPattern ?? (await ask('Index pattern', 'logs-*'));
+      // Discover available indexes if no index pattern was passed via flag.
+      if (filled.indexPattern === undefined && filled.indexPatterns === undefined) {
+        const discovered = await discoverEsIndices(filled.url, filled.username, filled.password);
+        if (discovered.length > 0) {
+          const selected = await askIndexSelection(discovered);
+          if (selected.length > 0) {
+            filled.indexPatterns = selected;
+          }
+        }
+        // Fall back to manual entry if discovery failed or user typed manually.
+        if (filled.indexPatterns === undefined) {
+          filled.indexPattern = await ask('Index pattern', 'logs-*');
+        }
+      }
       filled.service = filled.service ?? ((await ask('Service name', '')) || undefined);
       break;
 
@@ -166,12 +182,39 @@ async function fillInteractive(type: ConnectorType, opts: ConnectOpts): Promise<
       filled.username = filled.username ?? ((await ask('Username', '', false)) || undefined);
       filled.password =
         filled.password ?? ((await askPassword('Password')) || undefined);
-      filled.dashboard = filled.dashboard ?? ((await ask('Default dashboard uid', '')) || undefined);
+      // Discover available dashboards if no dashboard was passed via flag.
+      if (filled.dashboard === undefined && filled.dashboardUids === undefined) {
+        const discovered = await discoverGrafanaDashboards(filled.url, filled.username, filled.password);
+        if (discovered.length > 0) {
+          const selected = await askDashboardSelection(discovered);
+          if (selected.length > 0) {
+            filled.dashboardUids = selected.map((d) => d.uid);
+          }
+        }
+        // Fall back to manual UID entry if discovery failed or user typed manually.
+        if (filled.dashboardUids === undefined) {
+          filled.dashboard = (await ask('Default dashboard uid', '', false)) || undefined;
+        }
+      }
       break;
 
-    case 'redis':
+    case 'redis': {
+      console.log(
+        pc.dim(
+          '  Tip: embed credentials directly in the URL — redis://:password@host:6379\n' +
+            '       or enter the URL and password separately below.',
+        ),
+      );
       filled.url = filled.url ?? (await ask('URL', 'redis://localhost:6379'));
+      // Only prompt for password when the URL doesn't already contain one.
+      if (!redisUrlHasPassword(filled.url)) {
+        const pw = (await askPassword('Password')) || undefined;
+        if (pw !== undefined && filled.url !== undefined) {
+          filled.url = injectRedisPassword(filled.url, pw);
+        }
+      }
       break;
+    }
   }
 
   return filled;
@@ -180,7 +223,7 @@ async function fillInteractive(type: ConnectorType, opts: ConnectOpts): Promise<
 function missingRequired(type: ConnectorType, opts: ConnectOpts): boolean {
   switch (type) {
     case 'elasticsearch':
-      return !opts.url || !opts.indexPattern;
+      return !opts.url || (!opts.indexPattern && !opts.indexPatterns?.length);
     case 'mongodb':
       return !opts.url || !opts.database;
     case 'grafana':
@@ -251,8 +294,16 @@ function askPassword(label: string): Promise<string> {
 // ---------------------------------------------------------------------------
 
 function buildEsPatch(opts: ConnectOpts): Record<string, unknown> {
-  if (!opts.indexPattern) throw new Error('Index pattern is required for elasticsearch');
-  const patch: Record<string, unknown> = { indexPattern: opts.indexPattern };
+  if (!opts.indexPattern && !opts.indexPatterns?.length) {
+    throw new Error('Index pattern is required for elasticsearch');
+  }
+  const patch: Record<string, unknown> = {};
+  // indexPatterns (array) takes precedence over the legacy indexPattern string.
+  if (opts.indexPatterns && opts.indexPatterns.length > 0) {
+    patch['indexPatterns'] = opts.indexPatterns;
+  } else {
+    patch['indexPattern'] = opts.indexPattern;
+  }
   if (opts.url) patch['url'] = opts.url;
   if (opts.username) patch['username'] = opts.username;
   if (opts.password) patch['password'] = opts.password;
@@ -275,7 +326,12 @@ function buildGrafanaPatch(opts: ConnectOpts): Record<string, unknown> {
   if (opts.url) patch['url'] = opts.url;
   if (opts.username) patch['username'] = opts.username;
   if (opts.password) patch['password'] = opts.password;
-  if (opts.dashboard) patch['dashboard'] = opts.dashboard;
+  // dashboardUids (array) takes precedence over the legacy dashboard string.
+  if (opts.dashboardUids && opts.dashboardUids.length > 0) {
+    patch['dashboards'] = opts.dashboardUids;
+  } else if (opts.dashboard) {
+    patch['dashboard'] = opts.dashboard;
+  }
   return patch;
 }
 
@@ -383,14 +439,22 @@ function tcpProbe(host: string, port: number, timeoutMs = 3000): Promise<boolean
 
 function printSummary(type: ConnectorType, opts: ConnectOpts): void {
   const lines: string[] = [];
-  if (opts.url) lines.push(`  url:           ${redactUrl(opts.url)}`);
-  if (opts.username) lines.push(`  username:      ${opts.username}`);
-  if (opts.password) lines.push(`  password:      ${'•'.repeat(Math.min(opts.password.length, 8))}`);
-  if (opts.indexPattern) lines.push(`  index-pattern: ${opts.indexPattern}`);
-  if (opts.service) lines.push(`  service:       ${opts.service}`);
-  if (opts.database) lines.push(`  database:      ${opts.database}`);
-  if (opts.collections) lines.push(`  collections:   ${opts.collections}`);
-  if (opts.dashboard) lines.push(`  dashboard:     ${opts.dashboard}`);
+  if (opts.url) lines.push(`  url:            ${redactUrl(opts.url)}`);
+  if (opts.username) lines.push(`  username:       ${opts.username}`);
+  if (opts.password) lines.push(`  password:       ${'•'.repeat(Math.min(opts.password.length, 8))}`);
+  if (opts.indexPatterns && opts.indexPatterns.length > 0) {
+    lines.push(`  index-patterns: ${opts.indexPatterns.join(', ')}`);
+  } else if (opts.indexPattern) {
+    lines.push(`  index-pattern:  ${opts.indexPattern}`);
+  }
+  if (opts.service) lines.push(`  service:        ${opts.service}`);
+  if (opts.database) lines.push(`  database:       ${opts.database}`);
+  if (opts.collections) lines.push(`  collections:    ${opts.collections}`);
+  if (opts.dashboardUids && opts.dashboardUids.length > 0) {
+    lines.push(`  dashboards:     ${opts.dashboardUids.join(', ')}`);
+  } else if (opts.dashboard) {
+    lines.push(`  dashboard:      ${opts.dashboard}`);
+  }
   if (lines.length > 0) console.log(pc.dim(lines.join('\n')));
 }
 
@@ -408,6 +472,161 @@ function isGitTracked(filePath: string, cwd: string): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Discovery helpers
+// ---------------------------------------------------------------------------
+
+/** Discover available Elasticsearch index names. Returns [] on any error. */
+async function discoverEsIndices(
+  url: string | undefined,
+  username: string | undefined,
+  password: string | undefined,
+): Promise<string[]> {
+  if (!url) return [];
+  try {
+    const client = new ElasticsearchClient({ baseUrl: url, username, password });
+    const signal = AbortSignal.timeout(8000);
+    return await client.listIndices(signal);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Show a numbered list of discovered Elasticsearch indexes and let the user
+ * pick one or more by number (comma-separated) or type a pattern manually.
+ *
+ * Returns the selected index names, or [] if the user skipped / typed manually
+ * (the caller falls back to a text prompt in that case).
+ */
+async function askIndexSelection(indices: string[]): Promise<string[]> {
+  const MAX_DISPLAY = 25;
+  const shown = indices.slice(0, MAX_DISPLAY);
+
+  console.log('\n  Available Elasticsearch indexes/data streams:');
+  shown.forEach((name, i) => {
+    console.log(`  ${pc.dim(`[${i + 1}]`)} ${name}`);
+  });
+  if (indices.length > MAX_DISPLAY) {
+    console.log(pc.dim(`  … and ${indices.length - MAX_DISPLAY} more (type a pattern manually to match all)`));
+  }
+
+  const input = (await ask(
+    `  Select index patterns to use (e.g. 1,2 or Enter to type pattern manually)`,
+    '',
+    false,
+  )).trim();
+
+  if (!input) return [];
+
+  // If the input looks like numbers (e.g. "1,2,3"), parse as selection.
+  if (/^[\d,\s]+$/.test(input)) {
+    const picks = input
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => parseInt(s, 10) - 1)
+      .filter((i) => i >= 0 && i < shown.length)
+      .map((i) => shown[i] as string);
+    if (picks.length > 0) return picks;
+  }
+
+  // Non-numeric input: treat as a manually-typed pattern; signal caller to use it.
+  // Return a synthetic single-element array so the caller stores it as indexPatterns.
+  return [input];
+}
+
+/** Discover available Grafana dashboards. Returns [] on any error. */
+async function discoverGrafanaDashboards(
+  url: string | undefined,
+  username: string | undefined,
+  password: string | undefined,
+): Promise<{ uid: string; title: string; folderTitle?: string }[]> {
+  if (!url) return [];
+  try {
+    const client = new GrafanaClient({ baseUrl: url, username, password });
+    const signal = AbortSignal.timeout(8000);
+    return await client.searchDashboards(undefined, signal);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Show a numbered list of discovered Grafana dashboards and let the user
+ * pick one or more by number. Returns selected dashboard objects, or [] if
+ * the user skipped (caller falls back to manual UID prompt).
+ */
+async function askDashboardSelection(
+  dashboards: { uid: string; title: string; folderTitle?: string }[],
+): Promise<{ uid: string; title: string }[]> {
+  const MAX_DISPLAY = 25;
+  const shown = dashboards.slice(0, MAX_DISPLAY);
+
+  console.log('\n  Available Grafana dashboards:');
+  shown.forEach((d, i) => {
+    const folder = d.folderTitle ? pc.dim(` (${d.folderTitle})`) : '';
+    console.log(`  ${pc.dim(`[${i + 1}]`)} ${d.title}${folder}`);
+  });
+  if (dashboards.length > MAX_DISPLAY) {
+    console.log(pc.dim(`  … and ${dashboards.length - MAX_DISPLAY} more`));
+  }
+
+  const input = (await ask(
+    `  Select dashboards to use (e.g. 1,2 or Enter to type uid manually)`,
+    '',
+    false,
+  )).trim();
+
+  if (!input) return [];
+
+  if (/^[\d,\s]+$/.test(input)) {
+    const picks = input
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => parseInt(s, 10) - 1)
+      .filter((i) => i >= 0 && i < shown.length)
+      .map((i) => shown[i] as { uid: string; title: string });
+    return picks;
+  }
+
+  return [];
+}
+
+// ---------------------------------------------------------------------------
+// Redis credential helpers
+// ---------------------------------------------------------------------------
+
+/** Returns true when the Redis URL already has a password in the authority. */
+function redisUrlHasPassword(raw: string | undefined): boolean {
+  if (!raw) return false;
+  try {
+    return new URL(raw).password !== '';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Inject a password into a Redis URL that has no credentials.
+ * Produces `redis://:password@host:port/db`.
+ */
+function injectRedisPassword(raw: string, password: string): string {
+  try {
+    const u = new URL(raw);
+    u.password = encodeURIComponent(password);
+    return u.toString();
+  } catch {
+    // Not parseable — try naive string splice after the scheme
+    const match = /^(rediss?:\/\/)(.*)$/.exec(raw);
+    if (match?.[1] && match?.[2]) {
+      return `${match[1]}:${encodeURIComponent(password)}@${match[2]}`;
+    }
+    return raw;
   }
 }
 

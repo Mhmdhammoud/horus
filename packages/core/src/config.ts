@@ -50,7 +50,9 @@ const connectorsSchema = z
   .object({
     elasticsearch: z
       .object({
-        indexPattern: z.string(),
+        indexPattern: z.string().optional(),
+        /** Multiple index patterns — joined with ',' when resolving. Takes precedence over indexPattern. */
+        indexPatterns: z.array(z.string()).optional(),
         serviceName: z.string().optional(),
         /**
          * Log schema preset. Controls which Elasticsearch field names Horus
@@ -111,6 +113,8 @@ const connectorsSchema = z
     grafana: z
       .object({
         dashboard: z.string().optional(),
+        /** Multiple dashboard UIDs to fetch. Takes precedence over `dashboard` when set. */
+        dashboards: z.array(z.string()).optional(),
         /** Direct URL value (takes priority over urlEnv). */
         url: z.string().optional(),
         /** Name of the env var holding the Grafana base URL. Defaults to "GRAFANA_URL". */
@@ -211,6 +215,8 @@ export interface ResolvedConnectors {
     username?: string;
     password?: string;
     indexPattern: string;
+    /** All configured index patterns (populated when indexPatterns was used). */
+    indexPatterns?: string[];
     serviceName?: string;
     /** Log schema preset forwarded from config. */
     preset: 'meritt' | 'ecs';
@@ -218,7 +224,14 @@ export interface ResolvedConnectors {
     fields?: ResolvedElasticsearchFields;
   };
   mongodb?: { url?: string; database: string; collections: string[] };
-  grafana?: { url?: string; username?: string; password?: string; dashboard?: string };
+  grafana?: {
+    url?: string;
+    username?: string;
+    password?: string;
+    dashboard?: string;
+    /** All configured dashboard UIDs (populated when dashboards was used). */
+    dashboards?: string[];
+  };
   redis?: { url?: string };
 }
 
@@ -344,11 +357,14 @@ export function resolveEnvironment(
     const es = c.elasticsearch;
     // Direct value takes priority over env var name.
     const url = es.url ?? process.env[es.urlEnv ?? 'ES_URL'] ?? '';
+    // indexPatterns (array) takes precedence; falls back to indexPattern string.
+    const effectivePattern = es.indexPatterns?.join(',') ?? es.indexPattern ?? '';
     resolved.elasticsearch = {
       url,
       username: es.username ?? process.env[es.usernameEnv ?? 'ES_USERNAME'],
       password: es.password ?? process.env[es.passwordEnv ?? 'ES_PASSWORD'],
-      indexPattern: es.indexPattern,
+      indexPattern: effectivePattern,
+      ...(es.indexPatterns !== undefined ? { indexPatterns: es.indexPatterns } : {}),
       serviceName: es.serviceName,
       preset: es.preset,
       ...(es.fields !== undefined ? { fields: es.fields } : {}),
@@ -371,6 +387,7 @@ export function resolveEnvironment(
       username: g.username ?? process.env[g.usernameEnv ?? 'GRAFANA_USER'],
       password: g.password ?? process.env[g.passwordEnv ?? 'GRAFANA_PASSWORD'],
       dashboard: g.dashboard,
+      ...(g.dashboards !== undefined ? { dashboards: g.dashboards } : {}),
     };
   }
 
@@ -413,7 +430,7 @@ const CONFIG_EXAMPLES: Record<string, string> = {
   'projects.*.repositories.*.name': 'e.g. name: "my-api"',
   'projects.*.repositories.*.path': 'e.g. path: "/absolute/path/to/repo"',
   'projects.*.repositories.*.source.hostUrl':
-    'e.g. "http://127.0.0.1:8420"  (start one with: axon host --port 8420)',
+    'e.g. "http://127.0.0.1:8420"  (start one with: horus index)',
   'projects.*.repositories.*.axon.hostUrl':
     'e.g. "http://127.0.0.1:8420"  (deprecated: use source.hostUrl instead)',
   'projects.*.environments': 'e.g. [{ name: "production", connectors: {} }]',

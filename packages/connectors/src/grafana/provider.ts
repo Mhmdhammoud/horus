@@ -39,7 +39,7 @@ export class GrafanaMetricsProvider implements MetricsProvider {
 
   constructor(
     private readonly client: GrafanaClient,
-    private readonly opts: { defaultStep: number },
+    private readonly opts: { defaultStep: number; dashboardUids?: string[] },
   ) {}
 
   async health(): Promise<HealthStatus> {
@@ -54,7 +54,13 @@ export class GrafanaMetricsProvider implements MetricsProvider {
    * Each panel is tagged with the dashboardUid it came from.
    */
   async findPanels(hint?: string, signal?: AbortSignal): Promise<Panel[]> {
-    const dashboards = await this.client.searchDashboards(undefined, signal);
+    // When specific dashboard UIDs are configured, fetch only those.
+    // Otherwise search all available dashboards.
+    const uids = this.opts.dashboardUids;
+    const dashboards =
+      uids !== undefined && uids.length > 0
+        ? uids.map((uid) => ({ uid, title: uid }))
+        : await this.client.searchDashboards(undefined, signal);
     const allPanels: Panel[] = [];
 
     for (const dash of dashboards) {

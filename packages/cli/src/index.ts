@@ -138,9 +138,9 @@ Examples:
       'Add or update a runtime connector (elasticsearch / mongodb / grafana / redis) in .horus/config.json',
     )
     .option('--env <name>', 'target environment (default: first environment in config)')
-    .option('--url <url>', 'connector URL or connection string')
+    .option('--url <url>', 'connector URL or connection string (Redis with auth: redis://:password@host:6379)')
     .option('--username <user>', 'username (elasticsearch / grafana)')
-    .option('--password <pass>', 'password (elasticsearch / grafana)')
+    .option('--password <pass>', 'password (elasticsearch / grafana; for Redis embed in --url)')
     .option('--index-pattern <pattern>', 'Elasticsearch index pattern (required for elasticsearch)')
     .option('--service <name>', 'service name scope for log queries')
     .option('--database <name>', 'database name (required for mongodb)')
@@ -249,12 +249,24 @@ Examples:
 
   program
     .command('queues [name]')
-    .description('Show producer -> queue -> worker edges')
+    .description('Show queue topology from source intelligence; --live adds real-time Redis/BullMQ state')
     .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--name <name>', 'registered project name (resolves via registry)')
     .option('--project <name>', 'filter edges by project')
-    .action(async (name: string | undefined, opts: { config?: string; project?: string }) => {
-      process.exitCode = await runQueues(name, { config: opts.config, project: opts.project });
-    });
+    .option('--live', 'fetch real-time queue depths and failed-job counts from Redis/BullMQ')
+    .action(
+      async (
+        name: string | undefined,
+        opts: { config?: string; name?: string; project?: string; live?: boolean },
+      ) => {
+        process.exitCode = await runQueues(name, {
+          config: opts.config,
+          name: opts.name,
+          project: opts.project,
+          live: opts.live,
+        });
+      },
+    );
 
   program
     .command('investigate <hint>')

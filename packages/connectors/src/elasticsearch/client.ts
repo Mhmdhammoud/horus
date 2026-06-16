@@ -83,4 +83,70 @@ export class ElasticsearchClient {
       return { ok: false, detail: (err as Error).message };
     }
   }
+
+  /**
+   * Discover available index names. Resolution order:
+   *   1. Data streams (modern ILM — clean names without date suffixes)
+   *   2. Aliases (user-defined names mapping to one or more indices)
+   *   3. Raw concrete indices (fallback for legacy clusters)
+   * System entries (starting with '.') are always filtered out.
+   * Returns [] on any error so callers can gracefully fall back.
+   */
+  async listIndices(signal?: AbortSignal): Promise<string[]> {
+    const results = new Set<string>();
+
+    // 1. Data streams
+    try {
+      const dsRes = await this.request('GET', '/_data_stream', undefined, signal) as Record<string, unknown>;
+      const streams = dsRes['data_streams'] as Array<Record<string, unknown>> | undefined;
+      if (Array.isArray(streams)) {
+        for (const s of streams) {
+          const name = String(s['name'] ?? '');
+          if (name && !name.startsWith('.')) results.add(name);
+        }
+      }
+    } catch {
+      // data stream API not available or no streams — continue
+    }
+
+    // 2. Aliases
+    try {
+      const aliasRes = await this.request(
+        'GET',
+        '/_cat/aliases?format=json&h=alias&s=alias',
+        undefined,
+        signal,
+      );
+      if (Array.isArray(aliasRes)) {
+        for (const a of aliasRes as Array<Record<string, unknown>>) {
+          const alias = String(a['alias'] ?? '');
+          if (alias && !alias.startsWith('.')) results.add(alias);
+        }
+      }
+    } catch {
+      // aliases not available — continue
+    }
+
+    // 3. Raw indices (only when neither data streams nor aliases were found)
+    if (results.size === 0) {
+      try {
+        const idxRes = await this.request(
+          'GET',
+          '/_cat/indices?format=json&h=index&s=index&expand_wildcards=open',
+          undefined,
+          signal,
+        );
+        if (Array.isArray(idxRes)) {
+          for (const r of idxRes as Array<Record<string, unknown>>) {
+            const name = String(r['index'] ?? '');
+            if (name && !name.startsWith('.')) results.add(name);
+          }
+        }
+      } catch {
+        // nothing available
+      }
+    }
+
+    return [...results].sort();
+  }
 }
