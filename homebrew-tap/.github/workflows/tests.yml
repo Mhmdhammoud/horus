@@ -19,7 +19,9 @@ jobs:
         uses: Homebrew/actions/setup-homebrew@master
 
       - name: Tap local repository
-        run: brew tap meritt-dev/tap "$PWD"
+        run: |
+          brew untap meritt-dev/tap 2>/dev/null || true
+          brew tap meritt-dev/tap "$PWD"
 
       - name: Audit formula
         run: brew audit --strict meritt-dev/tap/horus
@@ -35,10 +37,9 @@ jobs:
         uses: Homebrew/actions/setup-homebrew@master
 
       - name: Build local test archives
-        env:
-          VERSION: 0.1.0
         run: |
           set -euo pipefail
+          VERSION=$(ruby -e "puts File.read('Formula/horus.rb').match(/version \"([^\"]+)\"/)[1]")
           release_url="https://github.com/meritt-dev/horus/releases/download/v${VERSION}/horus-v${VERSION}"
           curl -fsSL "$release_url" -o /tmp/horus-exec
           chmod +x /tmp/horus-exec
@@ -56,7 +57,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/horus-test-tap/Formula
-          sed "s|https://github.com/meritt-dev/horus/releases/download/v0.1.0/|file://$(pwd)/.homebrew-archives/|g" \
+          VERSION=$(ruby -e "puts File.read('Formula/horus.rb').match(/version \"([^\"]+)\"/)[1]")
+          sed "s|https://github.com/meritt-dev/horus/releases/download/v${VERSION}/|file://$(pwd)/.homebrew-archives/|g" \
             Formula/horus.rb > /tmp/horus-test-tap/Formula/horus.rb
           cd /tmp/horus-test-tap
           git init -q
