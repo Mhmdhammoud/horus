@@ -8,7 +8,7 @@ export const HORUS_VERSION: string = typeof __HORUS_VERSION__ !== 'undefined' ? 
  * asserts the running Axon matches this (see architecture.md §1, risk R4). A drifted
  * build must fail loudly rather than silently mis-map results.
  */
-export const PINNED_AXON_VERSION = '1.0.0';
+export const PINNED_AXON_VERSION = '1.0.6';
 
 /** Horus-facing alias for PINNED_AXON_VERSION (HOR-136). */
 export const PINNED_SOURCE_VERSION = PINNED_AXON_VERSION;
