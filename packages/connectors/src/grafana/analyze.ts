@@ -34,6 +34,8 @@ export interface MetricFinding {
   currentAvg: number;
   ratio: number;
   lastValue: number;
+  /** Where the hint matched — null when no hint was given or match source is unknown. */
+  matchSource?: 'panel-title' | 'query-text' | 'series-labels' | null;
 }
 
 // ---------------------------------------------------------------------------

@@ -204,3 +204,36 @@ export function panelMatchesHint(p: Panel, hint: string): boolean {
 
   return tokens.some((tok) => haystack.includes(tok));
 }
+
+/**
+ * Returns where in the panel the hint matched: 'panel-title', 'query-text', or null.
+ * Returns null when hint is empty or no match found.
+ */
+export function findMatchSource(
+  p: Panel,
+  hint: string,
+): 'panel-title' | 'query-text' | null {
+  if (hint === '') return null;
+  const tokens = extractHintTokens(hint);
+  if (tokens.length === 0) return null;
+
+  if (tokens.some((tok) => p.title.toLowerCase().includes(tok))) return 'panel-title';
+  if (tokens.some((tok) => p.exprs.some((e) => e.toLowerCase().includes(tok)))) {
+    return 'query-text';
+  }
+  return null;
+}
+
+/**
+ * Returns true if at least one label value matches a hint token.
+ * Used in the series-labels fallback pass when no panel matched by title or expression.
+ */
+export function findingLabelsMatchHint(
+  labels: Record<string, string>,
+  hint: string,
+): boolean {
+  const tokens = extractHintTokens(hint);
+  if (tokens.length === 0) return true;
+  const haystack = Object.values(labels).join(' ').toLowerCase();
+  return tokens.some((tok) => haystack.includes(tok));
+}

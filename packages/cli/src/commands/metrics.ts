@@ -168,10 +168,18 @@ export async function runMetrics(
     }
 
     const hintSuffix = hint !== undefined ? ` (hint: "${hint}")` : '';
+    // Show how the hint matched so users understand which field drove the result.
+    const matchSources = hint !== undefined
+      ? [...new Set(findings.map((f) => f.matchSource).filter(Boolean))]
+      : [];
+    const matchSuffix =
+      matchSources.length > 0
+        ? pc.dim(` [matched via ${matchSources.join(', ')}]`)
+        : '';
     console.log(
       pc.bold(
         `Grafana metrics${hintSuffix} — ${findings.length} series across panels`,
-      ),
+      ) + matchSuffix,
     );
     console.log(
       pc.dim(

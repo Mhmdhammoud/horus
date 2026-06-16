@@ -12,6 +12,8 @@ import {
   extractPanels,
   sanitizeExpr,
   panelMatchesHint,
+  findMatchSource,
+  findingLabelsMatchHint,
 } from './panels.js';
 import type { Panel } from './panels.js';
 import { buildFindings, findingsToEvidence } from './analyze.js';
@@ -87,6 +89,11 @@ export class GrafanaMetricsProvider implements MetricsProvider {
   /**
    * Discover relevant panels, query current + baseline windows for each expr,
    * and return MetricFindings (including "none" anomalies for completeness).
+   *
+   * Two-pass hint matching:
+   * 1. Filter panels by title / PromQL expression (fast, cheap).
+   * 2. If no panels match on pass 1, query ALL panels and filter the returned
+   *    series by their label values (source, topic, queue, etc.).
    */
   async analyze(opts: {
     hint?: string;
@@ -98,47 +105,66 @@ export class GrafanaMetricsProvider implements MetricsProvider {
     const { signal } = opts;
     const step = opts.step ?? this.opts.defaultStep;
     const windowSecs = opts.to - opts.from;
-    const panels = await this.findPanels(opts.hint, signal);
-    const allFindings: MetricFinding[] = [];
+    const hint = opts.hint;
 
-    for (const panel of panels) {
-      signal?.throwIfAborted();
-      for (const rawExpr of panel.exprs) {
+    const queryPanels = async (
+      panels: Panel[],
+    ): Promise<MetricFinding[]> => {
+      const results: MetricFinding[] = [];
+      for (const panel of panels) {
         signal?.throwIfAborted();
-        const expr = sanitizeExpr(rawExpr);
-        if (expr === null) continue;
+        const panelMatchSrc = hint !== undefined && hint !== ''
+          ? findMatchSource(panel, hint)
+          : null;
 
-        try {
-          const [currentResp, baselineResp] = await Promise.all([
-            this.client.datasourceRange(panel.datasourceUid, expr, opts.from, opts.to, step, signal),
-            this.client.datasourceRange(
-              panel.datasourceUid,
-              expr,
-              opts.from - windowSecs,
-              opts.from,
-              step,
-              signal,
-            ),
-          ]);
-          const current = parseRange(currentResp);
-          const baseline = parseRange(baselineResp);
-          const findings = buildFindings(
-            panel.dashboardUid ?? '',
-            panel.title,
-            panel.kind,
-            baseline,
-            current,
-          );
-          allFindings.push(...findings);
-        } catch (err) {
-          // Abort must propagate — only skip genuinely bad individual queries.
-          if (signal?.aborted) throw signal.reason ?? err;
-          continue;
+        for (const rawExpr of panel.exprs) {
+          signal?.throwIfAborted();
+          const expr = sanitizeExpr(rawExpr);
+          if (expr === null) continue;
+          try {
+            const [currentResp, baselineResp] = await Promise.all([
+              this.client.datasourceRange(panel.datasourceUid, expr, opts.from, opts.to, step, signal),
+              this.client.datasourceRange(
+                panel.datasourceUid,
+                expr,
+                opts.from - windowSecs,
+                opts.from,
+                step,
+                signal,
+              ),
+            ]);
+            const current = parseRange(currentResp);
+            const baseline = parseRange(baselineResp);
+            const findings = buildFindings(
+              panel.dashboardUid ?? '',
+              panel.title,
+              panel.kind,
+              baseline,
+              current,
+            ).map((f) => ({ ...f, matchSource: panelMatchSrc }));
+            results.push(...findings);
+          } catch (err) {
+            if (signal?.aborted) throw signal.reason ?? err;
+            continue;
+          }
         }
       }
+      return results;
+    };
+
+    // Pass 1: panels matched by title or PromQL expression.
+    const matchedPanels = await this.findPanels(hint, signal);
+
+    if (matchedPanels.length > 0 || hint === undefined || hint === '') {
+      return queryPanels(matchedPanels);
     }
 
-    return allFindings;
+    // Pass 2: no title/query match — query ALL panels and filter by series label values.
+    const allPanels = await this.findPanels(undefined, signal);
+    const allFindings = await queryPanels(allPanels);
+    return allFindings
+      .filter((f) => findingLabelsMatchHint(f.labels, hint))
+      .map((f) => ({ ...f, matchSource: 'series-labels' as const }));
   }
 
   /**

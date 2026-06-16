@@ -9,6 +9,8 @@ import {
   sanitizeExpr,
   panelMatchesHint,
   extractHintTokens,
+  findMatchSource,
+  findingLabelsMatchHint,
 } from './panels.js';
 
 // ---------------------------------------------------------------------------
@@ -327,5 +329,73 @@ describe('extractHintTokens', () => {
   it('deduplicates naturally — no tokens shorter than 3 survive', () => {
     const tokens = extractHintTokens('p95 p99');
     expect(tokens).toEqual(['p95', 'p99']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findMatchSource — HOR-188
+// ---------------------------------------------------------------------------
+
+describe('findMatchSource', () => {
+  const panel = {
+    id: 1,
+    title: 'Webhook Request Rate',
+    type: 'timeseries',
+    unit: 'reqps',
+    datasourceUid: 'Prometheus',
+    exprs: ['rate(shopify_webhook_requests_total[5m])'],
+    kind: 'throughput' as const,
+  };
+
+  it('returns "panel-title" when token matches the panel title', () => {
+    expect(findMatchSource({ ...panel, title: 'Shopify Webhook Rate' }, 'shopify')).toBe('panel-title');
+  });
+
+  it('returns "query-text" when token matches an expression but not the title', () => {
+    // panel title "Webhook Request Rate" does NOT contain "shopify"; expr does.
+    expect(findMatchSource(panel, 'shopify')).toBe('query-text');
+  });
+
+  it('returns null when hint does not match title or exprs', () => {
+    expect(findMatchSource(panel, 'redis')).toBeNull();
+  });
+
+  it('returns null when hint is empty', () => {
+    expect(findMatchSource(panel, '')).toBeNull();
+  });
+
+  it('panel-title takes precedence over query-text', () => {
+    const both = { ...panel, title: 'Shopify Rate', exprs: ['rate(shopify_total[5m])'] };
+    expect(findMatchSource(both, 'shopify')).toBe('panel-title');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findingLabelsMatchHint — HOR-188
+// ---------------------------------------------------------------------------
+
+describe('findingLabelsMatchHint', () => {
+  it('returns true when a label value matches the hint token', () => {
+    expect(findingLabelsMatchHint({ source: 'shopify', topic: 'product-delete' }, 'shopify')).toBe(true);
+  });
+
+  it('returns false when no label value matches', () => {
+    expect(findingLabelsMatchHint({ source: 'internal', topic: 'user-created' }, 'shopify')).toBe(false);
+  });
+
+  it('returns true for empty hint (matches everything)', () => {
+    expect(findingLabelsMatchHint({ source: 'shopify' }, '')).toBe(true);
+  });
+
+  it('matches partial label value (token inside longer value)', () => {
+    expect(findingLabelsMatchHint({ operation_name: 'shopify_webhook_handler' }, 'shopify')).toBe(true);
+  });
+
+  it('is case-insensitive on label values', () => {
+    expect(findingLabelsMatchHint({ source: 'Shopify' }, 'shopify')).toBe(true);
+  });
+
+  it('returns false for empty labels and non-empty hint', () => {
+    expect(findingLabelsMatchHint({}, 'shopify')).toBe(false);
   });
 });
