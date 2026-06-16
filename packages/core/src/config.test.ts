@@ -859,3 +859,72 @@ describe('loadConfig — path precedence (HOR-131)', () => {
     expect((err as Error).message).toContain(missing);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Redis multi-DB resolution + backward compatibility (HOR-201)
+// ---------------------------------------------------------------------------
+
+import { redisDbFromUrl, redisUrlForDb } from './config.js';
+
+function resolveRedis(redis: unknown) {
+  const cfg = horusConfigSchema.parse({
+    database: DB,
+    projects: [
+      {
+        name: 'p',
+        repositories: [{ name: 'p', path: '/repos/p' }],
+        environments: [{ name: 'production', connectors: { redis } }],
+      },
+    ],
+  });
+  return resolveEnvironment(cfg, { project: 'p', env: 'production' }).connectors.redis;
+}
+
+describe('redisDbFromUrl / redisUrlForDb', () => {
+  it('parses the DB index from a URL path, defaulting to 0', () => {
+    expect(redisDbFromUrl('redis://:pw@h:6379/1')).toBe(1);
+    expect(redisDbFromUrl('redis://h:6379')).toBe(0);
+    expect(redisDbFromUrl('redis://h:6379/')).toBe(0);
+    expect(redisDbFromUrl(undefined)).toBe(0);
+  });
+
+  it('sets the DB index on a URL without losing credentials', () => {
+    expect(redisUrlForDb('redis://:pw@h:6379', 1)).toBe('redis://:pw@h:6379/1');
+    expect(redisUrlForDb('redis://:pw@h:6379/2', 5)).toBe('redis://:pw@h:6379/5');
+  });
+});
+
+describe('redis resolution (HOR-201)', () => {
+  it('legacy single URL with DB suffix → one synthesized DB at that index', () => {
+    const r = resolveRedis({ url: 'redis://:pw@127.0.0.1:6379/1' });
+    expect(r?.url).toBe('redis://:pw@127.0.0.1:6379/1');
+    expect(r?.databases).toEqual([{ db: 1, roles: [], bullmqPrefix: 'bull' }]);
+  });
+
+  it('legacy URL without DB → one synthesized DB at index 0', () => {
+    const r = resolveRedis({ url: 'redis://127.0.0.1:6379' });
+    expect(r?.databases).toEqual([{ db: 0, roles: [], bullmqPrefix: 'bull' }]);
+  });
+
+  it('URL without DB + databases array → resolves each DB with roles + prefix', () => {
+    const r = resolveRedis({
+      url: 'redis://127.0.0.1:6379',
+      databases: [
+        { db: 0, name: 'cache', roles: ['cache', 'state'], scan: { sampleLimit: 300, patterns: ['x:*'] } },
+        { db: 1, name: 'queues', roles: ['bullmq', 'queues'], bullmq: { prefix: 'bull' } },
+      ],
+    });
+    expect(r?.databases).toHaveLength(2);
+    expect(r?.databases[0]).toMatchObject({ db: 0, name: 'cache', roles: ['cache', 'state'], bullmqPrefix: 'bull' });
+    expect(r?.databases[0]?.scan).toEqual({ enabled: true, sampleLimit: 300, patterns: ['x:*'] });
+    expect(r?.databases[1]).toMatchObject({ db: 1, name: 'queues', roles: ['bullmq', 'queues'], bullmqPrefix: 'bull' });
+  });
+
+  it('custom bullmq prefix is carried through', () => {
+    const r = resolveRedis({
+      url: 'redis://127.0.0.1:6379',
+      databases: [{ db: 2, roles: ['bullmq'], bullmq: { prefix: 'myapp' } }],
+    });
+    expect(r?.databases[0]?.bullmqPrefix).toBe('myapp');
+  });
+});

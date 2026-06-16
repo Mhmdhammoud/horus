@@ -29,6 +29,8 @@ import type {
   QueueRuntimeProvider,
   QueueRuntimeState,
   MetricsProvider,
+  RedisStateProvider,
+  RedisStateAnalysis,
 } from '@horus/connectors';
 import { shortTs, selectStateSignals, tokenize, analyzeQueueRuntime } from '@horus/connectors';
 import { estimateOwnership } from './ownership.js';
@@ -73,6 +75,8 @@ export interface EngineDeps {
   mongo?: StateProvider | null;
   /** Optional BullMQ queue runtime provider — folds queue depth/failure evidence. */
   queue?: QueueRuntimeProvider | null;
+  /** Optional Redis state provider — folds cache/state/locks/rate-limit evidence (HOR-201). */
+  redisState?: RedisStateProvider | null;
   /** Optional Grafana metrics provider — folds anomaly evidence + clears metrics gap (HOR-40). */
   metrics?: MetricsProvider | null;
   /** Absolute path to the local git repository — enables ownership estimation (HOR-40). */
@@ -562,6 +566,27 @@ export async function investigate(
     }
   }
 
+  // e0b2. REDIS RUNTIME STATE (HOR-201) — cache/state/locks/rate-limit summaries as
+  // evidence. Optional; never breaks the investigation on failure. Counts/prefixes
+  // only — no key values.
+  let redisStateAnalysis: RedisStateAnalysis | null = null;
+  const redisStateEvIds: string[] = [];
+  if (deps.redisState) {
+    try {
+      redisStateAnalysis = await deps.redisState.analyzeRedisState();
+      const redisTerms = [...new Set(tokenize(hint))];
+      for (const s of redisStateAnalysis.signals) {
+        // Boost relevance when a hint term appears in the signal's match text.
+        const matched = redisTerms.some((t) => t.length > 2 && s.matchText.includes(t));
+        const relevance = matched ? Math.min(1, s.relevance + 0.3) : s.relevance;
+        const ev = mkEv('redis-key', s.title, s.payload, {}, redisStateAnalysis.collectedAt, relevance);
+        redisStateEvIds.push(ev.id);
+      }
+    } catch {
+      redisStateAnalysis = null;
+    }
+  }
+
   // e0c. QUEUE RUNTIME STATE (HOR-12) — backlog, failures, starvation as evidence.
   // Scoped to the queues that appear in the stitcher edges so we only query what's
   // relevant to this investigation. Optional; never breaks on failure.
@@ -903,6 +928,17 @@ export async function investigate(
     });
   }
 
+  // Redis runtime-state findings (HOR-201)
+  if (redisStateAnalysis !== null && redisStateEvIds.length > 0) {
+    const dbCount = redisStateAnalysis.databases.filter((d) => d.keyCount > 0).length;
+    findings.push({
+      kind: 'observation',
+      title: `Redis runtime state: ${redisStateEvIds.length} signal(s) across ${dbCount} DB(s)`,
+      confidence: 0.5,
+      evidenceIds: redisStateEvIds,
+    });
+  }
+
   // Queue runtime findings (HOR-12)
   if (queueRuntimeState !== null && queueRuntimeEvIds.length > 0) {
     const starved = queueRuntimeState.queues.filter((q) => q.waiting >= 10 && q.active === 0);
@@ -1088,7 +1124,7 @@ export async function investigate(
   const providerReliability: Record<string, number> = {
     code: 0.80,
     ...(deps.logs != null ? { logs: 0.70 } : {}),
-    ...(deps.mongo != null ? { state: 0.85 } : {}),
+    ...(deps.mongo != null || deps.redisState != null ? { state: 0.85 } : {}),
     ...(deps.queue != null ? { queue: 0.90 } : {}),
     ...(deps.metrics != null ? { metrics: 0.75 } : {}),
   };

@@ -46,6 +46,49 @@ const repositorySchema = z.object({
 // Connector-level schemas (RUNTIME — belong to the ENVIRONMENT)
 // ---------------------------------------------------------------------------
 
+/**
+ * Roles a Redis logical DB can play (HOR-201). `bullmq`/`queues` mark a queue DB
+ * (used by `horus queues --live`); `cache`/`state`/`locks`/`rate-limit`/`session`/
+ * `dedupe` mark runtime-state DBs that investigation collectors may sample.
+ */
+export const REDIS_ROLES = [
+  'cache',
+  'state',
+  'locks',
+  'rate-limit',
+  'session',
+  'dedupe',
+  'bullmq',
+  'queues',
+] as const;
+export type RedisRole = (typeof REDIS_ROLES)[number];
+const redisRoleSchema = z.enum(REDIS_ROLES);
+/** Roles that mark a DB as holding BullMQ queues. */
+export const REDIS_QUEUE_ROLES: readonly RedisRole[] = ['bullmq', 'queues'];
+
+/** Parse the logical DB index from a redis URL path (`redis://h:p/1` → 1); defaults to 0. */
+export function redisDbFromUrl(url: string | undefined): number {
+  if (!url) return 0;
+  try {
+    const seg = new URL(url).pathname.replace(/^\//, '');
+    const n = Number.parseInt(seg, 10);
+    return Number.isInteger(n) && n >= 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Return `url` with its DB-index path set to `db`, for selecting a logical DB. */
+export function redisUrlForDb(url: string, db: number): string {
+  try {
+    const u = new URL(url);
+    u.pathname = `/${db}`;
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
 const connectorsSchema = z
   .object({
     elasticsearch: z
@@ -135,6 +178,36 @@ const connectorsSchema = z
         url: z.string().optional(),
         /** Name of the env var holding the Redis URL. Defaults to "REDIS_URL". */
         urlEnv: z.string().optional(),
+        /**
+         * Logical databases on the same Redis server (HOR-201). Redis is a general
+         * runtime-evidence connector — a single server commonly holds BullMQ queues in
+         * one DB and cache/locks/rate-limit/session keys in others. Declaring them here
+         * (with roles) lets `queues --live` target the queue DB and lets investigation
+         * collectors target cache/state/locks DBs. When omitted, the DB index in `url`
+         * (default 0) is treated as a single configured database (backward compatible).
+         */
+        databases: z
+          .array(
+            z.object({
+              /** Logical DB index on the server (0–15 by default Redis config). */
+              db: z.number().int().min(0).max(15),
+              /** Friendly name for display (e.g. "cache", "queues"). */
+              name: z.string().optional(),
+              /** What this DB holds — drives which collectors/commands use it. */
+              roles: z.array(redisRoleSchema).default([]),
+              /** BullMQ settings when this DB has the bullmq/queues role. */
+              bullmq: z.object({ prefix: z.string().default('bull') }).optional(),
+              /** Sampled-scan settings for cache/state/locks DBs. */
+              scan: z
+                .object({
+                  enabled: z.boolean().default(true),
+                  sampleLimit: z.number().int().positive().default(500),
+                  patterns: z.array(z.string()).default([]),
+                })
+                .optional(),
+            }),
+          )
+          .optional(),
       })
       .optional(),
   })
@@ -232,7 +305,23 @@ export interface ResolvedConnectors {
     /** All configured dashboard UIDs (populated when dashboards was used). */
     dashboards?: string[];
   };
-  redis?: { url?: string };
+  redis?: {
+    /** Base server URL (auth + host + port). The DB index in the path is captured
+     *  per-database in `databases`; consumers pick the DB they need. */
+    url?: string;
+    /** Logical databases on this server. Always at least one entry when redis is
+     *  configured (synthesized from the URL for backward compatibility). */
+    databases: ResolvedRedisDatabase[];
+  };
+}
+
+export interface ResolvedRedisDatabase {
+  db: number;
+  name?: string;
+  roles: RedisRole[];
+  /** BullMQ key prefix for this DB (default "bull"). */
+  bullmqPrefix: string;
+  scan?: { enabled: boolean; sampleLimit: number; patterns: string[] };
 }
 
 export interface ResolvedEnvironment {
@@ -393,8 +482,33 @@ export function resolveEnvironment(
 
   if (c.redis !== undefined) {
     const r = c.redis;
+    const url = r.url ?? process.env[r.urlEnv ?? 'REDIS_URL'];
+    let databases: ResolvedRedisDatabase[];
+    if (r.databases !== undefined && r.databases.length > 0) {
+      databases = r.databases.map((d) => ({
+        db: d.db,
+        ...(d.name !== undefined ? { name: d.name } : {}),
+        roles: d.roles,
+        bullmqPrefix: d.bullmq?.prefix ?? 'bull',
+        ...(d.scan !== undefined
+          ? {
+              scan: {
+                enabled: d.scan.enabled,
+                sampleLimit: d.scan.sampleLimit,
+                patterns: d.scan.patterns,
+              },
+            }
+          : {}),
+      }));
+    } else {
+      // Backward compatibility: no `databases` declared — treat the DB index from the
+      // URL (default 0) as a single configured database. No roles are assumed, so
+      // consumers that need a queue DB fall back to this single DB.
+      databases = [{ db: redisDbFromUrl(url), roles: [], bullmqPrefix: 'bull' }];
+    }
     resolved.redis = {
-      url: r.url ?? process.env[r.urlEnv ?? 'REDIS_URL'],
+      ...(url !== undefined ? { url } : {}),
+      databases,
     };
   }
 

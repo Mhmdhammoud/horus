@@ -125,3 +125,27 @@ describe('askDashboardSelection (HOR-187)', () => {
     expect(mockCheckboxSearch).not.toHaveBeenCalled();
   });
 });
+
+import { parseDbSpec } from './connect.js';
+
+describe('parseDbSpec (HOR-201 redis --db)', () => {
+  it('parses "0:cache,state"', () => {
+    expect(parseDbSpec('0:cache,state')).toEqual({ db: 0, roles: ['cache', 'state'] });
+  });
+
+  it('parses "1:bullmq,queues"', () => {
+    expect(parseDbSpec('1:bullmq,queues')).toEqual({ db: 1, roles: ['bullmq', 'queues'] });
+  });
+
+  it('parses a DB with no roles', () => {
+    expect(parseDbSpec('2')).toEqual({ db: 2, roles: [] });
+  });
+
+  it('rejects an out-of-range DB index', () => {
+    expect(() => parseDbSpec('99:cache')).toThrow(/0–15/);
+  });
+
+  it('rejects an unknown role', () => {
+    expect(() => parseDbSpec('0:bogus')).toThrow(/Invalid role/);
+  });
+});

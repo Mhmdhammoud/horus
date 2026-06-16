@@ -202,11 +202,12 @@ describe('runStatus — MongoDB (HOR-190)', () => {
   });
 });
 
+
 // ---------------------------------------------------------------------------
-// Redis reachability reporting (parity with the other connectors)
+// Redis multi-DB reporting (HOR-201)
 // ---------------------------------------------------------------------------
 
-import type { QueueRuntimeProvider } from '@horus/connectors';
+import type { RedisServerStatus, RedisDbStatus } from '@horus/connectors';
 
 function writeRedisConfig(dir: string, redis: string): string {
   const path = join(dir, 'horus.config.js');
@@ -229,75 +230,131 @@ function writeRedisConfig(dir: string, redis: string): string {
   return path;
 }
 
-function makeQueueProvider(opts: {
-  ok: boolean;
-  detail?: string;
-  queues?: string[];
-}): QueueRuntimeProvider {
-  return {
-    id: 'bullmq',
-    kind: 'queue',
-    async health() {
-      return { ok: opts.ok, detail: opts.detail ?? (opts.ok ? 'ok' : 'unreachable') };
-    },
-    async analyzeQueues() {
-      return { prefix: 'bull', collectedAt: new Date().toISOString(), queues: [] };
-    },
-    async discoverQueues() {
-      return opts.queues ?? [];
-    },
-    toEvidence() {
-      return [];
-    },
-    async close() {},
-  };
+function redisStatusStub(status: RedisServerStatus | null) {
+  return async () => status;
 }
 
 async function captureRedisStatus(
   configPath: string,
-  factory: (() => QueueRuntimeProvider | null) | null,
+  status: RedisServerStatus | null,
 ): Promise<{ output: string; code: number }> {
   const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
   const code = await runStatus(configPath, {
     project: 'my-api',
     env: 'production',
-    _queueFactory: factory ?? undefined,
+    _redisStatus: redisStatusStub(status),
   });
   const output = spy.mock.calls.map((c) => c.join(' ')).join('\n');
   spy.mockRestore();
   return { output, code };
 }
 
-describe('runStatus — Redis (reachability parity)', () => {
-  it('shows reachable with discovered queue count when Redis pings ok', async () => {
+const queueDb = (db: number, queueCount: number): RedisDbStatus => ({
+  db,
+  name: 'queues',
+  roles: ['bullmq', 'queues'],
+  reachable: true,
+  queueCount,
+  bullmqPrefix: 'bull',
+});
+const cacheDb = (db: number, keyCount: number): RedisDbStatus => ({
+  db,
+  name: 'cache',
+  roles: ['cache', 'state'],
+  reachable: true,
+  keyCount,
+});
+
+describe('runStatus — Redis multi-DB (HOR-201)', () => {
+  it('legacy single URL with DB suffix: one unrolled DB shown reachable', async () => {
     const path = writeRedisConfig(tempDir(), '{ url: "redis://:pw@127.0.0.1:6379/1" }');
-    const provider = makeQueueProvider({ ok: true, queues: ['a', 'b', 'c'] });
-    const { output } = await captureRedisStatus(path, () => provider);
-    expect(output).toMatch(/Redis[\s\S]*reachable/);
-    expect(output).toContain('3 queue(s)');
-    // Reachable Redis must NOT read as the neutral "configured" wording.
-    expect(output).not.toMatch(/Redis[\s\S]*?configured ·/);
+    const status: RedisServerStatus = {
+      reachable: true,
+      authFailed: false,
+      databases: [{ db: 1, roles: [], reachable: true, queueCount: 11, bullmqPrefix: 'bull' }],
+    };
+    const { output } = await captureRedisStatus(path, status);
+    expect(output).toMatch(/Redis[\s\S]*reachable · 127\.0\.0\.1:6379/);
+    expect(output).toContain('DB 1');
+    expect(output).toContain('11 queue(s)');
   });
 
-  it('shows unreachable and fails the env when Redis ping fails', async () => {
-    const path = writeRedisConfig(tempDir(), '{ url: "redis://127.0.0.1:6399" }');
-    const provider = makeQueueProvider({ ok: false, detail: 'connect ECONNREFUSED' });
-    const { output, code } = await captureRedisStatus(path, () => provider);
+  it('URL without DB + databases array: cache DB 0 + queues DB 1 both shown', async () => {
+    const path = writeRedisConfig(
+      tempDir(),
+      `{ url: "redis://:pw@127.0.0.1:6379", databases: [
+        { db: 0, name: "cache", roles: ["cache","state"] },
+        { db: 1, name: "queues", roles: ["bullmq","queues"], bullmq: { prefix: "bull" } }
+      ] }`,
+    );
+    const status: RedisServerStatus = {
+      reachable: true,
+      authFailed: false,
+      databases: [cacheDb(0, 4216), queueDb(1, 11)],
+    };
+    const { output } = await captureRedisStatus(path, status);
+    expect(output).toContain('DB 0');
+    expect(output).toContain('4216 key(s)');
+    expect(output).toContain('DB 1');
+    expect(output).toContain('11 queue(s), prefix bull');
+  });
+
+  it('bullmq in DB 1 while cache keys exist in DB 0 — distinct role labels', async () => {
+    const path = writeRedisConfig(
+      tempDir(),
+      `{ url: "redis://127.0.0.1:6379", databases: [
+        { db: 0, roles: ["cache","state"] },
+        { db: 1, roles: ["bullmq","queues"] }
+      ] }`,
+    );
+    const { output } = await captureRedisStatus(path, {
+      reachable: true,
+      authFailed: false,
+      databases: [cacheDb(0, 500), queueDb(1, 7)],
+    });
+    expect(output).toMatch(/DB 0[\s\S]*cache\/state/);
+    expect(output).toMatch(/DB 1[\s\S]*bullmq\/queues/);
+  });
+
+  it('empty DB shows 0 key(s)', async () => {
+    const path = writeRedisConfig(tempDir(), '{ url: "redis://127.0.0.1:6379", databases: [{ db: 2, roles: ["cache"] }] }');
+    const { output } = await captureRedisStatus(path, {
+      reachable: true,
+      authFailed: false,
+      databases: [cacheDb(2, 0)],
+    });
+    expect(output).toContain('0 key(s)');
+  });
+
+  it('unreachable server fails the env', async () => {
+    const path = writeRedisConfig(tempDir(), '{ url: "redis://127.0.0.1:6399", databases: [{ db: 0, roles: ["cache"] }] }');
+    const { output, code } = await captureRedisStatus(path, {
+      reachable: false,
+      authFailed: false,
+      databases: [{ db: 0, roles: ['cache'], reachable: false, detail: 'ECONNREFUSED' }],
+    });
     expect(output).toMatch(/Redis[\s\S]*unreachable/);
     expect(code).toBe(1);
   });
 
-  it('labels an auth failure distinctly', async () => {
-    const path = writeRedisConfig(tempDir(), '{ url: "redis://:wrong@127.0.0.1:6379" }');
-    const provider = makeQueueProvider({ ok: false, detail: 'WRONGPASS invalid username-password pair' });
-    const { output } = await captureRedisStatus(path, () => provider);
+  it('wrong auth is labeled "auth failed"', async () => {
+    const path = writeRedisConfig(tempDir(), '{ url: "redis://:wrong@127.0.0.1:6379", databases: [{ db: 0, roles: ["cache"] }] }');
+    const { output, code } = await captureRedisStatus(path, {
+      reachable: false,
+      authFailed: true,
+      databases: [{ db: 0, roles: ['cache'], reachable: false, detail: 'WRONGPASS invalid password' }],
+    });
     expect(output).toMatch(/Redis[\s\S]*auth failed/);
+    expect(code).toBe(1);
   });
 
-  it('does not leak the Redis password', async () => {
-    const path = writeRedisConfig(tempDir(), '{ url: "redis://:supersecret@127.0.0.1:6379/1" }');
-    const provider = makeQueueProvider({ ok: true, queues: [] });
-    const { output } = await captureRedisStatus(path, () => provider);
+  it('does not leak the Redis password (server label is host:port only)', async () => {
+    const path = writeRedisConfig(tempDir(), '{ url: "redis://:supersecret@127.0.0.1:6379", databases: [{ db: 1, roles: ["bullmq"] }] }');
+    const { output } = await captureRedisStatus(path, {
+      reachable: true,
+      authFailed: false,
+      databases: [queueDb(1, 3)],
+    });
     expect(output).not.toContain('supersecret');
   });
 });

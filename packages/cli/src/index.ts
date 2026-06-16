@@ -146,6 +146,17 @@ Examples:
     .option('--database <name>', 'database name (required for mongodb)')
     .option('--collections <list>', 'comma-separated collection allowlist (mongodb)')
     .option('--dashboard <uid>', 'default dashboard uid (grafana)')
+    .option(
+      '--db <spec>',
+      'redis logical DB as db:role1,role2 (e.g. 0:cache,state or 1:bullmq,queues); repeatable',
+      (val: string, acc: string[]) => {
+        acc.push(val);
+        return acc;
+      },
+      [] as string[],
+    )
+    .option('--bullmq-prefix <prefix>', 'BullMQ key prefix for redis queue DBs (default: bull)')
+    .option('--no-scan-dbs', 'skip interactive Redis DB scan')
     .option('--no-test', 'skip live connection probe')
     .action(
       async (
@@ -160,6 +171,9 @@ Examples:
           database?: string;
           collections?: string;
           dashboard?: string;
+          db?: string[];
+          bullmqPrefix?: string;
+          scanDbs?: boolean;
           test?: boolean;
         },
       ) => {
@@ -173,6 +187,9 @@ Examples:
           database: opts.database,
           collections: opts.collections,
           dashboard: opts.dashboard,
+          db: opts.db,
+          bullmqPrefix: opts.bullmqPrefix,
+          scanDbs: opts.scanDbs,
           noTest: opts.test === false,
         });
       },

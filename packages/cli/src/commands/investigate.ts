@@ -1,6 +1,13 @@
 import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
-import { codeForEnv, logsForEnv, mongoForEnv, queueForEnv, metricsForEnv } from '@horus/connectors';
+import {
+  codeForEnv,
+  logsForEnv,
+  mongoForEnv,
+  queueForEnv,
+  redisStateForEnv,
+  metricsForEnv,
+} from '@horus/connectors';
 import { createDb, updateInvestigationReport } from '@horus/db';
 import { investigate, renderReport, reportToJSON, reportToMarkdown } from '@horus/engine';
 import type { InvestigationReport, StoredAIJudgment } from '@horus/engine';
@@ -198,6 +205,7 @@ export async function runInvestigate(
     const logs = logsForEnv(renv);
     const mongo = mongoForEnv(renv);
     const queue = queueForEnv(renv);
+    const redisState = redisStateForEnv(renv);
     const metrics = metricsForEnv(renv);
 
     // Resolve service name: CLI flag > connector default > undefined
@@ -213,6 +221,7 @@ export async function runInvestigate(
           logs,
           mongo,
           queue,
+          redisState,
           metrics,
           repoPath: renv.path,
           connectors: {

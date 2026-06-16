@@ -24,9 +24,44 @@ import {
   localConfigPath,
   patchLocalConnector,
   ensureCredentialGitignore,
+  REDIS_ROLES,
+  type RedisRole,
 } from '@horus/core';
-import { ElasticsearchClient, MongoStateClient, GrafanaClient } from '@horus/connectors';
+import {
+  ElasticsearchClient,
+  MongoStateClient,
+  GrafanaClient,
+  RedisScanClient,
+  probeRedisDatabases,
+  type RedisDbProbe,
+} from '@horus/connectors';
 import { checkboxSearch, isInteractive, ExitPromptError } from '../lib/tty-selector.js';
+
+/** A logical Redis DB the user wants to configure, with its roles. */
+interface RedisDatabaseSpec {
+  db: number;
+  name?: string;
+  roles: RedisRole[];
+}
+
+/** Parse a `--db` spec like "0:cache,state" or "1:bullmq" into a RedisDatabaseSpec. */
+export function parseDbSpec(spec: string): RedisDatabaseSpec {
+  const [dbPart, rolesPart] = spec.split(':');
+  const db = Number.parseInt((dbPart ?? '').trim(), 10);
+  if (!Number.isInteger(db) || db < 0 || db > 15) {
+    throw new Error(`Invalid --db spec "${spec}": DB index must be 0–15 (e.g. 1:bullmq,queues)`);
+  }
+  const roles = (rolesPart ?? '')
+    .split(',')
+    .map((r) => r.trim())
+    .filter(Boolean) as RedisRole[];
+  for (const role of roles) {
+    if (!(REDIS_ROLES as readonly string[]).includes(role)) {
+      throw new Error(`Invalid role "${role}" in --db spec "${spec}". Valid roles: ${REDIS_ROLES.join(', ')}`);
+    }
+  }
+  return { db, roles };
+}
 
 export interface ConnectOpts {
   env?: string;
@@ -43,6 +78,14 @@ export interface ConnectOpts {
   /** Multiple dashboard UIDs selected during interactive discovery. */
   dashboardUids?: string[];
   noTest?: boolean;
+  /** Raw `--db db:roles` specs (redis, repeatable). */
+  db?: string[];
+  /** BullMQ key prefix for queue DBs (redis). */
+  bullmqPrefix?: string;
+  /** Force/skip interactive DB scan (redis). Undefined = auto when interactive. */
+  scanDbs?: boolean;
+  /** Parsed/discovered redis databases (internal). */
+  redisDatabases?: RedisDatabaseSpec[];
 }
 
 const SUPPORTED = ['elasticsearch', 'mongodb', 'grafana', 'redis'] as const;
@@ -240,6 +283,17 @@ async function fillInteractive(
           filled.url = injectRedisPassword(filled.url, pw);
         }
       }
+
+      // Multi-DB configuration (HOR-201). Priority: explicit --db specs > interactive
+      // scan > none (backward-compatible single-DB-from-URL).
+      if (filled.db && filled.db.length > 0) {
+        filled.redisDatabases = filled.db.map(parseDbSpec);
+      } else if (filled.url && filled.scanDbs !== false && isInteractive()) {
+        const scan = await askScanDbs();
+        if (scan) {
+          filled.redisDatabases = await discoverAndSelectDbs(filled.url, filled.bullmqPrefix ?? 'bull');
+        }
+      }
       break;
     }
   }
@@ -372,7 +426,71 @@ function buildGrafanaPatch(opts: ConnectOpts): Record<string, unknown> {
 function buildRedisPatch(opts: ConnectOpts): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
   if (opts.url) patch['url'] = opts.url;
+  const dbs = opts.redisDatabases ?? (opts.db ? opts.db.map(parseDbSpec) : undefined);
+  if (dbs && dbs.length > 0) {
+    const prefix = opts.bullmqPrefix ?? 'bull';
+    patch['databases'] = dbs.map((d) => {
+      const isQueue = d.roles.some((r) => r === 'bullmq' || r === 'queues');
+      return {
+        db: d.db,
+        ...(d.name ? { name: d.name } : {}),
+        roles: d.roles,
+        ...(isQueue ? { bullmq: { prefix } } : {}),
+      };
+    });
+  }
   return patch;
+}
+
+/** Interactive: ask whether to scan DBs 0–15. */
+async function askScanDbs(): Promise<boolean> {
+  const answer = (await ask('Scan Redis DBs 0-15 to detect queues vs cache?', 'yes', false))
+    .trim()
+    .toLowerCase();
+  return answer === '' || answer === 'y' || answer === 'yes';
+}
+
+/** Format a probe result as a one-line summary for display. */
+function describeProbe(p: RedisDbProbe): string {
+  if (!p.reachable) return `unreachable (${p.detail ?? 'error'})`;
+  if (p.keyCount === 0) return 'empty';
+  if (p.bullmqQueues.length > 0) {
+    const sample = p.bullmqQueues.slice(0, 3).join(', ');
+    return `${p.bullmqQueues.length} BullMQ queue(s) · prefix ${p.bullmqPrefix} · ${sample}`;
+  }
+  const examples = p.prefixes.slice(0, 3).map((x) => `${x.prefix}:*`).join(', ');
+  return `${p.keyCount} keys · ${p.suggestedRoles.join('/')}${examples ? ` · ${examples}` : ''}`;
+}
+
+/** Interactive: probe DBs 0–15, show findings, let the user pick which to save. */
+async function discoverAndSelectDbs(url: string, bullmqPrefix: string): Promise<RedisDatabaseSpec[]> {
+  console.log(pc.dim('\n  Scanning DBs 0-15 (read-only, sampled)…'));
+  const probes = await probeRedisDatabases(url, { bullmqPrefix });
+  const nonEmpty = probes.filter((p) => p.reachable && p.keyCount > 0);
+  if (nonEmpty.length === 0) {
+    console.log(pc.dim('  No populated DBs found.'));
+    return [];
+  }
+  for (const p of nonEmpty) {
+    console.log(`  ${pc.bold(`DB ${p.db}`)} ${pc.dim('· ' + describeProbe(p))}`);
+  }
+  const byLabel = new Map<string, RedisDbProbe>();
+  const choices = nonEmpty.map((p) => {
+    const label = `DB ${p.db} — ${p.suggestedRoles.join('/') || 'unrolled'} (${describeProbe(p)})`;
+    byLabel.set(label, p);
+    return label;
+  });
+  let selected: string[];
+  try {
+    selected = await checkboxSearch({ message: 'Select DBs to save', choices, pageSize: 12 });
+  } catch (err) {
+    if (err instanceof ExitPromptError) throw err;
+    selected = choices; // non-interactive fallback: save all detected
+  }
+  return selected.map((label) => {
+    const p = byLabel.get(label)!;
+    return { db: p.db, name: p.suggestedRoles.includes('bullmq') ? 'queues' : 'cache', roles: p.suggestedRoles };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -450,13 +568,19 @@ async function probe(type: ConnectorType, opts: ConnectOpts): Promise<ProbeResul
       }
       case 'redis': {
         if (!opts.url) return { ok: true, detail: 'skipped (no URL)' };
-        const url = new URL(opts.url);
-        const port = parseInt(url.port || '6379', 10);
-        const host = url.hostname;
-        const reachable = await tcpProbe(host, port);
-        return reachable
-          ? { ok: true, detail: `TCP ${host}:${port} reachable` }
-          : { ok: false, detail: `Could not connect to ${host}:${port}` };
+        // Real PING (exercises AUTH), not just a TCP open — so wrong passwords are
+        // caught here instead of surfacing later as a confusing runtime failure.
+        const client = new RedisScanClient({ url: opts.url });
+        try {
+          const h = await client.health();
+          const host = new URL(opts.url).hostname;
+          const port = new URL(opts.url).port || '6379';
+          if (h.ok) return { ok: true, detail: `PING ok at ${host}:${port}` };
+          const authFailed = /WRONGPASS|NOAUTH|invalid password/i.test(h.detail);
+          return { ok: false, detail: authFailed ? `auth failed (${h.detail})` : h.detail };
+        } finally {
+          await client.close();
+        }
       }
     }
   } catch (err) {

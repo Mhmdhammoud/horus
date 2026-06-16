@@ -9,8 +9,14 @@
  * unchanged.
  */
 
-import type { HorusConfig, ResolvedEnvironment, ResolvedElasticsearchFields } from '@horus/core';
-import { resolveEnvironment } from '@horus/core';
+import type {
+  HorusConfig,
+  ResolvedEnvironment,
+  ResolvedElasticsearchFields,
+  ResolvedRedisDatabase,
+  RedisRole,
+} from '@horus/core';
+import { resolveEnvironment, redisUrlForDb, REDIS_QUEUE_ROLES } from '@horus/core';
 import { SourceHttpClient, SourceCodeProvider } from './axon/source-boundary.js';
 import type { CodeProvider } from './contract.js';
 import { ElasticsearchClient } from './elasticsearch/client.js';
@@ -30,6 +36,7 @@ import type { StateProvider } from './mongodb/provider.js';
 import { BullMQRedisClient } from './bullmq/client.js';
 import { BullMQRuntimeProvider } from './bullmq/provider.js';
 import type { QueueRuntimeProvider } from './bullmq/provider.js';
+import { RedisStateRuntimeProvider } from './redis/state-provider.js';
 
 // ---------------------------------------------------------------------------
 // Environment-scoped builders (primary API, HOR-34)
@@ -94,14 +101,66 @@ export function metricsForEnv(renv: ResolvedEnvironment): MetricsProvider | null
   );
 }
 
+/** Does `db` carry any of `roles`? */
+function dbHasRole(db: ResolvedRedisDatabase, roles: readonly RedisRole[]): boolean {
+  return db.roles.some((r) => roles.includes(r));
+}
+
+/**
+ * Pick the Redis logical DB that holds BullMQ queues (HOR-201). Prefers a DB tagged
+ * `bullmq`/`queues`; if none is tagged (legacy single-URL config), falls back to the
+ * sole configured DB so existing setups keep working.
+ */
+export function queueDatabaseForEnv(renv: ResolvedEnvironment): ResolvedRedisDatabase | null {
+  const dbs = renv.connectors.redis?.databases;
+  if (!dbs || dbs.length === 0) return null;
+  return dbs.find((d) => dbHasRole(d, REDIS_QUEUE_ROLES)) ?? (dbs.length === 1 ? dbs[0]! : null);
+}
+
+/** Resolved DBs tagged with any state role — cache/state/locks/rate-limit/session/dedupe. */
+const STATE_ROLES: readonly RedisRole[] = ['cache', 'state', 'locks', 'rate-limit', 'session', 'dedupe'];
+export function stateDatabasesForEnv(renv: ResolvedEnvironment): ResolvedRedisDatabase[] {
+  const dbs = renv.connectors.redis?.databases ?? [];
+  return dbs.filter((d) => dbHasRole(d, STATE_ROLES));
+}
+
+/**
+ * Return a Redis state-evidence provider for the env's cache/state/locks/rate-limit
+ * DBs, or `null` when none are configured. Feeds the investigation engine `redis-key`
+ * evidence (key counts, lock/rate-limit presence) — counts only, never key values.
+ */
+export function redisStateForEnv(renv: ResolvedEnvironment): RedisStateRuntimeProvider | null {
+  const r = renv.connectors.redis;
+  if (!r?.url) return null;
+  const stateDbs = stateDatabasesForEnv(renv);
+  if (stateDbs.length === 0) return null;
+  const baseUrl = r.url;
+  return new RedisStateRuntimeProvider(
+    stateDbs.map((d) => ({
+      db: d.db,
+      ...(d.name !== undefined ? { name: d.name } : {}),
+      roles: d.roles,
+      url: redisUrlForDb(baseUrl, d.db),
+      ...(d.scan !== undefined
+        ? { scan: { sampleLimit: d.scan.sampleLimit, patterns: d.scan.patterns } }
+        : {}),
+    })),
+  );
+}
+
 /**
  * Return a BullMQ `QueueRuntimeProvider` for the given resolved environment, or
- * `null` when no Redis connector is configured (no URL).
+ * `null` when no Redis connector / queue DB is configured. Targets the queue DB
+ * (role `bullmq`/`queues`, or the single legacy DB) with its configured prefix.
  */
 export function queueForEnv(renv: ResolvedEnvironment): QueueRuntimeProvider | null {
   const r = renv.connectors.redis;
   if (!r?.url) return null;
-  return new BullMQRuntimeProvider(new BullMQRedisClient({ url: r.url }));
+  const queueDb = queueDatabaseForEnv(renv);
+  if (!queueDb) return null;
+  return new BullMQRuntimeProvider(
+    new BullMQRedisClient({ url: redisUrlForDb(r.url, queueDb.db), prefix: queueDb.bullmqPrefix }),
+  );
 }
 
 /**
