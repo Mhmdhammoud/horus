@@ -40,20 +40,22 @@ class Horus < Formula
   depends_on "node"
 
   on_macos do
-    if Hardware::CPU.arm?
+    on_arm do
       url "https://github.com/${REPO}/releases/download/${TAG}/horus-${TAG}-darwin-arm64.tar.gz"
       sha256 "${DARWIN_ARM64}"
-    else
+    end
+    on_intel do
       url "https://github.com/${REPO}/releases/download/${TAG}/horus-${TAG}-darwin-x86_64.tar.gz"
       sha256 "${DARWIN_X86}"
     end
   end
 
   on_linux do
-    if Hardware::CPU.arm?
+    on_arm do
       url "https://github.com/${REPO}/releases/download/${TAG}/horus-${TAG}-linux-arm64.tar.gz"
       sha256 "${LINUX_ARM64}"
-    else
+    end
+    on_intel do
       url "https://github.com/${REPO}/releases/download/${TAG}/horus-${TAG}-linux-x86_64.tar.gz"
       sha256 "${LINUX_X86}"
     end

@@ -36,21 +36,15 @@ jobs:
       - name: Set up Homebrew
         uses: Homebrew/actions/setup-homebrew@master
 
-      - name: Build local test archives
+      - name: Download release archives for local testing
         run: |
           set -euo pipefail
           VERSION=$(ruby -e "puts File.read('Formula/horus.rb').match(/version \"([^\"]+)\"/)[1]")
-          release_url="https://github.com/meritt-dev/horus/releases/download/v${VERSION}/horus-v${VERSION}"
-          curl -fsSL "$release_url" -o /tmp/horus-exec
-          chmod +x /tmp/horus-exec
           mkdir -p .homebrew-archives
           for platform in darwin-arm64 darwin-x86_64 linux-arm64 linux-x86_64; do
-            tmp=$(mktemp -d)
-            mkdir -p "$tmp/horus/bin"
-            cp /tmp/horus-exec "$tmp/horus/bin/horus"
-            chmod +x "$tmp/horus/bin/horus"
-            tar -czf ".homebrew-archives/horus-v${VERSION}-${platform}.tar.gz" -C "$tmp" horus
-            rm -rf "$tmp"
+            curl -fsSL \
+              "https://github.com/meritt-dev/horus/releases/download/v${VERSION}/horus-v${VERSION}-${platform}.tar.gz" \
+              -o ".homebrew-archives/horus-v${VERSION}-${platform}.tar.gz"
           done
 
       - name: Create temporary test tap with local archives
