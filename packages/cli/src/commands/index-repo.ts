@@ -189,11 +189,12 @@ export async function runIndex(opts: {
           `  investigate: horus investigate --name ${name} "<hint>"  (or from this repo: horus investigate "<hint>")`,
         ),
       );
-    } else if (!configuredHost) {
-      // Config exists but had no source host set — patch it regardless of whether the
-      // host was just spawned or reused from a previous run (.horus/source/host.json).
-      // Without this, a reused host would never be persisted to the local config and
-      // `horus doctor` would keep reporting "not configured" (HOR-150).
+    } else if (hostUrl !== configuredHost) {
+      // The live host differs from what the config records — either no host was set
+      // (HOR-150: reused host never persisted), or the configured host was dead and we
+      // started a replacement on a different free port. In both cases persist the live
+      // hostUrl so `status`/`doctor`/`investigate` target the running host, not a stale
+      // or missing one.
       const existingPath = discoverLocalConfig(root);
       if (existingPath) {
         const file = readLocalConfig(existingPath);
