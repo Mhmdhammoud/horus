@@ -52,6 +52,19 @@ describe('isRefLike', () => {
     expect(isRefLike('HEAD..main')).toBe(false);
     expect(isRefLike('v1.0..v2.0')).toBe(false);
   });
+
+  it('rejects duration strings like "24h", "7d", "30m", "90s"', () => {
+    expect(isRefLike('24h')).toBe(false);
+    expect(isRefLike('7d')).toBe(false);
+    expect(isRefLike('30m')).toBe(false);
+    expect(isRefLike('90s')).toBe(false);
+  });
+
+  it('accepts relative ref notation (HEAD~N, v1.2~3)', () => {
+    expect(isRefLike('HEAD~5')).toBe(true);
+    expect(isRefLike('HEAD~3')).toBe(true);
+    expect(isRefLike('v1.2~1')).toBe(true);
+  });
 });
 
 // ── parseDiffStat ─────────────────────────────────────────────────────────────

@@ -226,8 +226,11 @@ export function looksDiffable(since: string): boolean {
   const s = since.trim();
   if (s.length === 0) return false;
   if (s.includes('..')) return true;
-  // A bare ref (tag, branch, sha) is also diffable against HEAD.
-  return /^[A-Za-z0-9._/-]+$/.test(s);
+  // Duration strings like "24h", "7d", "30m", "90s" are log-window specifiers,
+  // not git refs — exclude them so detectChanges is not called with a non-ref.
+  if (/^\d+[smhd]$/i.test(s)) return false;
+  // A bare ref (tag, branch, sha) or relative ref (HEAD~5, v1.2~3) is diffable.
+  return /^[A-Za-z0-9._/~^-]+$/.test(s);
 }
 
 export async function investigate(
@@ -339,6 +342,19 @@ export async function investigate(
     }
   }
 
+  // HOR-94 / HOR-193 — bounded git change summary for the incident window.
+  // Collected here (before evidence build) so commit evidence can be synthesized
+  // when the source-backend ChangeSet is unavailable (e.g. source down, or --since
+  // is a relative ref like HEAD~5 that detectChanges can't handle).
+  let recentChanges: BoundedGitChange | undefined;
+  if (deps.repoPath && input.since) {
+    try {
+      recentChanges = await collectGitChanges({ repoPath: deps.repoPath, since: input.since });
+    } catch {
+      // Best-effort; skip on error
+    }
+  }
+
   // d. BUILD Evidence
   const seedLine = top.startLine ?? 0;
   const seedEv = mkEv(
@@ -398,6 +414,20 @@ export async function investigate(
       'commit',
       `Change range ${input.since}..HEAD: +${addedN} -${removedN} ~${modifiedN} symbol(s)`,
       { added: addedN, removed: removedN, modified: modifiedN },
+      {},
+    );
+    changeEvId = ev.id;
+  }
+
+  // HOR-193: when the source-backend ChangeSet is unavailable but git history was
+  // collected (e.g. --since HEAD~5 with source backend down), synthesize a commit
+  // evidence entry so hypotheses + gaps receive the change signal.
+  if (changes === null && recentChanges !== undefined && recentChanges.commits.length > 0) {
+    const { commits, changedFiles, totalInsertions, totalDeletions } = recentChanges;
+    const ev = mkEv(
+      'commit',
+      `Git history ${input.since}..HEAD: ${commits.length} commit(s), ${changedFiles.length} file(s) changed (+${totalInsertions} -${totalDeletions})`,
+      { commits: commits.slice(0, 10), changedFiles: changedFiles.slice(0, 30), totalInsertions, totalDeletions, source: 'git' },
       {},
     );
     changeEvId = ev.id;
@@ -718,6 +748,7 @@ export async function investigate(
     queueBacklogEvIdsByQueue,
     queueStarvationEvIdsByQueue,
     queueMetricEvIdsByQueue,
+    sinceProvided: input.since !== undefined,
   });
 
   // e4. HYPOTHESIS VALIDATION (HOR-25) — adjust confidence + assign verdicts
@@ -788,6 +819,13 @@ export async function investigate(
       kind: 'observation',
       title: `${m} symbol(s) changed in range ${input.since}..HEAD`,
       confidence: clamp01(0.4 + Math.min(m, 20) / 40),
+      evidenceIds: [changeEvId],
+    });
+  } else if (!changes && changeEvId && recentChanges) {
+    findings.push({
+      kind: 'observation',
+      title: `${recentChanges.commits.length} commit(s) in ${input.since}..HEAD touching ${recentChanges.changedFiles.length} file(s)`,
+      confidence: clamp01(0.3 + Math.min(recentChanges.commits.length, 10) / 20),
       evidenceIds: [changeEvId],
     });
   }
@@ -963,13 +1001,21 @@ export async function investigate(
     });
   }
 
-  if (changes && changeEvId) {
+  if (changeEvId) {
+    // File-overlap boost: if the seed's file appears among changed files, the
+    // deployment-regression hypothesis is more likely — raise base score to 0.45.
+    const gitChangedFiles = recentChanges?.changedFiles ?? [];
+    const seedInChanges =
+      gitChangedFiles.length > 0 &&
+      gitChangedFiles.some(
+        (f) => f === top.filePath || top.filePath.endsWith(f) || f.endsWith(top.filePath),
+      );
     causeInputs.push({
       id: 'cause:deployment-regression',
       title: `Recent change to ${top.name} in ${input.since}..HEAD may have introduced the regression`,
       category: 'deployment-regression',
       sourceEvidenceIds: [changeEvId, seedEv.id],
-      baseScore: clamp01(0.25 + (queueHits.length > 0 ? 0.05 : 0)),
+      baseScore: clamp01((seedInChanges ? 0.45 : 0.25) + (queueHits.length > 0 ? 0.05 : 0)),
       metadata: { blastRadius },
     });
   }
@@ -1066,17 +1112,6 @@ export async function investigate(
     ? `Investigation of "${hint}" resolved to ${label} (${area}). Top suspected cause: ${topCause.title}.`
     : `Investigation of "${hint}" resolved to ${label} (${area}). No dominant suspected cause emerged from the available structural evidence.`;
 
-  // HOR-94 — bounded git change summary for the incident window.
-  // Collected when repoPath + since are available; never throws.
-  let recentChanges: BoundedGitChange | undefined;
-  if (deps.repoPath && input.since) {
-    try {
-      recentChanges = await collectGitChanges({ repoPath: deps.repoPath, since: input.since });
-    } catch {
-      // Best-effort; skip on error
-    }
-  }
-
   // i. nextActions
   const nextActions = buildNextActions(top, ctx, impact, queueHits, changes, input);
 
@@ -1110,7 +1145,7 @@ export async function investigate(
   // HOR-19 — compute gap analysis and cap confidence BEFORE persisting so the
   // persisted record reflects the capped value.
   const connectorFlags: ConnectorFlags = deps.connectors
-    ? { ...deps.connectors, metricsCollected, metricsFailureReason, logsCollected, logsCompatibilityError }
+    ? { ...deps.connectors, metricsCollected, metricsFailureReason, logsCollected, logsCompatibilityError, sinceProvided: input.since !== undefined }
     : {
         elasticsearch: deps.logs != null,
         mongodb: deps.mongo != null,
@@ -1119,6 +1154,7 @@ export async function investigate(
         metricsFailureReason,
         logsCollected,
         logsCompatibilityError,
+        sinceProvided: input.since !== undefined,
       };
   const gapAnalysis = detectMissingEvidence(report, connectorFlags);
   report.gapAnalysis = gapAnalysis;

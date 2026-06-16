@@ -74,9 +74,9 @@ describe('looksDiffable', () => {
     expect(looksDiffable('abc1234')).toBe(true);
   });
 
-  it('returns false for HEAD~N notation (~ not in allowed char set)', () => {
-    // Use HEAD~N..HEAD range notation or a bare sha instead
-    expect(looksDiffable('HEAD~3')).toBe(false);
+  it('returns true for HEAD~N relative ref notation', () => {
+    expect(looksDiffable('HEAD~3')).toBe(true);
+    expect(looksDiffable('HEAD~5')).toBe(true);
   });
 
   it('returns true for a tag name', () => {
@@ -87,10 +87,11 @@ describe('looksDiffable', () => {
     expect(looksDiffable('main')).toBe(true);
   });
 
-  it('returns true for duration strings (alphanumeric — tried as ref, fails gracefully)', () => {
-    // Duration strings match the alphanumeric char set; detectChanges catches the failure.
-    expect(looksDiffable('2h')).toBe(true);
-    expect(looksDiffable('7d')).toBe(true);
+  it('returns false for duration strings (log window specifiers, not git refs)', () => {
+    expect(looksDiffable('2h')).toBe(false);
+    expect(looksDiffable('7d')).toBe(false);
+    expect(looksDiffable('30m')).toBe(false);
+    expect(looksDiffable('90s')).toBe(false);
   });
 
   it('returns false for an empty string', () => {

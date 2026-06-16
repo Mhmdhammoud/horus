@@ -38,6 +38,11 @@ export interface ConnectorFlags {
    * Used to surface the exact failure reason in the gap analysis.
    */
   metricsFailureReason?: string;
+  /**
+   * True when the user already supplied a `--since` value.
+   * Changes the "deployment records" gap text to avoid redundant "re-run with --since" advice.
+   */
+  sinceProvided?: boolean;
 }
 
 /** A single dimension of missing evidence and its investigation impact. */
@@ -154,8 +159,12 @@ export function detectMissingEvidence(
   if (!hasCommit) {
     gaps.push({
       dimension: 'deployment records',
-      why: 'No deployment/change data in scope — cannot tell what shipped before the incident.',
-      nextSource: 'Re-run with --since <ref>, or `horus what-changed <service>`',
+      why: connectors.sinceProvided
+        ? 'No git changes found in the specified range — the ref may not be diffable or no commits fall in this window.'
+        : 'No deployment/change data in scope — cannot tell what shipped before the incident.',
+      nextSource: connectors.sinceProvided
+        ? 'Use HEAD~N or a specific SHA/branch for git diff ranges (e.g. --since HEAD~5)'
+        : 'Re-run with --since <ref>, or `horus what-changed <service>`',
       confidenceImpact: 0.08,
     });
     blindSpots.push('Cannot correlate with a recent change.');

@@ -66,10 +66,14 @@ export function isRefLike(s: string): boolean {
   if (t.includes('..')) return false;
   // ISO date, "N days ago", "N hours ago", "yesterday", etc.
   if (/\s|:|ago|yesterday|week|month|year|=/i.test(t)) return false;
+  // Duration strings like "24h", "7d", "30m", "90s" — log window specifiers,
+  // not git refs.
+  if (/^\d+[smhd]$/i.test(t)) return false;
   // Pure hex SHA (7–40 chars)
   if (/^[0-9a-f]{7,40}$/i.test(t)) return true;
-  // Short named ref (branch / tag)
-  if (/^[a-zA-Z0-9_./-]{1,200}$/.test(t) && !/^\d{4}-\d{2}-\d{2}$/.test(t)) return true;
+  // Named ref: branch, tag, or relative ref notation (HEAD~5, v1.2~3, etc.).
+  // Allows ~^- in addition to the base alphanumeric+./_ set.
+  if (/^[a-zA-Z0-9_.~^/-]{1,200}$/.test(t) && !/^\d{4}-\d{2}-\d{2}$/.test(t)) return true;
   return false;
 }
 
