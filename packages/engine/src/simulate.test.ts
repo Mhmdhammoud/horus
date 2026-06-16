@@ -3,12 +3,13 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { Symbol } from '@horus/core';
+import type { Symbol, Evidence } from '@horus/core';
 import type { InvestigationReport } from './types.js';
 import type { ValidatedHypothesis } from './validate.js';
 import type { BoundaryCrossing } from './timeline.js';
 import type { EvidenceGap } from './gaps.js';
 import { SCENARIOS, getScenario, evaluateScenario } from './simulate.js';
+import { renderSimulation } from './render-simulate.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -53,6 +54,19 @@ function makeGap(): EvidenceGap {
   };
 }
 
+function makeCommitEvidence(): Evidence {
+  return {
+    id: globalThis.crypto.randomUUID(),
+    source: 'history',
+    kind: 'commit',
+    title: 'chore: touch zoho sync worker',
+    relevance: 0.6,
+    payload: {},
+    links: {},
+    provenance: { query: 'git log', collectedAt: '2026-06-16T10:00:00Z' },
+  };
+}
+
 /** A fully-populated report that should satisfy all expected signals. */
 function makeFullReport(): InvestigationReport {
   const seeds: Symbol[] = [makeSymbol('ZohoRealtimeSyncWorker')];
@@ -75,7 +89,7 @@ function makeFullReport(): InvestigationReport {
     input: { hint: 'zoho realtime sync delays' },
     summary: 'Synthetic full report.',
     seeds,
-    evidence: [],
+    evidence: [makeCommitEvidence()],
     timeline: { events: [], boundaryCrossings },
     correlation: { groups: [], chains: [], missing: [] },
     findings: [],
@@ -279,5 +293,68 @@ describe('evaluateScenario — key mapping', () => {
     const unknownCheck = evaluation.checks[0];
     expect(unknownCheck?.ok).toBe(false);
     expect(evaluation.passed).toBe(0);
+  });
+});
+
+describe('evaluateScenario — deployment-regression', () => {
+  it('passes the commit check when commit evidence is present', () => {
+    const scenario = getScenario('deployment-regression');
+    expect(scenario).not.toBeNull();
+
+    const report = makeFullReport();
+    const evaluation = evaluateScenario(scenario!, report);
+
+    const commitCheck = evaluation.checks.find((c) => c.label === 'Recent change evidence found');
+    expect(commitCheck?.ok).toBe(true);
+  });
+
+  it('fails the commit check when no commit evidence is present', () => {
+    const scenario = getScenario('deployment-regression');
+    expect(scenario).not.toBeNull();
+
+    const report = makeFullReport();
+    report.evidence = [];
+    const evaluation = evaluateScenario(scenario!, report);
+
+    const commitCheck = evaluation.checks.find((c) => c.label === 'Recent change evidence found');
+    expect(commitCheck?.ok).toBe(false);
+  });
+});
+
+describe('renderSimulation', () => {
+  it('shows a weak-investigation note when the score is below total', () => {
+    const scenario = getScenario('queue-backlog')!;
+    const report = makeEmptyReport();
+    const evaluation = evaluateScenario(scenario, report);
+
+    const output = renderSimulation(scenario, report, evaluation);
+    expect(output).toContain('Weak investigation');
+  });
+
+  it('does not show a weak-investigation note when all checks pass', () => {
+    const scenario = getScenario('queue-backlog')!;
+    const report = makeFullReport();
+    const evaluation = evaluateScenario(scenario, report);
+
+    const output = renderSimulation(scenario, report, evaluation);
+    expect(output).not.toContain('Weak investigation');
+  });
+
+  it('explains a missing queue boundary for queue scenarios', () => {
+    const scenario = getScenario('queue-backlog')!;
+    const report = makeEmptyReport();
+    const evaluation = evaluateScenario(scenario, report);
+
+    const output = renderSimulation(scenario, report, evaluation);
+    expect(output).toContain('No queue boundary was detected');
+  });
+
+  it('explains missing commit evidence for deployment-regression scenarios', () => {
+    const scenario = getScenario('deployment-regression')!;
+    const report = makeEmptyReport();
+    const evaluation = evaluateScenario(scenario, report);
+
+    const output = renderSimulation(scenario, report, evaluation);
+    expect(output).toContain('No recent change evidence was found');
   });
 });

@@ -91,6 +91,7 @@ export const SCENARIOS: Scenario[] = [
     since: 'HEAD~10',
     expectedSignals: [
       { key: 'seed', label: 'Seed symbols resolved' },
+      { key: 'commit', label: 'Recent change evidence found' },
       { key: 'hyp:deployment-regression', label: 'deployment-regression hypothesis present' },
       { key: 'actions', label: 'Next actions generated' },
     ],
@@ -160,6 +161,7 @@ export function getScenario(id: string): Scenario | null {
  *   queue-boundary   → report.timeline.boundaryCrossings.length > 0
  *   gaps             → report.gapAnalysis.gaps.length > 0
  *   actions          → report.nextActions.length > 0
+ *   commit           → report.evidence.some(e => e.kind === 'commit')
  *   hyp:<category>   → report.hypotheses.some(h => h.category === category)
  *   (unknown)        → false
  */
@@ -178,6 +180,8 @@ export function evaluateScenario(
       ok = report.gapAnalysis.gaps.length > 0;
     } else if (signal.key === 'actions') {
       ok = report.nextActions.length > 0;
+    } else if (signal.key === 'commit') {
+      ok = report.evidence.some((e) => e.kind === 'commit');
     } else if (signal.key.startsWith('hyp:')) {
       const category = signal.key.slice(4);
       ok = report.hypotheses.some((h) => h.category === category);
