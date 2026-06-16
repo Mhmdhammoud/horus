@@ -73,6 +73,7 @@ export async function runLogs(
     }
 
     const resolvedService = service ?? renv.connectors.elasticsearch?.serviceName;
+    const indexPattern = renv.connectors.elasticsearch?.indexPattern ?? '*';
 
     // Validate that the configured field mapping is compatible with the actual
     // index before querying. Errors block collection; warnings are advisory.
@@ -105,7 +106,11 @@ export async function runLogs(
       // legitimate queries from proceeding.
       console.warn(pc.dim('[warn] Elasticsearch compatibility check unavailable — proceeding.'));
     }
-    const from = sinceToIso(opts.since);
+
+    // Default to 7 days to match the investigation engine's default window
+    // (investigation uses logWindowFrom(undefined) = 7d; former implicit default was 24h).
+    const from = sinceToIso(opts.since) ?? new Date(Date.now() - 7 * 86_400_000).toISOString();
+    const fromDisplay = from.slice(0, 16).replace('T', ' ');
 
     // --raw: the escape hatch for an actual line dump.
     if (opts.raw === true) {
@@ -131,20 +136,40 @@ export async function runLogs(
     }
 
     // Default: synthesize error evidence.
-    const analysis = await logs.analyzeErrors({
+    let analysis = await logs.analyzeErrors({
       service: resolvedService,
       from,
       text: opts.grep,
     });
 
+    let scopeService = resolvedService;
+    let broadeningNote: string | undefined;
+
+    // Broader discovery mode: when a service filter returns 0 signatures, retry
+    // without the filter so the user sees the actual log volume in this environment.
+    // This prevents `horus logs "sale"` from silently implying there are no errors
+    // when investigation can find thousands (HOR-157).
+    if (analysis.signatures.length === 0 && resolvedService !== undefined) {
+      const broader = await logs.analyzeErrors({ from, text: opts.grep });
+      if (broader.signatures.length > 0) {
+        analysis = broader;
+        broadeningNote = `No errors found for service "${resolvedService}" — showing all services`;
+        scopeService = undefined;
+      }
+    }
+
     console.log(
       pc.bold(`Error analysis`) +
         pc.dim(
           ` — ${renv.project}/${renv.env}` +
-            (resolvedService ? ` · service ${resolvedService}` : '') +
+            (scopeService ? ` · service ${scopeService}` : '') +
             (opts.grep ? ` · grep "${opts.grep}"` : ''),
         ),
     );
+    console.log(pc.dim(`  index: ${indexPattern} · from: ${fromDisplay} UTC · severity: error+`));
+    if (broadeningNote) {
+      console.log(pc.yellow(`  ${broadeningNote}`));
+    }
     console.log(
       `  ${analysis.totalErrors} error(s) · ${analysis.signatures.length} signature(s) · ${pc.yellow(String(analysis.newSignatures.length))} new`,
     );
@@ -152,6 +177,12 @@ export async function runLogs(
 
     if (analysis.signatures.length === 0) {
       console.log(pc.dim('  No error-level logs in the window.'));
+      console.log(
+        pc.dim(
+          `  Searched: ${scopeService ? `service "${scopeService}"` : 'all services'} · index: ${indexPattern} · from: ${fromDisplay} UTC`,
+        ),
+      );
+      console.log(pc.dim(`  Tip: use --since to widen the window (e.g. --since 30d).`));
       return 0;
     }
 
