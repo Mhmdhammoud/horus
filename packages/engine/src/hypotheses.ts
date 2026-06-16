@@ -46,6 +46,12 @@ export interface HypothesisContext {
   queueBacklogEvIdsByQueue?: Map<string, string[]>;
   queueStarvationEvIdsByQueue?: Map<string, string[]>;
   queueMetricEvIdsByQueue?: Map<string, string[]>;
+  /**
+   * True when the caller already supplied a `--since` value.
+   * Suppresses "re-run with --since" from the deployment-regression missing-evidence
+   * list — redundant advice when the user already provided a range.
+   */
+  sinceProvided?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,6 +77,30 @@ export function generateHypotheses(
   const hasCommit = commitEvs.length > 0;
   const { queues } = ctx;
 
+  // ── Pre-compute cross-hypothesis signals ─────────────────────────────────────
+
+  // Log spikes (ratio >= 2.0): doubled error rate is consistent with retry
+  // amplification — if workers keep retrying failed operations, error counts escalate.
+  const logSpikeEvIds = evidence
+    .filter((e) => e.kind === 'log' && e.ratio !== undefined && e.ratio >= 2.0)
+    .map((e) => e.id);
+
+  // DB / application-state evidence: MongoDB state anomalies indicate infra-level
+  // issues (document counts wrong, unexpected state) rather than pure code bugs.
+  const stateEvIds = evidence.filter((e) => e.kind === 'state').map((e) => e.id);
+
+  // Queue backlog: all queues accumulating work — consistent with retry amplification.
+  const allQueueBacklogEvIds = [
+    ...(ctx.queueBacklogEvIdsByQueue?.values() ?? []),
+  ].flat();
+
+  // Queue starvation: active === 0 and waiting >= threshold — workers stopped.
+  // Starvation indicates infrastructure failure (worker process died, DB unreachable)
+  // rather than retry amplification (which requires active workers).
+  const allQueueStarvationEvIds = [
+    ...(ctx.queueStarvationEvIdsByQueue?.values() ?? []),
+  ].flat();
+
   const hyps: Hypothesis[] = [];
 
   // a. deployment-regression — always emitted
@@ -84,9 +114,9 @@ export function generateHypotheses(
     contradictingEvidenceIds: [],
     missingEvidence: hasCommit
       ? []
-      : [
-          'A change/deployment range — re-run with --since <ref> to diff what shipped',
-        ],
+      : ctx.sinceProvided
+        ? ['No git changes found in the specified range — verify the ref is accessible or use HEAD~N for exact commit ranges']
+        : ['A change/deployment range — re-run with --since <ref> to diff what shipped'],
   });
 
   // b+c. Per-queue hypotheses — one pair (queue-backlog + worker-slowdown) per queue.
@@ -139,28 +169,44 @@ export function generateHypotheses(
   });
 
   // e. retry-storm — always emitted
+  // Support: log spikes (escalating error rate is the fingerprint of retry amplification)
+  //          + queue backlog (workers keep retrying, so queues fill up).
+  // Contradiction: queue starvation (workers are stopped, so they CANNOT be retrying —
+  //   starvation means infrastructure failure, not retry amplification).
+  const retryStormSupport = [...new Set([...logSpikeEvIds, ...allQueueBacklogEvIds])];
   hyps.push({
     id: globalThis.crypto.randomUUID(),
     category: 'retry-storm',
     statement: 'A retry storm is amplifying load on the failing path.',
-    confidence: 0.15,
-    supportingEvidenceIds: [],
-    contradictingEvidenceIds: [],
-    missingEvidence: [
-      'Retry/error logs + queue retry statistics (Elasticsearch + BullMQ)',
-    ],
+    confidence: retryStormSupport.length > 0 ? 0.35 : 0.15,
+    supportingEvidenceIds: retryStormSupport,
+    contradictingEvidenceIds: allQueueStarvationEvIds,
+    missingEvidence: retryStormSupport.length > 0
+      ? []
+      : ['Retry/error logs + queue retry statistics (Elasticsearch + BullMQ)'],
   });
 
   // f. infrastructure — always emitted
+  // Support: DB state anomalies (MongoDB signals), queue starvation (workers died),
+  //          and latency metric anomalies (slow responses = infra degradation).
+  const infraSupport = [
+    ...new Set([
+      ...stateEvIds,
+      ...allQueueStarvationEvIds,
+      ...(ctx.latencyMetricEvIds ?? []),
+    ]),
+  ];
   hyps.push({
     id: globalThis.crypto.randomUUID(),
     category: 'infrastructure',
     statement:
       'An infrastructure issue (database, Redis, or network) is degrading processing.',
-    confidence: 0.15,
-    supportingEvidenceIds: [],
+    confidence: infraSupport.length > 0 ? 0.35 : 0.15,
+    supportingEvidenceIds: infraSupport,
     contradictingEvidenceIds: [],
-    missingEvidence: ['Infra/Redis metrics (Grafana) + Redis state'],
+    missingEvidence: infraSupport.length > 0
+      ? []
+      : ['Infra/Redis metrics (Grafana) + Redis state'],
   });
 
   // Sort by confidence descending (stable — JS Array.sort is stable in V8 / Node 11+)

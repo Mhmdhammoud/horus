@@ -13,9 +13,16 @@ import { validateHypotheses } from './validate.js';
 // ---------------------------------------------------------------------------
 
 function makeEvidence(kind: Evidence['kind'], id?: string): Evidence {
+  const source: Evidence['source'] =
+    kind === 'commit' ? 'history'
+    : kind === 'queue-edge' || kind === 'queue-state' ? 'queue'
+    : kind === 'log' ? 'logs'
+    : kind === 'metric' ? 'metrics'
+    : kind === 'state' || kind === 'redis-key' ? 'state'
+    : 'code';
   return {
     id: id ?? globalThis.crypto.randomUUID(),
-    source: kind === 'commit' ? 'history' : kind === 'queue-edge' ? 'queue' : 'code',
+    source,
     kind,
     title: `Test evidence (${kind})`,
     relevance: 0.5,
@@ -129,6 +136,88 @@ describe('generateHypotheses', () => {
     expect(dr).toBeDefined();
     expect(dr!.confidence).toBe(0.15);
     expect(dr!.missingEvidence.length).toBeGreaterThan(0);
+    expect(dr!.missingEvidence[0]).toContain('--since');
+  });
+
+  it('sinceProvided suppresses "re-run with --since" message in favour of a ref guidance message', () => {
+    const evidence: Evidence[] = [makeEvidence('queue-edge')];
+
+    const hyps = generateHypotheses(evidence, emptyCorrelation, {
+      seedLabel: 'X',
+      queues: [],
+      sinceProvided: true,
+    });
+
+    const dr = hyps.find((h) => h.category === 'deployment-regression');
+    expect(dr).toBeDefined();
+    expect(dr!.missingEvidence.length).toBeGreaterThan(0);
+    // Should not ask to re-run with --since when it was already supplied.
+    expect(dr!.missingEvidence[0]).not.toContain('re-run with --since');
+  });
+
+  it('retry-storm is supported when spiked log evidence is present (ratio >= 2.0)', () => {
+    const spikedLog: Evidence = {
+      ...makeEvidence('log'),
+      ratio: 3.5,
+    };
+    const hyps = generateHypotheses([spikedLog], emptyCorrelation, {
+      seedLabel: 'X',
+      queues: [],
+    });
+    const rs = hyps.find((h) => h.category === 'retry-storm');
+    expect(rs).toBeDefined();
+    expect(rs!.confidence).toBeGreaterThan(0.15);
+    expect(rs!.supportingEvidenceIds).toContain(spikedLog.id);
+    expect(rs!.missingEvidence).toHaveLength(0);
+  });
+
+  it('retry-storm is weakened when queue starvation evidence is present (workers stopped)', () => {
+    const queueId = 'q-starvation-ev';
+    const starvationEv: Evidence = makeEvidence('queue-state', queueId);
+    const hyps = generateHypotheses([starvationEv], emptyCorrelation, {
+      seedLabel: 'X',
+      queues: ['orders'],
+      queueStarvationEvIdsByQueue: new Map([['orders', [queueId]]]),
+    });
+    const rs = hyps.find((h) => h.category === 'retry-storm');
+    expect(rs).toBeDefined();
+    expect(rs!.contradictingEvidenceIds).toContain(queueId);
+  });
+
+  it('infrastructure is supported by DB state evidence', () => {
+    const stateEv = makeEvidence('state');
+    const hyps = generateHypotheses([stateEv], emptyCorrelation, {
+      seedLabel: 'X',
+      queues: [],
+    });
+    const infra = hyps.find((h) => h.category === 'infrastructure');
+    expect(infra).toBeDefined();
+    expect(infra!.confidence).toBeGreaterThan(0.15);
+    expect(infra!.supportingEvidenceIds).toContain(stateEv.id);
+    expect(infra!.missingEvidence).toHaveLength(0);
+  });
+
+  it('infrastructure is supported by latency metric evidence', () => {
+    const latencyMetricId = 'latency-metric-ev';
+    const hyps = generateHypotheses([], emptyCorrelation, {
+      seedLabel: 'X',
+      queues: [],
+      latencyMetricEvIds: [latencyMetricId],
+    });
+    const infra = hyps.find((h) => h.category === 'infrastructure');
+    expect(infra).toBeDefined();
+    expect(infra!.supportingEvidenceIds).toContain(latencyMetricId);
+  });
+
+  it('retry-storm and infrastructure have no support when no matching evidence is present', () => {
+    const evidence: Evidence[] = [makeEvidence('symbol'), makeEvidence('commit')];
+    const hyps = generateHypotheses(evidence, emptyCorrelation, { seedLabel: 'X', queues: [] });
+    const rs = hyps.find((h) => h.category === 'retry-storm');
+    const infra = hyps.find((h) => h.category === 'infrastructure');
+    expect(rs!.confidence).toBe(0.15);
+    expect(rs!.supportingEvidenceIds).toHaveLength(0);
+    expect(infra!.confidence).toBe(0.15);
+    expect(infra!.supportingEvidenceIds).toHaveLength(0);
   });
 
   it('queue-backlog and worker-slowdown are absent when no queue-edge evidence is provided', () => {
