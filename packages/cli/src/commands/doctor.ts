@@ -71,13 +71,13 @@ export async function runDoctor(opts?: {
       const file = readLocalConfig(configPath);
       const project = file.project as Record<string, unknown>;
       const repos = project['repositories'] as Array<Record<string, unknown>> | undefined;
-      const hasHost = repos?.some(
+      const hostUrl = repos?.map(
         (r) =>
-          (r['source'] as Record<string, unknown> | undefined)?.['hostUrl'] ??
-          (r['axon'] as Record<string, unknown> | undefined)?.['hostUrl'],
-      );
-      if (hasHost) {
-        checks.push({ label: 'Source-intelligence host', status: 'pass', detail: 'configured' });
+          ((r['source'] as Record<string, unknown> | undefined)?.['hostUrl'] ??
+            (r['axon'] as Record<string, unknown> | undefined)?.['hostUrl']) as string | undefined,
+      ).find(Boolean);
+      if (hostUrl) {
+        checks.push({ label: 'Source-intelligence host', status: 'pass', detail: hostUrl });
       } else {
         checks.push({
           label: 'Source-intelligence host',

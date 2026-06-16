@@ -534,7 +534,7 @@ section STATUS "Status / registry (status · repos · hosts)"
 
 # status must exit 0 even with no connectors configured — it is always blocking.
 in_repo_check "horus status" status
-check_warn "horus repos"   repos
+in_repo_warn "horus repos" repos
 check_warn "horus hosts"   hosts
 
 # ── § 7  SCORING ─────────────────────────────────────────────────────────────

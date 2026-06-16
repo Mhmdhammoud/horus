@@ -105,29 +105,10 @@ describe('source-boundary — lifecycle delegates (HOR-136)', () => {
       expect(readSourceHostUrl(tmp)).toBe('http://127.0.0.1:9000');
     });
 
-    it('falls back to .axon/host.json when .horus/source/host.json is absent', () => {
+    it('returns null when .horus/source/host.json is absent', () => {
       tmp = join(tmpdir(), `horus-test-${process.pid}`);
-      mkdirSync(join(tmp, '.axon'), { recursive: true });
-      writeFileSync(
-        join(tmp, '.axon', 'host.json'),
-        JSON.stringify({ host_url: 'http://127.0.0.1:8420' }),
-      );
-      expect(readSourceHostUrl(tmp)).toBe('http://127.0.0.1:8420');
-    });
-
-    it('prefers .horus/source/host.json over .axon/host.json when both are present', () => {
-      tmp = join(tmpdir(), `horus-test-${process.pid}`);
-      mkdirSync(join(tmp, '.horus', 'source'), { recursive: true });
-      mkdirSync(join(tmp, '.axon'), { recursive: true });
-      writeFileSync(
-        join(tmp, '.horus', 'source', 'host.json'),
-        JSON.stringify({ host_url: 'http://127.0.0.1:9000' }),
-      );
-      writeFileSync(
-        join(tmp, '.axon', 'host.json'),
-        JSON.stringify({ host_url: 'http://127.0.0.1:8420' }),
-      );
-      expect(readSourceHostUrl(tmp)).toBe('http://127.0.0.1:9000');
+      mkdirSync(tmp, { recursive: true });
+      expect(readSourceHostUrl(tmp)).toBeNull();
     });
   });
 });

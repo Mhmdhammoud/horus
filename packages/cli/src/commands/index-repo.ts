@@ -187,10 +187,11 @@ export async function runIndex(opts: {
           `  investigate: horus investigate --name ${name} "<hint>"  (or from this repo: horus investigate "<hint>")`,
         ),
       );
-    } else if (spawned && !configuredHost) {
-      // Config exists (e.g. from `horus init`) but had no source host set.
-      // Patch the first repository entry with the newly started host URL so that
-      // `doctor`, `investigate`, and other source-backed commands find it.
+    } else if (!configuredHost) {
+      // Config exists but had no source host set — patch it regardless of whether the
+      // host was just spawned or reused from a previous run (.horus/source/host.json).
+      // Without this, a reused host would never be persisted to the local config and
+      // `horus doctor` would keep reporting "not configured" (HOR-150).
       const existingPath = discoverLocalConfig(root);
       if (existingPath) {
         const file = readLocalConfig(existingPath);

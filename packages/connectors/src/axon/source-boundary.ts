@@ -30,7 +30,7 @@ export type {
   SourceHealth,
 } from './types.js';
 
-import { axonAvailable, getAxonVersion, readAxonHostUrl, resolveSourceBin } from './lifecycle.js';
+import { axonAvailable, getAxonVersion, resolveSourceBin } from './lifecycle.js';
 
 /** Is `horus-source` on PATH? */
 export function sourceAvailable(): Promise<boolean> {
@@ -49,10 +49,7 @@ export function getActiveSourceBin(): Promise<string | null> {
 
 /**
  * Return the host URL for the source-intelligence backend serving `root`, or null.
- *
- * Resolution order (HOR-137):
- * 1. `.horus/source/host.json` — Horus-owned canonical path (future binary writes here).
- * 2. `.axon/host.json` — legacy path written by the Axon binary (backwards compat).
+ * Reads from `.horus/source/host.json` — the canonical path written by horus-source.
  */
 export function readSourceHostUrl(root: string): string | null {
   const horusPath = join(root, '.horus', 'source', 'host.json');
@@ -61,8 +58,8 @@ export function readSourceHostUrl(root: string): string | null {
       const j = JSON.parse(readFileSync(horusPath, 'utf8')) as { host_url?: unknown };
       if (typeof j.host_url === 'string') return j.host_url;
     } catch {
-      // Corrupt file — fall through to legacy path.
+      return null;
     }
   }
-  return readAxonHostUrl(root);
+  return null;
 }
