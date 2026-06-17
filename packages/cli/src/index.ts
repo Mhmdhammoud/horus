@@ -375,6 +375,8 @@ Examples:
     .option('--until <when>', 'git --until')
     .option('--all', 'include all history instead of the default recent window')
     .option('--json', 'output JSON')
+    .option('--ai', 'append AI narrative interpretation of the timeline')
+    .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
     .action(
       async (
         service: string | undefined,
@@ -385,6 +387,8 @@ Examples:
           until?: string;
           all?: boolean;
           json?: boolean;
+          ai?: boolean;
+          aiModel?: string;
         },
       ) => {
         process.exitCode = await runTimeline(service, {
@@ -394,6 +398,8 @@ Examples:
           until: opts.until,
           all: opts.all,
           json: opts.json,
+          ai: opts.ai,
+          aiModel: opts.aiModel,
         });
       },
     );
@@ -408,6 +414,8 @@ Examples:
     .option('--since <when>', 'git --since (default "7 days ago")')
     .option('--until <when>', 'git --until')
     .option('--json', 'output JSON')
+    .option('--ai', 'append AI interpretation of the changes')
+    .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
     .action(
       async (
         service: string | undefined,
@@ -417,6 +425,8 @@ Examples:
           since?: string;
           until?: string;
           json?: boolean;
+          ai?: boolean;
+          aiModel?: string;
         },
       ) => {
         process.exitCode = await runWhatChanged(service, {
@@ -425,6 +435,8 @@ Examples:
           since: opts.since,
           until: opts.until,
           json: opts.json,
+          ai: opts.ai,
+          aiModel: opts.aiModel,
         });
       },
     );

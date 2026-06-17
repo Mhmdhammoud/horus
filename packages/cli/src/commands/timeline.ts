@@ -6,6 +6,9 @@ import {
   renderChangeTimeline,
   changeTimelineToJSON,
 } from '@horus/engine';
+import { renderInterpretation } from '@horus/ai';
+import type { InterpretationProvider } from '@horus/ai';
+import { renderAiInterpretation } from '../lib/ai-provider.js';
 
 // Same default window as `horus what-changed` — a bounded, investigation-useful range
 // instead of all history (which buried real signal under hundreds of commits, HOR-202).
@@ -25,6 +28,23 @@ export function resolveTimelineWindow(opts: { since?: string; all?: boolean }): 
   return { since, usingDefault };
 }
 
+export const TIMELINE_AI_CONTRACT = `Provide a clearly separated AI interpretation section with:
+
+Evidence used
+- List the timeline events, commits, and change-impact signals Horus found
+
+Narrative
+- Group events into phases (e.g. pre-change, change window, symptom onset, recovery)
+- Highlight any suspicious ordering (e.g. a change immediately before first error)
+- Note what happened before vs. after the first symptom if identifiable
+
+Confidence
+- High / Medium / Low with a one-line reason
+
+Gaps / Next checks
+- Missing evidence dimensions (logs, metrics, traces, etc.)
+- Exact Horus commands to fill the gaps`;
+
 export async function runTimeline(
   service: string | undefined,
   opts: {
@@ -35,6 +55,10 @@ export async function runTimeline(
     json?: boolean;
     /** Include all history instead of the default recent window. */
     all?: boolean;
+    ai?: boolean;
+    aiModel?: string;
+    /** Injectable AI provider for tests — bypasses credential resolution. */
+    _aiProvider?: InterpretationProvider;
   },
 ): Promise<number> {
   try {
@@ -71,6 +95,23 @@ export async function runTimeline(
               `${pc.bold('--all')}.`,
           ),
         );
+      }
+
+      if (opts.ai) {
+        const result = await renderAiInterpretation({
+          command: 'timeline',
+          userIntent: service ? `service: ${service}` : undefined,
+          evidence: t,
+          promptKind: 'timeline-narrative',
+          outputContract: TIMELINE_AI_CONTRACT,
+          config: opts.config,
+          modelOverride: opts.aiModel,
+          provider: opts._aiProvider,
+        });
+        console.log('\n' + renderInterpretation(result));
+        if (!result.ok) {
+          console.error(pc.yellow(`[ai] ${result.warning}`));
+        }
       }
     }
     return 0;
