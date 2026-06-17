@@ -360,8 +360,9 @@ Examples:
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--repo <name>', 'repository name from config')
-    .option('--since <when>', 'git --since (e.g. "7 days ago", a date)')
+    .option('--since <when>', 'git --since (default "7 days ago"; e.g. "30 days ago", a date)')
     .option('--until <when>', 'git --until')
+    .option('--all', 'include all history instead of the default recent window')
     .option('--json', 'output JSON')
     .action(
       async (
@@ -371,6 +372,7 @@ Examples:
           repo?: string;
           since?: string;
           until?: string;
+          all?: boolean;
           json?: boolean;
         },
       ) => {
@@ -379,6 +381,7 @@ Examples:
           repo: opts.repo,
           since: opts.since,
           until: opts.until,
+          all: opts.all,
           json: opts.json,
         });
       },
