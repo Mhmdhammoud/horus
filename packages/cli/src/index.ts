@@ -34,6 +34,7 @@ import { runProvidersDoctorCommand } from './commands/providers-doctor.js';
 import { runGenerateConfig } from './commands/generate-config.js';
 import { runReadiness } from './commands/readiness.js';
 import { runSkillInstall, runSkillPrint, runSkillPath } from './commands/skill.js';
+import { runUpdate } from './commands/update.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -813,6 +814,21 @@ Examples:
 Examples:
   horus skill path claude
   horus skill path generic --global
+`);
+
+  program
+    .command('update')
+    .description('Update Horus to the latest release from GitHub')
+    .option('--check', 'check for a newer version without downloading')
+    .option('--force', 're-download even if already on the latest version')
+    .action(async (opts: { check?: boolean; force?: boolean }) => {
+      process.exitCode = await runUpdate({ check: opts.check, force: opts.force });
+    })
+    .addHelpText('after', `
+Examples:
+  horus update              # update to latest
+  horus update --check      # check without installing
+  horus update --force      # re-download current version
 `);
 
   return program;
