@@ -601,11 +601,22 @@ export async function investigate(
   const queueBacklogEvIdsByQueue = new Map<string, string[]>();
   const queueStarvationEvIdsByQueue = new Map<string, string[]>();
 
-  if (deps.queue && queueHits.length > 0) {
+  if (deps.queue) {
     try {
-      const queueNames = [...new Set(queueHits.map((e) => e.queueName))];
-      queueRuntimeState = await deps.queue.analyzeQueues({ queueNames });
-      for (const s of analyzeQueueRuntime(queueRuntimeState)) {
+      // Probe the UNION of statically-known queues (from stitcher edges) and queues
+      // discovered live in Redis (HOR-205) — the same union `horus queues --live`
+      // uses. Static-only probing (queueHits) skipped live queue evidence entirely
+      // whenever the hint matched no static queue edge, and hid runtime-only queues
+      // (present in BullMQ with no static producer/worker mapping, e.g. a failing
+      // sync job) even when a queue was hit. Discovery is best-effort: a failure
+      // falls back to the static names so a flaky scan never drops known queues.
+      const staticNames = [...new Set(queueHits.map((e) => e.queueName))];
+      const discovered = await deps.queue.discoverQueues().catch(() => [] as string[]);
+      const queueNames = [...new Set([...staticNames, ...discovered])];
+      if (queueNames.length > 0) {
+        queueRuntimeState = await deps.queue.analyzeQueues({ queueNames });
+      }
+      for (const s of analyzeQueueRuntime(queueRuntimeState ?? { prefix: '', collectedAt: '', queues: [] })) {
         const ev = mkEv('queue-state', s.title, s.payload, { queueName: s.queueName }, s.timestamp, s.relevance);
         queueRuntimeEvIds.push(ev.id);
         const perQueue = queueRuntimeEvIdsByQueue.get(s.queueName) ?? [];
@@ -1220,11 +1231,22 @@ export async function investigate(
   // HOR-19 — compute gap analysis and cap confidence BEFORE persisting so the
   // persisted record reflects the capped value.
   const connectorFlags: ConnectorFlags = deps.connectors
-    ? { ...deps.connectors, metricsCollected, metricsFailureReason, logsCollected, logsCompatibilityError, sinceProvided: input.since !== undefined }
+    ? {
+        ...deps.connectors,
+        // The queue connector is configured iff a BullMQ provider was constructed
+        // (queueForEnv returns null without a bullmq/queues Redis DB) — HOR-205.
+        queue: deps.queue != null,
+        metricsCollected,
+        metricsFailureReason,
+        logsCollected,
+        logsCompatibilityError,
+        sinceProvided: input.since !== undefined,
+      }
     : {
         elasticsearch: deps.logs != null,
         mongodb: deps.mongo != null,
         grafana: deps.metrics != null,
+        queue: deps.queue != null,
         metricsCollected,
         metricsFailureReason,
         logsCollected,

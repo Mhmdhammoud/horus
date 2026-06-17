@@ -357,6 +357,92 @@ describe('investigate() — multi-queue attribution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 8. HOR-205 — multi-DB Redis: queue evidence via live discovery (no static edge)
+//
+// Reproduces the 0.1.11 bug: DB 0 holds cache/state, DB 1 holds bullmq/queues.
+// The investigation hint matches NO static queue edge (db has none), but the
+// queue connector is configured and `discoverQueues()` finds a runtime-only
+// failing queue. Investigation must (a) collect that live queue evidence and
+// (b) NOT report queues as "not configured".
+// ---------------------------------------------------------------------------
+
+/** Queue provider that discovers queues from Redis even with no static topology. */
+function makeDiscoveringQueueProvider(
+  discovered: string[],
+  state: QueueRuntimeState,
+): QueueRuntimeProvider {
+  return {
+    id: 'bullmq',
+    kind: 'queue',
+    async health() { return { ok: true, detail: 'fake' }; },
+    async analyzeQueues() { return state; },
+    async discoverQueues() { return discovered; },
+    toEvidence() { return []; },
+    async close() {},
+  };
+}
+
+describe('investigate() — HOR-205 multi-DB Redis queue evidence', () => {
+  it('collects live queue evidence discovered in Redis even with no static queue edge', async () => {
+    const failingState: QueueRuntimeState = {
+      prefix: 'bull',
+      collectedAt: new Date().toISOString(),
+      queues: [{
+        queueName: 'GAIA_STOCK_SYNC',
+        waiting: 0,
+        active: 0,
+        failed: 42, // > FAILED_WARN (20) → failed-spike signal
+        delayed: 0,
+        completed: 100,
+        paused: 0,
+        isPaused: false,
+      }],
+    };
+
+    const report = await investigate(
+      { hint: 'getSaleWithLink slow' },
+      {
+        code: fakeCode,
+        db: fakeDb, // no static queue edges
+        queue: makeDiscoveringQueueProvider(['GAIA_STOCK_SYNC'], failingState),
+        connectors: { redis: true },
+      },
+    );
+
+    // (a) live queue-state evidence is present despite no static queue edge
+    const queueEvidence = report.evidence.filter((e) => e.kind === 'queue-state');
+    expect(queueEvidence.length).toBeGreaterThan(0);
+    expect(queueEvidence.some((e) => e.title.includes('GAIA_STOCK_SYNC'))).toBe(true);
+
+    // (b) source status reports the queue as configured + contributing, not "not-configured"
+    const queueSource = report.sourceStatus?.sources.find((s) => s.source === 'queue');
+    expect(queueSource?.configured).toBe(true);
+    expect(queueSource?.status).toBe('contributed');
+
+    // (c) missing-evidence no longer claims queue depth/failure data is absent
+    expect(report.correlation.missing.some((m) => m.kind === 'queue-state')).toBe(false);
+  });
+
+  it('reports a configured-but-empty queue connector as "empty", not "not-configured"', async () => {
+    // Connector configured (queue provider present) but Redis holds no queues.
+    const emptyState: QueueRuntimeState = { prefix: 'bull', collectedAt: new Date().toISOString(), queues: [] };
+    const report = await investigate(
+      { hint: 'getSaleWithLink slow' },
+      {
+        code: fakeCode,
+        db: fakeDb,
+        queue: makeDiscoveringQueueProvider([], emptyState),
+        connectors: { redis: true },
+      },
+    );
+
+    const queueSource = report.sourceStatus?.sources.find((s) => s.source === 'queue');
+    expect(queueSource?.configured).toBe(true);
+    expect(queueSource?.status).toBe('empty');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 7. Grafana queue-growth: delimiter-aware matching and canonical key lookup
 // ---------------------------------------------------------------------------
 

@@ -229,6 +229,8 @@ export async function runInvestigate(
             grafana: !!renv.connectors.grafana?.url,
             mongodb: !!renv.connectors.mongodb?.url,
             redis: !!renv.connectors.redis?.url,
+            // Queue runtime is configured iff a BullMQ provider was built (HOR-205).
+            queue: !!queue,
           },
         },
       );

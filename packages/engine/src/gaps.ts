@@ -15,6 +15,15 @@ export interface ConnectorFlags {
   mongodb?: boolean;
   redis?: boolean;
   /**
+   * True when a BullMQ/queues runtime connector is configured for the env — i.e. a
+   * Redis DB with role `bullmq`/`queues` (or the single legacy DB) is wired up, the
+   * same condition under which `horus queues --live` can read live state (HOR-205).
+   * Distinguishes "queue connector not configured" from "configured but no live
+   * queue evidence" so source status / caveats don't claim queues are unconfigured
+   * when they are readable.
+   */
+  queue?: boolean;
+  /**
    * True when log collection ran to completion (even with zero signatures).
    * False/absent + elasticsearch:true means collection failed or was blocked.
    * Lets the gap detector distinguish "no matching logs" from "collection failed".

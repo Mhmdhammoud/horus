@@ -72,9 +72,12 @@ export function buildRuntimeSourceStatus(
   const stateCount = evidence.filter((e) => e.source === 'state').length;
   const stateConfigured = !!(connectors.redis || connectors.mongodb);
 
-  // Queue: configured when any queue evidence exists (connector ran); runtime
-  // count is queue-state only (queue-edge is structural, not operational).
-  const queueConfigured = evidence.some((e) => e.source === 'queue');
+  // Queue: configured when the BullMQ/queues connector is wired up (HOR-205) —
+  // not merely when queue evidence happens to exist. An investigation whose hint
+  // matched no static queue edge (and surfaced no live anomaly) would otherwise be
+  // reported as "queue not configured" even though `queues --live` can read it.
+  // Fall back to evidence presence for pre-HOR-205 reports lacking the flag.
+  const queueConfigured = connectors.queue ?? evidence.some((e) => e.source === 'queue');
   const queueCount = evidence.filter((e) => e.kind === 'queue-state').length;
 
   return {
