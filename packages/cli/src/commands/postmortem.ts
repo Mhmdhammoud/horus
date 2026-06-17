@@ -5,7 +5,8 @@ import { createDb, getInvestigation } from '@horus/db';
 import { resolveDbUrl } from '../lib/db-url.js';
 import { generatePostmortem, migrateReport } from '@horus/engine';
 import type { InvestigationReport } from '@horus/engine';
-import { renderNarrative, AnthropicNarrativeProvider } from '@horus/ai';
+import { renderNarrative } from '@horus/ai';
+import { buildNarrativeProvider } from '../lib/ai-provider.js';
 import { buildNarrativeInput, narrativeOutputToStoredJudgment } from './investigate.js';
 
 /**
@@ -77,7 +78,12 @@ export async function runPostmortem(
         }
       } else {
         const narrativeInput = buildNarrativeInput(report);
-        const provider = new AnthropicNarrativeProvider({ model: opts.aiModel });
+        // Resolve the key/model saved via `horus connect ai` (env fallback), same as
+        // investigate — so postmortem --ai works without exporting the env var (HOR-215).
+        const { provider } = await buildNarrativeProvider({
+          config: opts.config,
+          modelOverride: opts.aiModel,
+        });
         const { output, fromProvider, degraded, validationErrors } = await renderNarrative(
           narrativeInput,
           { provider },
