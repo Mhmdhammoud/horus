@@ -242,6 +242,7 @@ function rawNarrativeFallback(raw: string, input: NarrativeInput, ceiling: numbe
     whereNext: [],
     citations: [],
     confidence: Math.min(input.reportConfidence, ceiling),
+    degraded: true,
   };
 }
 

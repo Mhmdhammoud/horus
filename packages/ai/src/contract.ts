@@ -141,6 +141,11 @@ export interface NarrativeOutput {
    * Complements the deterministic suspected causes; never replaces them.
    */
   rootCauseAssessment?: AIRootCauseAssessment;
+  /**
+   * True when this narrative could not be parsed as structured JSON and `why` holds the
+   * raw model prose (HOR-205/213). The renderer labels it as unstructured AI output.
+   */
+  degraded?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -190,8 +195,10 @@ export function validateNarrative(
   if (!output.why || output.why.trim().length === 0) {
     errors.push('NarrativeOutput.why is required and must be non-empty');
   }
-  if (!Array.isArray(output.whereNext) || output.whereNext.length === 0) {
-    errors.push('NarrativeOutput.whereNext must be a non-empty array');
+  // whereNext is recommended-actions context, not core narrative. A missing or empty
+  // list must NOT invalidate an otherwise-useful narrative (HOR-213) — default it to [].
+  if (!Array.isArray(output.whereNext)) {
+    output.whereNext = [];
   }
 
   // Citation check — unknown IDs rejected
@@ -293,7 +300,13 @@ export interface RenderNarrativeResult {
   output: NarrativeOutput;
   /** True when the provider was used and output passed validation. */
   fromProvider: boolean;
-  /** Validation errors from provider output, if any (triggers fallback). */
+  /**
+   * True when the provider produced usable narrative text that did not fully validate
+   * (or was unstructured) — render it as a labeled raw AI section rather than discarding
+   * it for the deterministic summary (HOR-213).
+   */
+  degraded?: boolean;
+  /** Validation errors from provider output, if any. */
   validationErrors?: string[];
 }
 
@@ -316,8 +329,32 @@ export async function renderNarrative(
     try {
       const output = await opts.provider.render(safeInput, { confidenceCeiling: ceiling });
       const validation = validateNarrative(output, safeInput);
-      if (validation.valid) {
+      if (validation.valid && output.degraded !== true) {
         return { output, fromProvider: true };
+      }
+      // Not fully structured-valid (e.g. a hallucinated citation) OR an unstructured raw
+      // narrative — but the model still produced usable prose. Surface it as a labeled
+      // degraded section instead of discarding it for the deterministic summary (HOR-213).
+      const hasText = (output.what?.trim()?.length ?? 0) > 0 || (output.why?.trim()?.length ?? 0) > 0;
+      if (hasText) {
+        // Carry ONLY the narrative prose to the degraded result. The structured fields
+        // (citations, mentionedServices, hypothesisJudgments, rootCauseAssessment) did not
+        // fully validate, so they are dropped — nothing downstream can mistake an
+        // unvalidated/hallucinated cause or over-ceiling confidence for a trusted one.
+        const degradedOutput: NarrativeOutput = {
+          what: output.what ?? '',
+          why: output.why ?? '',
+          whereNext: Array.isArray(output.whereNext) ? output.whereNext : [],
+          citations: [],
+          confidence: Math.min(output.confidence ?? input.reportConfidence, ceiling),
+          degraded: true,
+        };
+        return {
+          output: degradedOutput,
+          fromProvider: false,
+          degraded: true,
+          validationErrors: validation.errors,
+        };
       }
       return {
         output: deterministicFallback(input),

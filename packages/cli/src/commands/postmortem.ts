@@ -78,9 +78,21 @@ export async function runPostmortem(
       } else {
         const narrativeInput = buildNarrativeInput(report);
         const provider = new AnthropicNarrativeProvider({ model: opts.aiModel });
-        const { output, fromProvider, validationErrors } = await renderNarrative(narrativeInput, { provider });
+        const { output, fromProvider, degraded, validationErrors } = await renderNarrative(
+          narrativeInput,
+          { provider },
+        );
 
-        if (!fromProvider) {
+        if (!fromProvider && degraded) {
+          // Usable AI prose that didn't fully validate — record it as a clearly-labeled
+          // unstructured section rather than 'unavailable' (HOR-213). Not persisted as a
+          // validated judgment (only the structured/valid path sets report.aiJudgment).
+          content += '\n\n## AI Summary (unstructured — not validated)\n\n';
+          if (output.what?.trim()) content += `**What happened:** ${output.what.trim()}\n\n`;
+          if (output.why?.trim()) content += `**Why:** ${output.why.trim()}\n`;
+        } else if (!fromProvider) {
+          // No usable AI text — provider threw (network/auth). validationErrors[0] here is
+          // the thrown error message, not a validation/hallucination detail.
           content += `\n\n## AI Summary\n\n_AI summary unavailable: ${validationErrors?.[0] ?? 'provider error'}_\n`;
         } else {
           content += '\n\n## AI Summary\n\n';

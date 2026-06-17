@@ -256,12 +256,12 @@ export async function runInvestigate(
         console.log(pc.dim(`[ai] model: ${model}`));
 
         const narrativeInput = buildNarrativeInput(report);
-        const { output, fromProvider, validationErrors } = await renderNarrative(narrativeInput, { provider });
+        const { output, fromProvider, degraded, validationErrors } = await renderNarrative(
+          narrativeInput,
+          { provider },
+        );
 
-        if (!fromProvider) {
-          const reason = classifyAIFailure(validationErrors?.[0]);
-          console.error(pc.yellow(`[ai] fallback to deterministic — ${reason}`));
-        } else {
+        if (fromProvider) {
           // Persist AI judgment in the report and update DB (HOR-198)
           const stored = narrativeOutputToStoredJudgment(output, 'anthropic');
           report.aiJudgment = stored;
@@ -271,6 +271,28 @@ export async function runInvestigate(
             // best-effort — display still works even if DB update fails
           }
           renderStoredAIJudgment(stored);
+        } else if (degraded) {
+          // The model produced usable prose that didn't fully validate — show it in a
+          // clearly-labeled unstructured section rather than discarding it (HOR-213).
+          if (validationErrors && validationErrors.length > 0) {
+            console.error(pc.yellow(`[ai] structured validation incomplete — showing raw AI narrative`));
+          }
+          console.log('');
+          console.log(pc.dim('─'.repeat(60)));
+          console.log(pc.bold('AI narrative ') + pc.yellow('(unstructured — not validated)'));
+          if (output.what?.trim()) {
+            console.log(pc.bold('\nWhat:'), output.what.trim());
+          }
+          if (output.why?.trim()) {
+            console.log(pc.bold('\nWhy:'), output.why.trim());
+          }
+          if (output.whereNext.length > 0) {
+            console.log(pc.bold('\nNext:'));
+            for (const a of output.whereNext) console.log(`  - ${a}`);
+          }
+        } else {
+          const reason = classifyAIFailure(validationErrors?.[0]);
+          console.error(pc.yellow(`[ai] fallback to deterministic — ${reason}`));
         }
       }
     } finally {

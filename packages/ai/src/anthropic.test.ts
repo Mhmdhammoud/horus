@@ -197,7 +197,7 @@ describe('renderNarrative + AnthropicNarrativeProvider', () => {
     expect(result.output.what).toBe(FIXTURE_INPUT.deterministicSummary);
   });
 
-  it('falls back when provider output cites an unknown evidence ID', async () => {
+  it('degrades (preserves AI text, strips citations) on a hallucinated evidence ID (HOR-213)', async () => {
     const hallucinated = {
       ...VALID_NARRATIVE,
       citations: [{ evidenceId: 'ev-HALLUCINATED', rationale: 'invented' }],
@@ -208,9 +208,14 @@ describe('renderNarrative + AnthropicNarrativeProvider', () => {
       provider: new AnthropicNarrativeProvider({ apiKey: 'k' }),
     });
 
+    // Not structured-valid, but the useful AI prose is preserved (not discarded for
+    // the deterministic summary) and surfaced as a labeled degraded narrative.
     expect(result.fromProvider).toBe(false);
+    expect(result.degraded).toBe(true);
     expect(result.validationErrors?.some((e) => e.includes('hallucinated citation'))).toBe(true);
-    expect(result.output.what).toBe(FIXTURE_INPUT.deterministicSummary);
+    expect(result.output.what).toBe(VALID_NARRATIVE.what);
+    // The hallucinated citation is stripped so nothing downstream trusts it.
+    expect(result.output.citations).toEqual([]);
   });
 
   it('investigation report is not blocked when API key is missing', async () => {
@@ -293,5 +298,54 @@ describe('AnthropicNarrativeProvider — resilient parsing (HOR-205)', () => {
     const withTrailingComma = JSON.stringify(VALID_NARRATIVE).replace('}', ',}');
     const out = await renderRawText(withTrailingComma);
     expect(out.what).toContain('BullMQ workers stalled');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AI narrative fallback rendering (HOR-213)
+// ---------------------------------------------------------------------------
+
+describe('renderNarrative — degraded fallback preserves AI text (HOR-213)', () => {
+  it('renders structured output when whereNext is empty (no longer invalidated)', async () => {
+    const noNext = { ...VALID_NARRATIVE, whereNext: [] };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(makeResponse(makeApiResponse(noNext))));
+    const result = await renderNarrative(FIXTURE_INPUT, {
+      provider: new AnthropicNarrativeProvider({ apiKey: 'k' }),
+    });
+    expect(result.fromProvider).toBe(true);
+    expect(result.output.whereNext).toEqual([]);
+  });
+
+  it('renders structured output when whereNext is missing entirely', async () => {
+    const { whereNext: _omit, ...noNext } = VALID_NARRATIVE;
+    void _omit;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(makeResponse(makeApiResponse(noNext))));
+    const result = await renderNarrative(FIXTURE_INPUT, {
+      provider: new AnthropicNarrativeProvider({ apiKey: 'k' }),
+    });
+    expect(result.fromProvider).toBe(true);
+    expect(result.output.whereNext).toEqual([]);
+  });
+
+  it('preserves prose-wrapped JSON as a structured narrative', async () => {
+    const text = `Here is the report:\n${JSON.stringify(VALID_NARRATIVE)}\nDone.`;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(makeResponse({ content: [{ type: 'text', text }] })));
+    const result = await renderNarrative(FIXTURE_INPUT, {
+      provider: new AnthropicNarrativeProvider({ apiKey: 'k' }),
+    });
+    expect(result.fromProvider).toBe(true);
+    expect(result.output.why).toContain('Redis connection pool');
+  });
+
+  it('preserves malformed JSON with useful prose as a labeled degraded narrative', async () => {
+    const prose = 'The workers stalled because the Redis connection pool was exhausted after the concurrency bump. { broken json';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(makeResponse({ content: [{ type: 'text', text: prose }] })));
+    const result = await renderNarrative(FIXTURE_INPUT, {
+      provider: new AnthropicNarrativeProvider({ apiKey: 'k' }),
+    });
+    // Unstructured, but the AI prose is NOT discarded.
+    expect(result.fromProvider).toBe(false);
+    expect(result.degraded).toBe(true);
+    expect(result.output.why).toContain('Redis connection pool');
   });
 });

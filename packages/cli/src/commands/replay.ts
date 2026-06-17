@@ -56,9 +56,23 @@ export async function runReplay(
       } else {
         const narrativeInput = buildNarrativeInput(report);
         const provider = new AnthropicNarrativeProvider({ model: opts.aiModel });
-        const { output, fromProvider, validationErrors } = await renderNarrative(narrativeInput, { provider });
+        const { output, fromProvider, degraded, validationErrors } = await renderNarrative(
+          narrativeInput,
+          { provider },
+        );
 
-        if (!fromProvider) {
+        if (!fromProvider && degraded) {
+          // Usable AI prose that didn't fully validate — show it as a labeled raw section
+          // rather than discarding it for deterministic-only output (HOR-213).
+          if (validationErrors?.length) {
+            console.error(pc.yellow('[ai] structured validation incomplete — showing raw AI narrative'));
+          }
+          console.log('');
+          console.log(pc.dim('─'.repeat(60)));
+          console.log(pc.bold('AI narrative ') + pc.yellow('(unstructured — not validated)'));
+          if (output.what?.trim()) console.log(pc.bold('\nWhat:'), output.what.trim());
+          if (output.why?.trim()) console.log(pc.bold('\nWhy:'), output.why.trim());
+        } else if (!fromProvider) {
           console.error(pc.yellow('[ai] Provider unavailable — deterministic output shown above.'));
           if (validationErrors?.length) {
             console.error(pc.dim(`    ${validationErrors[0]}`));

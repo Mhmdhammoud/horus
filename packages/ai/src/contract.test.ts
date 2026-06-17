@@ -147,11 +147,20 @@ describe('validateNarrative', () => {
     expect(result.errors.some((e) => e.includes('why'))).toBe(true);
   });
 
-  it('rejects empty whereNext array', () => {
+  it('accepts an empty whereNext array — defaults to [], not an error (HOR-213)', () => {
     const output = makeOutput({ whereNext: [] });
     const result = validateNarrative(output, makeInput());
-    expect(result.valid).toBe(false);
-    expect(result.errors.some((e) => e.includes('whereNext'))).toBe(true);
+    expect(result.valid).toBe(true);
+    expect(output.whereNext).toEqual([]);
+  });
+
+  it('defaults a missing whereNext to [] without invalidating (HOR-213)', () => {
+    const output = makeOutput({});
+    // @ts-expect-error — simulate a model omitting whereNext entirely
+    delete output.whereNext;
+    const result = validateNarrative(output, makeInput());
+    expect(result.valid).toBe(true);
+    expect(output.whereNext).toEqual([]);
   });
 
   it('rejects hallucinated service in mentionedServices', () => {
