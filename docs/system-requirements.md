@@ -101,7 +101,7 @@ Postgres stores Horus investigation state: incidents, hypotheses, evidence, time
 **Env var override:** `DATABASE_URL`
 **Config key:** `database.url` in `horus.config.js`/`horus.config.ts`
 
-**Schema:** Horus uses Drizzle ORM. Migrations must be applied before use:
+**Schema:** The curl installer applies all migrations automatically. For manual setups:
 ```sh
 # From the Horus repo (development):
 pnpm db migrate
@@ -113,6 +113,7 @@ DATABASE_URL=postgresql://... tsx packages/db/src/migrate.ts
 **How to start locally (Docker):**
 ```sh
 docker run -d --name horus-db \
+  --restart unless-stopped \
   -e POSTGRES_USER=horus \
   -e POSTGRES_PASSWORD=horus \
   -e POSTGRES_DB=horus \
@@ -152,12 +153,15 @@ Horus CLI **shells out** to `horus-source` for lifecycle operations only (start/
 
 **Install:**
 ```sh
+# Recommended — creates an isolated tool environment:
+uv tool install horus-source
+
+# Alternatives:
 pip install horus-source
-# or with uv:
-uv pip install horus-source
-# or with pipx:
 pipx install horus-source
 ```
+
+The curl installer (`curl -fsSL https://horus.sh/install.sh | bash`) installs `horus-source` automatically when Python and uv or pip are available.
 
 **Ensure on PATH:**
 ```sh
@@ -174,11 +178,12 @@ export PATH="$HOME/.local/bin:$PATH"
 - `<repo>/.horus/spawned-host.json` — running host PID + port
 - `<repo>/.horus/source-host.log` — host stdout/stderr
 
-### pip / uv
+### pip / uv / pipx
 
-Needed only to install `horus-source`. Either tool works:
+Needed only to install `horus-source`. Any of these work:
+- `uv tool install horus-source` (recommended — isolated environment)
 - `pip install horus-source`
-- `uv pip install horus-source`
+- `pipx install horus-source`
 
 Not used by the Horus CLI at runtime.
 

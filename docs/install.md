@@ -15,6 +15,10 @@ The curl installer:
 1. Detects your platform (macOS/Linux, arm64/amd64)
 2. Chooses an install directory: `/usr/local/bin` if writable, otherwise `$HOME/.local/bin`
 3. Downloads the pre-built Horus binary for your platform
+4. Spins up a local Postgres 16 container (`horus-db`) via Docker, if Docker is available — skipped automatically when `DATABASE_URL` is already set to an existing instance
+5. Applies all database migrations automatically
+6. Installs `horus-source` (source intelligence backend) if Python 3.11+ and uv or pip are available
+7. Persists `DATABASE_URL` to your shell profile
 
 ## Verify
 
@@ -38,12 +42,14 @@ horus 0.1.0
 
 ## Requirements
 
-| Requirement             | Details                                                                      |
-| ----------------------- | ---------------------------------------------------------------------------- |
-| **Node.js 22+**         | The CLI is a self-contained Node.js executable — Node is required at runtime |
-| **curl**                | Required only for the one-line installer                                     |
-| **OS**                  | macOS 12+ or Linux (x86_64 or arm64)                                         |
-| Python 3.11+ (optional) | Enables Horus source intelligence (installed by the curl installer when Python/uv/pip are available) |
+| Requirement                  | Details                                                                                               |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------- |
+| **Node.js 22+**              | The CLI is a self-contained Node.js executable — Node is required at runtime                         |
+| **git**                      | Required at runtime for change evidence (`git diff`, `git log`, `git blame`)                         |
+| **curl**                     | Required only for the one-line installer                                                              |
+| **OS**                       | macOS 12+ or Linux (x86_64 or arm64)                                                                 |
+| Postgres 16 (optional)       | Required for investigations that persist state. Docker is one way to run it locally; any instance works. The curl installer sets it up automatically. |
+| Python 3.11+ (optional)      | Enables source intelligence (`horus index`, `horus architecture`). The curl installer installs `horus-source` automatically when Python/uv/pip are available. |
 
 ## Next steps
 
