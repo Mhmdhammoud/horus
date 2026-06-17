@@ -135,9 +135,12 @@ Examples:
   program
     .command('connect <type>')
     .description(
-      'Add or update a runtime connector (elasticsearch / mongodb / grafana / redis) in .horus/config.json',
+      'Add or update a connector (elasticsearch / mongodb / grafana / redis / ai) in .horus/config.json',
     )
     .option('--env <name>', 'target environment (default: first environment in config)')
+    .option('--provider <name>', 'AI provider for `connect ai` (anthropic / claude / codex / gemini)')
+    .option('--api-key <key>', 'Anthropic API key for `connect ai`')
+    .option('--model <id>', 'default model for `connect ai`')
     .option('--url <url>', 'connector URL or connection string (Redis with auth: redis://:password@host:6379)')
     .option('--username <user>', 'username (elasticsearch / grafana)')
     .option('--password <pass>', 'password (elasticsearch / grafana; for Redis embed in --url)')
@@ -174,6 +177,9 @@ Examples:
           db?: string[];
           bullmqPrefix?: string;
           scanDbs?: boolean;
+          provider?: string;
+          apiKey?: string;
+          model?: string;
           test?: boolean;
         },
       ) => {
@@ -190,6 +196,9 @@ Examples:
           db: opts.db,
           bullmqPrefix: opts.bullmqPrefix,
           scanDbs: opts.scanDbs,
+          provider: opts.provider,
+          apiKey: opts.apiKey,
+          aiModel: opts.model,
           noTest: opts.test === false,
         });
       },

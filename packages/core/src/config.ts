@@ -237,6 +237,32 @@ const modelsSchema = z.object({
   extraction: z.string().default('claude-haiku-4-5'),
 });
 
+/** AI providers a user can connect (HOR-206). */
+export const AI_PROVIDERS = ['anthropic', 'claude', 'codex', 'gemini', 'kimi', 'cursor'] as const;
+export type AiProvider = (typeof AI_PROVIDERS)[number];
+
+/**
+ * AI narrative configuration (HOR-206). Lets `horus investigate --ai` work without
+ * the user editing shell env: the Anthropic API key (and preferred provider) can be
+ * saved via `horus connect ai`. Secrets resolve from config first, then env.
+ */
+const aiSchema = z
+  .object({
+    /** Preferred provider for AI narrative. */
+    provider: z.enum(AI_PROVIDERS).optional(),
+    anthropic: z
+      .object({
+        /** Direct API key (takes priority over apiKeyEnv). Stored redacted in display. */
+        apiKey: z.string().optional(),
+        /** Env var holding the key. Defaults to ANTHROPIC_API_KEY. */
+        apiKeyEnv: z.string().optional(),
+        /** Default model for narrative generation. */
+        model: z.string().optional(),
+      })
+      .optional(),
+  })
+  .optional();
+
 export const horusConfigSchema = z.object({
   projects: z.array(projectSchema).default([]),
   axon: z
@@ -247,7 +273,29 @@ export const horusConfigSchema = z.object({
     .default({}),
   database: databaseSchema,
   models: modelsSchema.default({}),
+  ai: aiSchema,
 });
+
+export interface ResolvedAiSettings {
+  provider?: AiProvider;
+  /** Resolved Anthropic API key (config value or env fallback), if any. */
+  anthropicApiKey?: string;
+  /** Whether the key came from config (vs env) — drives doctor's "configured" wording. */
+  anthropicKeyFromConfig: boolean;
+  model?: string;
+}
+
+/** Resolve AI settings: config key first, then the ANTHROPIC_API_KEY env fallback. */
+export function resolveAiSettings(config: HorusConfig): ResolvedAiSettings {
+  const ai = config.ai;
+  const fromConfig = ai?.anthropic?.apiKey;
+  const key = fromConfig ?? process.env[ai?.anthropic?.apiKeyEnv ?? 'ANTHROPIC_API_KEY'];
+  const out: ResolvedAiSettings = { anthropicKeyFromConfig: fromConfig !== undefined };
+  if (ai?.provider !== undefined) out.provider = ai.provider;
+  if (key !== undefined) out.anthropicApiKey = key;
+  if (ai?.anthropic?.model !== undefined) out.model = ai.anthropic.model;
+  return out;
+}
 
 export type HorusConfig = z.infer<typeof horusConfigSchema>;
 export type ProjectConfig = z.infer<typeof projectSchema>;
@@ -586,6 +634,7 @@ async function loadConfigFile(target: string): Promise<HorusConfig> {
       database: file.database ?? {
         url: process.env['DATABASE_URL'] ?? DEFAULT_DB_URL,
       },
+      ...(file.ai !== undefined ? { ai: file.ai } : {}),
     };
     return parseConfig(raw, target);
   }

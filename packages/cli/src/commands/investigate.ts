@@ -1,5 +1,5 @@
 import pc from 'picocolors';
-import { loadConfig, resolveEnvironment } from '@horus/core';
+import { loadConfig, resolveEnvironment, resolveAiSettings } from '@horus/core';
 import {
   codeForEnv,
   logsForEnv,
@@ -243,8 +243,16 @@ export async function runInvestigate(
       console.log(rendered);
 
       if (opts.ai && format !== 'json') {
-        const model = opts.aiModel ?? 'claude-opus-4-8';
-        const provider = opts._aiProvider ?? new AnthropicNarrativeProvider({ model });
+        // Resolve AI settings saved via `horus connect ai` (key + model), with the
+        // ANTHROPIC_API_KEY env as fallback. CLI --ai-model overrides the saved model.
+        const ai = resolveAiSettings(config);
+        const model = opts.aiModel ?? ai.model ?? 'claude-opus-4-8';
+        const provider =
+          opts._aiProvider ??
+          new AnthropicNarrativeProvider({
+            model,
+            ...(ai.anthropicApiKey !== undefined ? { apiKey: ai.anthropicApiKey } : {}),
+          });
         console.log(pc.dim(`[ai] model: ${model}`));
 
         const narrativeInput = buildNarrativeInput(report);

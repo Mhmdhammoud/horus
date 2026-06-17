@@ -928,3 +928,52 @@ describe('redis resolution (HOR-201)', () => {
     expect(r?.databases[0]?.bullmqPrefix).toBe('myapp');
   });
 });
+
+// ---------------------------------------------------------------------------
+// AI settings resolution (HOR-206)
+// ---------------------------------------------------------------------------
+
+import { resolveAiSettings } from './config.js';
+
+function configWithAi(ai: unknown) {
+  return horusConfigSchema.parse({ database: DB, projects: [], ...(ai !== undefined ? { ai } : {}) });
+}
+
+describe('resolveAiSettings (HOR-206)', () => {
+  const ORIG = process.env['ANTHROPIC_API_KEY'];
+  afterEach(() => {
+    if (ORIG === undefined) delete process.env['ANTHROPIC_API_KEY'];
+    else process.env['ANTHROPIC_API_KEY'] = ORIG;
+  });
+
+  it('prefers a config-stored key (marked fromConfig)', () => {
+    delete process.env['ANTHROPIC_API_KEY'];
+    const r = resolveAiSettings(configWithAi({ provider: 'anthropic', anthropic: { apiKey: 'sk-ant-cfg', model: 'claude-opus-4-8' } }));
+    expect(r.anthropicApiKey).toBe('sk-ant-cfg');
+    expect(r.anthropicKeyFromConfig).toBe(true);
+    expect(r.provider).toBe('anthropic');
+    expect(r.model).toBe('claude-opus-4-8');
+  });
+
+  it('falls back to the ANTHROPIC_API_KEY env var (not fromConfig)', () => {
+    process.env['ANTHROPIC_API_KEY'] = 'sk-ant-env';
+    const r = resolveAiSettings(configWithAi({ provider: 'anthropic' }));
+    expect(r.anthropicApiKey).toBe('sk-ant-env');
+    expect(r.anthropicKeyFromConfig).toBe(false);
+  });
+
+  it('honours a custom apiKeyEnv', () => {
+    delete process.env['ANTHROPIC_API_KEY'];
+    process.env['MY_KEY'] = 'sk-ant-custom';
+    const r = resolveAiSettings(configWithAi({ anthropic: { apiKeyEnv: 'MY_KEY' } }));
+    expect(r.anthropicApiKey).toBe('sk-ant-custom');
+    delete process.env['MY_KEY'];
+  });
+
+  it('returns no key when neither config nor env provides one', () => {
+    delete process.env['ANTHROPIC_API_KEY'];
+    const r = resolveAiSettings(configWithAi(undefined));
+    expect(r.anthropicApiKey).toBeUndefined();
+    expect(r.anthropicKeyFromConfig).toBe(false);
+  });
+});

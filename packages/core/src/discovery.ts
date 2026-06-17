@@ -94,6 +94,8 @@ export interface LocalConfigFile {
   project: unknown;
   /** Optional Postgres override; defaults to DATABASE_URL / the local default. */
   database?: { url: string };
+  /** Optional AI narrative settings (provider + Anthropic key/model) — HOR-206. */
+  ai?: unknown;
 }
 
 /** Write a `.horus/config.json` under `root` and return its absolute path. */

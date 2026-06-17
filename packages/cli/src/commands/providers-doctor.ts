@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import pc from 'picocolors';
+import { loadConfig, resolveAiSettings } from '@horus/core';
 import {
   DEFAULT_LOCAL_PROVIDER_REGISTRY,
   type LocalProviderId,
@@ -45,9 +46,11 @@ export function buildProviderResults(
 
 export async function runProvidersDoctorCommand(opts?: {
   registry?: LocalProviderRegistry;
+  /** Path to a horus config for the AI-key check (defaults to discovery). */
+  config?: string;
   /** Injectable detector for tests — defaults to real PATH probing. */
   _detect?: DetectorFn;
-  /** Injectable ANTHROPIC_API_KEY for tests — defaults to process.env. */
+  /** Injectable ANTHROPIC_API_KEY for tests — defaults to process.env / config. */
   _anthropicKey?: string | null;
   write?: (line: string) => void;
 }): Promise<number> {
@@ -68,22 +71,35 @@ export async function runProvidersDoctorCommand(opts?: {
   }
   write('');
 
-  // Cloud provider: Anthropic API key detection
+  // Cloud provider: Anthropic — saved config (horus connect ai) OR env var.
   write(pc.bold('Cloud AI providers\n'));
-  const anthropicKey =
-    opts?._anthropicKey !== undefined
-      ? opts._anthropicKey
-      : (process.env['ANTHROPIC_API_KEY'] ?? null);
-  if (anthropicKey) {
+  let source: 'config' | 'env' | null = null;
+  if (opts?._anthropicKey !== undefined) {
+    source = opts._anthropicKey ? 'env' : null;
+  } else {
+    try {
+      const config = await loadConfig(opts?.config);
+      const ai = resolveAiSettings(config);
+      if (ai.anthropicApiKey) source = ai.anthropicKeyFromConfig ? 'config' : 'env';
+    } catch {
+      // No config — fall back to a bare env check.
+      if (process.env['ANTHROPIC_API_KEY']) source = 'env';
+    }
+  }
+  if (source === 'config') {
     write(
-      `  ${pc.green('✓')} ${'anthropic'.padEnd(8)}  ${'Anthropic Claude API'.padEnd(22)}  ${pc.green('ANTHROPIC_API_KEY configured')}`,
+      `  ${pc.green('✓')} ${'anthropic'.padEnd(8)}  ${'Anthropic Claude API'.padEnd(22)}  ${pc.green('configured (.horus/config.json)')}`,
+    );
+  } else if (source === 'env') {
+    write(
+      `  ${pc.green('✓')} ${'anthropic'.padEnd(8)}  ${'Anthropic Claude API'.padEnd(22)}  ${pc.green('configured (ANTHROPIC_API_KEY env)')}`,
     );
   } else {
     write(
-      `  ${pc.red('✗')} ${'anthropic'.padEnd(8)}  ${'Anthropic Claude API'.padEnd(22)}  ${pc.dim('ANTHROPIC_API_KEY not set')}`,
+      `  ${pc.red('✗')} ${'anthropic'.padEnd(8)}  ${'Anthropic Claude API'.padEnd(22)}  ${pc.dim('not configured')}`,
     );
     write(
-      `    ${pc.dim('→ set ANTHROPIC_API_KEY=<key> to enable AI-powered investigation (horus investigate "hint" --ai)')}`,
+      `    ${pc.dim('→ run `horus connect ai` (or set ANTHROPIC_API_KEY) to enable `horus investigate --ai`')}`,
     );
   }
   write('');

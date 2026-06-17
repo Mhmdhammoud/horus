@@ -82,21 +82,21 @@ describe('runProvidersDoctorCommand', () => {
     expect(output).toContain('→');
   });
 
-  it('shows ANTHROPIC_API_KEY configured when key is present', async () => {
+  it('shows Anthropic configured (env) when a key is present', async () => {
     const { lines } = await captureOutput((write) =>
       runProvidersDoctorCommand({ write, _detect: detectNone, _anthropicKey: 'sk-test-key' }),
     );
     const output = lines.join('\n');
-    expect(output).toContain('ANTHROPIC_API_KEY configured');
+    expect(output).toMatch(/anthropic[\s\S]*configured/);
   });
 
-  it('shows ANTHROPIC_API_KEY not set when key is absent', async () => {
+  it('shows Anthropic not configured when no key is present', async () => {
     const { lines } = await captureOutput((write) =>
       runProvidersDoctorCommand({ write, _detect: detectNone, _anthropicKey: null }),
     );
     const output = lines.join('\n');
-    expect(output).toContain('ANTHROPIC_API_KEY not set');
-    expect(output).toContain('ANTHROPIC_API_KEY');
+    expect(output).toMatch(/anthropic[\s\S]*not configured/);
+    expect(output).toContain('horus connect ai');
   });
 
   it('accepts an injected registry and renders only its providers', async () => {

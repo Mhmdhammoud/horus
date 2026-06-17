@@ -36,6 +36,7 @@ import {
   type RedisDbProbe,
 } from '@horus/connectors';
 import { checkboxSearch, isInteractive, ExitPromptError } from '../lib/tty-selector.js';
+import { runConnectAi } from './connect-ai.js';
 
 /** A logical Redis DB the user wants to configure, with its roles. */
 interface RedisDatabaseSpec {
@@ -78,6 +79,12 @@ export interface ConnectOpts {
   /** Multiple dashboard UIDs selected during interactive discovery. */
   dashboardUids?: string[];
   noTest?: boolean;
+  /** AI provider (for `horus connect ai`): anthropic / claude / codex / gemini. */
+  provider?: string;
+  /** Anthropic API key (for `horus connect ai`). */
+  apiKey?: string;
+  /** Default model (for `horus connect ai`). */
+  aiModel?: string;
   /** Raw `--db db:roles` specs (redis, repeatable). */
   db?: string[];
   /** BullMQ key prefix for queue DBs (redis). */
@@ -92,10 +99,19 @@ const SUPPORTED = ['elasticsearch', 'mongodb', 'grafana', 'redis'] as const;
 type ConnectorType = (typeof SUPPORTED)[number];
 
 export async function runConnect(type: string, opts: ConnectOpts): Promise<number> {
+  // AI providers are not per-environment connectors — dispatch to the dedicated flow.
+  if (type === 'ai') {
+    return runConnectAi({
+      provider: opts.provider,
+      apiKey: opts.apiKey,
+      model: opts.aiModel,
+      noTest: opts.noTest,
+    });
+  }
   if (!(SUPPORTED as readonly string[]).includes(type)) {
     console.error(
       pc.red(`Unknown connector type: ${type}`) +
-        pc.dim(`\n  supported: ${SUPPORTED.join(', ')}`),
+        pc.dim(`\n  supported: ${SUPPORTED.join(', ')}, ai`),
     );
     return 1;
   }
@@ -318,7 +334,7 @@ function missingRequired(type: ConnectorType, opts: ConnectOpts): boolean {
 // Readline helpers
 // ---------------------------------------------------------------------------
 
-function ask(label: string, placeholder = '', required = true): Promise<string> {
+export function ask(label: string, placeholder = '', required = true): Promise<string> {
   return new Promise((resolve) => {
     const hint = placeholder ? pc.dim(` (${placeholder})`) : '';
     const suffix = required ? '' : pc.dim(' [optional]');
@@ -335,7 +351,7 @@ function ask(label: string, placeholder = '', required = true): Promise<string> 
   });
 }
 
-function askPassword(label: string): Promise<string> {
+export function askPassword(label: string): Promise<string> {
   return new Promise((resolve) => {
     // Use raw mode to mask input character-by-character.
     const stdin = process.stdin;
