@@ -10,6 +10,35 @@ function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
+/**
+ * Display name for a symbol (HOR-214). Qualifies class members with their owning class
+ * so caller/blast-radius lists don't render bare `constructor, constructor, constructor`
+ * — instead `GaiaController.constructor`, `SaleService.constructor`. Falls back to the
+ * bare name when no class context is available, and avoids double-qualifying a name that
+ * already contains a dot.
+ */
+export function symbolDisplayName(sym: { name: string; className?: string }): string {
+  if (sym.className && sym.className.length > 0 && !sym.name.includes('.')) {
+    return `${sym.className}.${sym.name}`;
+  }
+  return sym.name;
+}
+
+/**
+ * Format a symbol location (HOR-211). Renders `path:start-end` when an end line is
+ * known, `path:start` for a single line, and bare `path` when there's no line range
+ * (e.g. File nodes) — never the meaningless `path:0`.
+ */
+export function formatSymbolLocation(
+  filePath: string,
+  startLine?: number,
+  endLine?: number,
+): string {
+  if (startLine === undefined || startLine <= 0) return filePath;
+  if (endLine !== undefined && endLine > startLine) return `${filePath}:${startLine}-${endLine}`;
+  return `${filePath}:${startLine}`;
+}
+
 // ── Queue runtime rendering helpers (HOR-13) ─────────────────────────────────
 
 type QueuePayload = {
@@ -192,9 +221,8 @@ export function renderReport(r: InvestigationReport): string {
     lines.push('(none)');
   } else {
     for (const s of r.seeds) {
-      const line = s.startLine ?? 0;
       const sig = s.signature ? ` — ${s.signature}` : '';
-      lines.push(`- ${s.name} (${s.filePath}:${line})${sig}`);
+      lines.push(`- ${s.name} (${formatSymbolLocation(s.filePath, s.startLine, s.endLine)})${sig}`);
     }
   }
   lines.push('');

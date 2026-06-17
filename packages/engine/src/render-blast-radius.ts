@@ -1,4 +1,5 @@
 import type { BlastRadiusReport } from './blast-radius.js';
+import { symbolDisplayName } from './render.js';
 
 export function renderBlastRadius(r: BlastRadiusReport): string {
   const lines: string[] = [];
@@ -17,7 +18,7 @@ export function renderBlastRadius(r: BlastRadiusReport): string {
   } else {
     const upstreamSlice = r.upstream.slice(0, 15);
     for (const sym of upstreamSlice) {
-      lines.push('  ' + sym.name + ' (' + (sym.filePath ?? 'unknown') + ')');
+      lines.push('  ' + symbolDisplayName(sym) + ' (' + (sym.filePath ?? 'unknown') + ')');
     }
     for (const dep of r.asyncUpstream) {
       lines.push(
@@ -40,7 +41,7 @@ export function renderBlastRadius(r: BlastRadiusReport): string {
   } else {
     for (const layer of r.downstream) {
       const syms = layer.symbols.slice(0, 12);
-      const names = syms.map((s) => s.name);
+      const names = syms.map((s) => symbolDisplayName(s));
       const extra = layer.symbols.length > 12 ? ' +' + (layer.symbols.length - 12) + ' more' : '';
       lines.push('  depth ' + layer.depth + ': ' + names.join(', ') + extra);
     }

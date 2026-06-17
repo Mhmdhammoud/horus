@@ -28,6 +28,14 @@ function fakeClient(): AxonHttpClient {
           rowCount: 1,
         };
       }
+      // Line-range hydration (HOR-211): batch lookup by id.
+      if (/n\.id IN \[/.test(query) && /start_line/.test(query)) {
+        return {
+          columns: ['n.id', 'n.start_line', 'n.end_line'],
+          rows: [['class:src/controllers/gaia.controller.ts:GaiaController', 15, 387]],
+          rowCount: 1,
+        };
+      }
       return { columns: [], rows: [], rowCount: 0 };
     },
     // Semantic search ranks the wrong, fuzzily-related controller first (the bug).
@@ -60,5 +68,12 @@ describe('AxonCodeProvider.searchSymbols — exact-name wins (HOR-208)', () => {
     const provider = new AxonCodeProvider(fakeClient());
     const results = await provider.searchSymbols('gaiacontroller', 5);
     expect(results[0]?.name).toBe('GaiaController');
+  });
+
+  it('hydrates start/end line ranges so seeds never render as :0 (HOR-211)', async () => {
+    const provider = new AxonCodeProvider(fakeClient());
+    const results = await provider.searchSymbols('GaiaController', 5);
+    expect(results[0]?.startLine).toBe(15);
+    expect(results[0]?.endLine).toBe(387);
   });
 });

@@ -33,6 +33,7 @@ import type {
   RedisStateAnalysis,
 } from '@horus/connectors';
 import { shortTs, selectStateSignals, tokenize, analyzeQueueRuntime } from '@horus/connectors';
+import { formatSymbolLocation } from './render.js';
 import { estimateOwnership } from './ownership.js';
 import type { OwnershipEstimate } from './ownership.js';
 import type { HorusDb, QueueEdge } from '@horus/db';
@@ -361,12 +362,14 @@ export async function investigate(
   }
 
   // d. BUILD Evidence
-  const seedLine = top.startLine ?? 0;
+  const seedLoc = formatSymbolLocation(top.filePath, top.startLine, top.endLine);
   const seedEv = mkEv(
     'symbol',
-    `Seed symbol ${top.name} (${top.filePath}:${seedLine})`,
+    `Seed symbol ${top.name} (${seedLoc})`,
     { symbol: top, snippet: ctx.snippet ?? null },
-    { symbolId: top.id, file: top.filePath, line: seedLine },
+    top.startLine !== undefined && top.startLine > 0
+      ? { symbolId: top.id, file: top.filePath, line: top.startLine }
+      : { symbolId: top.id, file: top.filePath },
   );
 
   const flowEvIds: string[] = [];
@@ -811,7 +814,7 @@ export async function investigate(
   // The seed is the best-ranked candidate (architectural entry point preferred).
   findings.push({
     kind: 'observation',
-    title: `Seed resolves to ${label} at ${top.filePath}:${seedLine}`,
+    title: `Seed resolves to ${label} at ${seedLoc}`,
     detail: top.signature ?? undefined,
     confidence: 1,
     evidenceIds: [seedEv.id],

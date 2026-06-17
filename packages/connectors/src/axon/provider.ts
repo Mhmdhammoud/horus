@@ -61,15 +61,20 @@ export class AxonCodeProvider implements CodeProvider {
     nameIdx: number,
     fileIdx: number,
     lineIdx?: number,
+    classNameIdx?: number,
   ): Symbol {
     const startLine =
       lineIdx != null && row[lineIdx] != null ? Number(row[lineIdx]) : undefined;
-    return {
+    const sym: Symbol = {
       id: String(row[idIdx] ?? ''),
       name: String(row[nameIdx] ?? ''),
       filePath: String(row[fileIdx] ?? ''),
       startLine,
     };
+    if (classNameIdx != null && row[classNameIdx] != null) {
+      sym.className = String(row[classNameIdx]);
+    }
+    return sym;
   }
 
   // --- contract ------------------------------------------------------------
@@ -131,7 +136,35 @@ export class AxonCodeProvider implements CodeProvider {
       ...semantic.map(({ r }) => ({ id: r.nodeId, name: r.name, filePath: r.filePath })),
     ];
 
-    return combined.slice(0, limit);
+    // Hydrate start/end lines from the graph (HOR-211). The exact-match Cypher and the
+    // semantic search both return only id/name/file, so without this seeds/evidence render
+    // as `file:0`. One batched lookup by id fills in real line ranges for the page.
+    return this.hydrateLines(combined.slice(0, limit));
+  }
+
+  /** Attach start/end line ranges to symbols via a single batched id lookup. */
+  private async hydrateLines(symbols: Symbol[]): Promise<Symbol[]> {
+    const ids = symbols.map((s) => s.id).filter(Boolean);
+    if (ids.length === 0) return symbols;
+    const idList = ids.map((id) => `"${this.escapeId(id)}"`).join(', ');
+    const rows = await this
+      .rows(`MATCH (n) WHERE n.id IN [${idList}] RETURN n.id, n.start_line, n.end_line`)
+      .catch((): unknown[][] => []);
+    const lineById = new Map<string, { start?: number; end?: number }>();
+    for (const row of rows) {
+      const id = String(row[0] ?? '');
+      const start = row[1] != null ? Number(row[1]) : undefined;
+      const end = row[2] != null ? Number(row[2]) : undefined;
+      lineById.set(id, { start, end });
+    }
+    return symbols.map((s) => {
+      const l = lineById.get(s.id);
+      if (l === undefined) return s;
+      const out = { ...s };
+      if (l.start !== undefined && Number.isFinite(l.start)) out.startLine = l.start;
+      if (l.end !== undefined && Number.isFinite(l.end)) out.endLine = l.end;
+      return out;
+    });
   }
 
   async context(symbolId: string): Promise<SymbolContext> {
@@ -143,10 +176,10 @@ export class AxonCodeProvider implements CodeProvider {
       `n.signature, n.class_name, n.language, n.is_dead, n.content LIMIT 1`;
     const calleesQuery =
       `MATCH (n)-[r:CodeRelation]->(m) WHERE n.id = "${E}" AND r.rel_type = "calls" ` +
-      `RETURN m.id, m.name, m.file_path, m.start_line`;
+      `RETURN m.id, m.name, m.file_path, m.start_line, m.class_name`;
     const callersQuery =
       `MATCH (m)-[r:CodeRelation]->(n) WHERE n.id = "${E}" AND r.rel_type = "calls" ` +
-      `RETURN m.id, m.name, m.file_path, m.start_line`;
+      `RETURN m.id, m.name, m.file_path, m.start_line, m.class_name`;
     const usesTypeQuery =
       `MATCH (n)-[r:CodeRelation]->(t) WHERE n.id = "${E}" AND r.rel_type = "uses_type" ` +
       `RETURN t.id, t.name, t.file_path, t.start_line`;
@@ -183,8 +216,8 @@ export class AxonCodeProvider implements CodeProvider {
     const snippet =
       typeof content === 'string' ? content.slice(0, 600) : undefined;
 
-    const callees = calleeRows.map((row) => this.cypherRowToSymbol(row, 0, 1, 2, 3));
-    const callers = callerRows.map((row) => this.cypherRowToSymbol(row, 0, 1, 2, 3));
+    const callees = calleeRows.map((row) => this.cypherRowToSymbol(row, 0, 1, 2, 3, 4));
+    const callers = callerRows.map((row) => this.cypherRowToSymbol(row, 0, 1, 2, 3, 4));
     const usesType = usesTypeRows.map((row) => this.cypherRowToSymbol(row, 0, 1, 2, 3));
 
     const communityRow = communityRows[0];

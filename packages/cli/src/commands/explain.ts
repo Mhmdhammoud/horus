@@ -2,6 +2,7 @@ import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
 import type { HorusConfig, Symbol, SymbolContext, ImpactResult, Flow } from '@horus/core';
 import { codeForRepo } from '@horus/connectors';
+import { symbolDisplayName } from '@horus/engine';
 import { createDb, listQueueEdges } from '@horus/db';
 
 export async function runExplain(
@@ -126,7 +127,8 @@ function renderReport(
   const community = ctx.community ? ctx.community.name : pc.dim('—');
 
   const formatNames = (list: Symbol[]): string => {
-    const names = list.map((s) => s.name);
+    // Qualify class members (e.g. constructor) with their owning class (HOR-214).
+    const names = list.map((s) => symbolDisplayName(s));
     if (names.length <= 10) return names.join(', ');
     const extra = names.length - 10;
     return names.slice(0, 10).join(', ') + ` +${extra} more`;
