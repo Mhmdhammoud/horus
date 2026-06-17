@@ -7,6 +7,28 @@
 import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
 import { mongoForEnv } from '@horus/connectors';
+import { renderInterpretation } from '@horus/ai';
+import type { InterpretationProvider } from '@horus/ai';
+import { renderAiInterpretation } from '../lib/ai-provider.js';
+
+export const STATE_AI_CONTRACT = `Provide a clearly separated AI evidence narration with:
+
+Evidence used
+- Exact collection names, document counts, staleness hours, and anomalous status values Horus found
+
+What stands out
+- Collections with stale records or anomalous status distributions
+- Any counts that seem unusually low or high
+
+What this may indicate
+- Use "may suggest", "is consistent with", or "could indicate" — never "proves"
+- Do not infer private data or claim access to document contents
+
+What is not proven
+- Claims that require reading actual document content or non-allowlisted collections
+
+Next checks
+- Exact Horus commands or database queries to inspect next`;
 
 export async function runState(opts: {
   config?: string;
@@ -15,6 +37,10 @@ export async function runState(opts: {
   env?: string;
   staleHours?: string;
   json?: boolean;
+  ai?: boolean;
+  aiModel?: string;
+  /** Injectable AI provider for tests — bypasses credential resolution. */
+  _aiProvider?: InterpretationProvider;
 }): Promise<number> {
   try {
     const config = await loadConfig(opts.config, { name: opts.name });
@@ -116,6 +142,23 @@ export async function runState(opts: {
           );
         }
       }
+
+      if (opts.ai) {
+        const result = await renderAiInterpretation({
+          command: 'state',
+          evidence: analysis,
+          promptKind: 'evidence-summary',
+          outputContract: STATE_AI_CONTRACT,
+          config: opts.config,
+          modelOverride: opts.aiModel,
+          provider: opts._aiProvider,
+        });
+        console.log('\n' + renderInterpretation(result));
+        if (!result.ok) {
+          console.error(pc.yellow(`[ai] ${result.warning}`));
+        }
+      }
+
       return 0;
     } finally {
       await mongo.close();

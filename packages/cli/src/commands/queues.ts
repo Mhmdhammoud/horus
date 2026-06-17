@@ -5,10 +5,43 @@ import { listQueueEdges } from '@horus/db';
 import type { QueueEdge } from '@horus/db';
 import { queueForEnv } from '@horus/connectors';
 import type { QueueCounts } from '@horus/connectors';
+import { renderInterpretation } from '@horus/ai';
+import type { InterpretationProvider } from '@horus/ai';
+import { renderAiInterpretation } from '../lib/ai-provider.js';
+
+export const QUEUES_AI_CONTRACT = `Provide a clearly separated AI evidence narration with:
+
+Evidence used
+- Queue names, waiting/active/failed/delayed counts, and producer/worker mappings Horus found
+
+What stands out
+- Queues with high failed counts, unexpected backlog, or paused state
+- Runtime-only queues (live in Redis, no static producer/worker mapping)
+- Producer/worker mismatches or orphaned queues
+
+What this may indicate
+- Use "may suggest", "is consistent with", or "could indicate" — never "proves"
+- Do not invent queue names, Redis keys, or job data not in the evidence
+
+What is not proven
+- Claims about job contents, specific error messages, or data inside failed jobs
+
+Next checks
+- Exact Horus commands or Redis/BullMQ checks to inspect next`;
 
 export async function runQueues(
   name: string | undefined,
-  opts: { config?: string; project?: string; name?: string; live?: boolean; json?: boolean },
+  opts: {
+    config?: string;
+    project?: string;
+    name?: string;
+    live?: boolean;
+    json?: boolean;
+    ai?: boolean;
+    aiModel?: string;
+    /** Injectable AI provider for tests — bypasses credential resolution. */
+    _aiProvider?: InterpretationProvider;
+  },
 ): Promise<number> {
   try {
     const config = await loadConfig(opts.config, { name: opts.name });
@@ -59,13 +92,20 @@ export async function runQueues(
       console.log('');
 
       if (opts.live) {
-        await runLiveMode(config, rows, name);
+        await runLiveMode(config, rows, name, opts.ai ? {
+          config: opts.config,
+          aiModel: opts.aiModel,
+          _aiProvider: opts._aiProvider,
+        } : undefined);
       } else {
         console.log(
           pc.dim(
             '  Tip: run horus queues --live to show real-time Redis/BullMQ depths and failed-job counts.',
           ),
         );
+        if (opts.ai) {
+          console.log(pc.dim('  Tip: --ai is most useful with --live (horus queues --live --ai).'));
+        }
       }
     } finally {
       await sql.end();
@@ -213,6 +253,7 @@ async function runLiveMode(
   config: Awaited<ReturnType<typeof loadConfig>>,
   rows: QueueEdge[],
   nameFilter: string | undefined,
+  aiOpts?: { config?: string; aiModel?: string; _aiProvider?: InterpretationProvider },
 ): Promise<void> {
   let renv: ReturnType<typeof resolveEnvironment>;
   try {
@@ -279,6 +320,27 @@ async function runLiveMode(
     }
 
     printLiveTable(state.queues, staticNames);
+
+    if (aiOpts) {
+      const evidence = {
+        prefix: state.prefix,
+        collectedAt: state.collectedAt,
+        queues: state.queues.map((q) => ({ ...q, runtimeOnly: !staticNames.has(q.queueName) })),
+      };
+      const result = await renderAiInterpretation({
+        command: 'queues',
+        evidence,
+        promptKind: 'evidence-summary',
+        outputContract: QUEUES_AI_CONTRACT,
+        config: aiOpts.config,
+        modelOverride: aiOpts.aiModel,
+        provider: aiOpts._aiProvider,
+      });
+      console.log('\n' + renderInterpretation(result));
+      if (!result.ok) {
+        console.error(pc.yellow(`[ai] ${result.warning}`));
+      }
+    }
   } catch (err) {
     if (!headerPrinted) {
       console.log(pc.bold('Live queue state') + pc.dim('  ·  source: Redis/BullMQ'));

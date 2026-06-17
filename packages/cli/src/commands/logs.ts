@@ -11,6 +11,28 @@ import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
 import { logsForEnv, shortTs } from '@horus/connectors';
 import type { LogLevel } from '@horus/connectors';
+import { renderInterpretation } from '@horus/ai';
+import type { InterpretationProvider } from '@horus/ai';
+import { renderAiInterpretation } from '../lib/ai-provider.js';
+
+export const LOGS_AI_CONTRACT = `Provide a clearly separated AI evidence narration with:
+
+Evidence used
+- Exact error signatures, counts, first/last timestamps, and affected services Horus found
+
+What stands out
+- The most frequent or newest signatures
+- Services appearing disproportionately across signatures
+
+What this may indicate
+- Use "may suggest", "is consistent with", or "could indicate" — not "proves" or "caused by"
+- Correlation hints only (e.g. "the spike overlaps with the deployment window")
+
+What is not proven
+- Claims that cannot be made from error logs alone (root cause, user impact, fix)
+
+Next checks
+- Exact Horus commands, dashboards, or files to inspect next`;
 
 /** Parse "24h" / "7d" / "30m" into an ISO "now minus that"; pass ISO through. */
 function sinceToIso(since: string | undefined): string | undefined {
@@ -55,6 +77,10 @@ export async function runLogs(
     errors?: boolean;
     limit?: string;
     json?: boolean;
+    ai?: boolean;
+    aiModel?: string;
+    /** Injectable AI provider for tests — bypasses credential resolution. */
+    _aiProvider?: InterpretationProvider;
   },
 ): Promise<number> {
   try {
@@ -282,6 +308,29 @@ export async function runLogs(
     }
     console.log('');
     console.log(pc.dim('  (use --raw to see individual log lines)'));
+
+    if (opts.ai) {
+      const result = await renderAiInterpretation({
+        command: 'logs',
+        userIntent: scopeService ? `service: ${scopeService}` : undefined,
+        evidence: {
+          totalErrors: analysis.totalErrors,
+          signatures: analysis.signatures,
+          newSignatures: analysis.newSignatures,
+          affectedServices: analysis.affectedServices,
+        },
+        promptKind: 'evidence-summary',
+        outputContract: LOGS_AI_CONTRACT,
+        config: opts.config,
+        modelOverride: opts.aiModel,
+        provider: opts._aiProvider,
+      });
+      console.log('\n' + renderInterpretation(result));
+      if (!result.ok) {
+        console.error(pc.yellow(`[ai] ${result.warning}`));
+      }
+    }
+
     return 0;
   } catch (err) {
     console.error(pc.red((err as Error).message));

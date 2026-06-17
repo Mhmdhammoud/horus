@@ -9,6 +9,28 @@ import { loadConfig } from '@horus/core';
 import { metricsProviderFromConfig, extractHintTokens } from '@horus/connectors';
 import { summarize } from '@horus/connectors';
 import type { MetricFinding } from '@horus/connectors';
+import { renderInterpretation } from '@horus/ai';
+import type { InterpretationProvider } from '@horus/ai';
+import { renderAiInterpretation } from '../lib/ai-provider.js';
+
+export const METRICS_AI_CONTRACT = `Provide a clearly separated AI evidence narration with:
+
+Evidence used
+- Exact panel names, anomaly types, baseline vs. current values, and ratios Horus found
+
+What stands out
+- The most severe or highest-ratio anomalies
+- Any metric dimensions with correlated movement (e.g. error rate + latency both spiking)
+
+What this may indicate
+- Use "may suggest", "is consistent with", or "could indicate" — never "proves"
+- Do not invent dashboard panels or panel names not in the evidence
+
+What is not proven
+- Claims that cannot be made from metric anomalies alone (root cause, data loss, user scope)
+
+Next checks
+- Exact Horus commands or Grafana dashboards to inspect next`;
 
 // ---------------------------------------------------------------------------
 // Time helpers
@@ -92,6 +114,10 @@ export async function runMetrics(
     dashboard?: string;
     query?: string;
     json?: boolean;
+    ai?: boolean;
+    aiModel?: string;
+    /** Injectable AI provider for tests — bypasses credential resolution. */
+    _aiProvider?: InterpretationProvider;
   },
 ): Promise<number> {
   try {
@@ -230,6 +256,23 @@ export async function runMetrics(
     if (ok.length > 0) {
       console.log('');
       console.log(pc.dim(`  ${ok.length} panel series with no anomaly.`));
+    }
+
+    if (opts.ai) {
+      const result = await renderAiInterpretation({
+        command: 'metrics',
+        userIntent: hint ? `hint: ${hint}` : undefined,
+        evidence: findings,
+        promptKind: 'evidence-summary',
+        outputContract: METRICS_AI_CONTRACT,
+        config: opts.config,
+        modelOverride: opts.aiModel,
+        provider: opts._aiProvider,
+      });
+      console.log('\n' + renderInterpretation(result));
+      if (!result.ok) {
+        console.error(pc.yellow(`[ai] ${result.warning}`));
+      }
     }
 
     return 0;

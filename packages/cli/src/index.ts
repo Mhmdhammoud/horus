@@ -283,10 +283,12 @@ Examples:
     .option('--project <name>', 'filter edges by project')
     .option('--live', 'fetch real-time queue depths and failed-job counts from Redis/BullMQ')
     .option('--json', 'output JSON')
+    .option('--ai', 'append AI narration of queue topology and live state (most useful with --live)')
+    .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
     .action(
       async (
         name: string | undefined,
-        opts: { config?: string; name?: string; project?: string; live?: boolean; json?: boolean },
+        opts: { config?: string; name?: string; project?: string; live?: boolean; json?: boolean; ai?: boolean; aiModel?: string },
       ) => {
         process.exitCode = await runQueues(name, {
           config: opts.config,
@@ -294,6 +296,8 @@ Examples:
           project: opts.project,
           live: opts.live,
           json: opts.json,
+          ai: opts.ai,
+          aiModel: opts.aiModel,
         });
       },
     );
@@ -673,6 +677,8 @@ Examples:
     .option('--all-levels', 'with --raw: show all severity levels, not just error+')
     .option('--limit <n>', 'max records (with --raw)')
     .option('--json', 'output JSON')
+    .option('--ai', 'append AI narration of error signatures (default mode only, not --raw or --json)')
+    .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
     .action(
       async (
         service: string | undefined,
@@ -688,6 +694,8 @@ Examples:
           allLevels?: boolean;
           limit?: string;
           json?: boolean;
+          ai?: boolean;
+          aiModel?: string;
         },
       ) => {
         process.exitCode = await runLogs(service, opts);
@@ -705,6 +713,8 @@ Examples:
     .option('--env <name>', 'environment name (e.g. production)')
     .option('--stale-hours <n>', 'staleness threshold in hours (default 24)')
     .option('--json', 'output JSON')
+    .option('--ai', 'append AI narration of MongoDB state evidence')
+    .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
     .action(
       async (opts: {
         config?: string;
@@ -713,6 +723,8 @@ Examples:
         env?: string;
         staleHours?: string;
         json?: boolean;
+        ai?: boolean;
+        aiModel?: string;
       }) => {
         process.exitCode = await runState(opts);
       },
@@ -730,6 +742,8 @@ Examples:
     .option('--dashboard <uid>', 'restrict to a dashboard uid')
     .option('--query <promql>', 'raw datasource query escape hatch')
     .option('--json', 'JSON output')
+    .option('--ai', 'append AI narration of metric findings (default mode only, not --query or --json)')
+    .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
     .action(
       async (
         hint: string | undefined,
@@ -741,6 +755,8 @@ Examples:
           dashboard?: string;
           query?: string;
           json?: boolean;
+          ai?: boolean;
+          aiModel?: string;
         },
       ) => {
         process.exitCode = await runMetrics(hint, opts);
