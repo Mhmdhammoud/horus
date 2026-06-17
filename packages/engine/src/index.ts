@@ -29,6 +29,7 @@ export * from './score.js';
 export * from './render-score.js';
 export * from './refine.js';
 export * from './render-refine.js';
+export * from './qa.js';
 export * from './onboard.js';
 export * from './render-onboard.js';
 export * from './simulate.js';

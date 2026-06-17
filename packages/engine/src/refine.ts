@@ -36,7 +36,7 @@ interface TopicEntry {
   kinds: string[];
 }
 
-const TOPIC_MAP: Record<string, TopicEntry> = {
+export const TOPIC_MAP: Record<string, TopicEntry> = {
   queue: {
     keywords: ['queue', 'backlog', 'enqueue', 'drain'],
     categories: ['queue-backlog'],

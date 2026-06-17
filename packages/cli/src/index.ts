@@ -566,9 +566,12 @@ Examples:
   program
     .command('ask <id> <directive>')
     .description(
-      'Refine a saved investigation with a follow-up directive ' +
-        '(e.g. "focus on queue behavior", "ignore deployment changes") — ' +
-        'reuses evidence, no re-query',
+      'Ask about or refine a saved investigation — reuses evidence, no re-query.\n' +
+        '  Questions (direct answers):\n' +
+        '    "what evidence contradicts <topic>?"  · "what evidence is missing?"\n' +
+        '    "why is confidence not higher?"\n' +
+        '  Topic filters (deterministic scoping):\n' +
+        '    "focus on queue behavior" · "ignore deployment changes" · "retry"',
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--json', 'output JSON')

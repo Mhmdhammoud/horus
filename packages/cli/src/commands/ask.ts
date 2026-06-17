@@ -5,15 +5,25 @@ import {
   refineInvestigation,
   renderRefined,
   refinedToJSON,
+  answerQuestion,
+  renderQAAnswer,
+  qaToJSON,
   migrateReport,
 } from '@horus/engine';
 import type { InvestigationReport } from '@horus/engine';
 
 /**
- * HOR-21 — ask: apply a follow-up directive to a saved investigation.
+ * HOR-21 / HOR-204 — ask: answer a follow-up question about a saved investigation,
+ * or apply a deterministic topic-filter directive.
  *
- * Reads the persisted report from Postgres and reuses its evidence to produce
- * a refined view — never re-queries Axon or any production connector.
+ * Two modes, auto-detected from the input:
+ *   - Q&A: "what evidence contradicts <topic>?", "what evidence is missing?",
+ *     "why is confidence not higher?" → a direct answer from the saved report.
+ *   - Topic filter (fallback): "queue", "retry", "ignore deployment" → a refined
+ *     view scoped to that topic.
+ *
+ * Either way it reuses the persisted report's evidence — never re-queries Axon or
+ * any production connector.
  */
 export async function runAsk(
   id: string,
@@ -32,6 +42,15 @@ export async function runAsk(
       return 1;
     }
     const report = migrateReport(row.report) as InvestigationReport;
+
+    // Q&A first: if the input is a recognized investigation question, answer it
+    // directly instead of falling back to an all-evidence topic view.
+    const answer = answerQuestion(report, directive);
+    if (answer) {
+      console.log(opts.json ? qaToJSON(answer) : renderQAAnswer(answer));
+      return 0;
+    }
+
     const v = refineInvestigation(report, directive);
     console.log(opts.json ? refinedToJSON(report, v) : renderRefined(report, v));
 
