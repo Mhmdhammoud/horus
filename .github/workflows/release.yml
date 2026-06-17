@@ -1,17 +1,21 @@
 name: Release
 
-# Triggers on every push to master. Reads the version from apps/horus/package.json
-# and skips if a GitHub Release for that version already exists — making each step
-# idempotent. To release a new version: bump apps/horus/package.json, commit, and
-# push to master. HORUS_VERSION is injected from package.json at build time.
+# Manual release — not every push to master is a release. Reads the version from
+# apps/horus/package.json and skips if a GitHub Release for that version already
+# exists, so each step is idempotent.
+#
+# To release: bump apps/horus/package.json, commit + push to master, then run this
+# workflow manually:
+#   - GitHub UI: Actions → Release → "Run workflow"
+#   - CLI:       gh workflow run Release --repo meritt-dev/horus
+# HORUS_VERSION is injected from package.json at build time.
 #
 # Required secrets:
 #   npm_token          — npm publish token (access: public)
 #   HOMEBREW_TAP_TOKEN — GitHub PAT with write access to meritt-dev/homebrew-tap
 
 on:
-  push:
-    branches: [master]
+  workflow_dispatch:
 
 jobs:
   release:
