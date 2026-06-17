@@ -87,8 +87,10 @@ export async function runProvidersDoctorCommand(opts?: {
     }
   }
   if (source === 'config') {
+    // Key came from local config (secrets.local.json via `connect ai`, or a hand-placed
+    // key in config.json) — phrase it to cover both rather than naming one file.
     write(
-      `  ${pc.green('✓')} ${'anthropic'.padEnd(8)}  ${'Anthropic Claude API'.padEnd(22)}  ${pc.green('configured (.horus/config.json)')}`,
+      `  ${pc.green('✓')} ${'anthropic'.padEnd(8)}  ${'Anthropic Claude API'.padEnd(22)}  ${pc.green('configured (local .horus config)')}`,
     );
   } else if (source === 'env') {
     write(

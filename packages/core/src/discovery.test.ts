@@ -10,6 +10,8 @@ import {
   lookupProject,
   readRegistry,
   ensureProjectGitignore,
+  writeLocalSecrets,
+  readLocalSecrets,
 } from './discovery.js';
 
 describe('discoverLocalConfig', () => {
@@ -113,5 +115,34 @@ describe('global registry', () => {
     registerProject('p', '/new', '/new/.horus/config.json');
     expect(lookupProject('p')?.root).toBe('/new');
     expect(Object.keys(readRegistry().projects)).toEqual(['p']);
+  });
+});
+
+describe('local secrets (HOR-212)', () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'horus-secrets-'));
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('writes the secret to secrets.local.json and gitignores it', () => {
+    const p = writeLocalSecrets(root, { anthropic: { apiKey: 'sk-ant-SECRET' } });
+    expect(p).toBe(join(root, '.horus', 'secrets.local.json'));
+    expect(readLocalSecrets(root).anthropic?.apiKey).toBe('sk-ant-SECRET');
+    // The gitignore explicitly lists the secrets file.
+    const gi = readFileSync(join(root, '.horus', '.gitignore'), 'utf8');
+    expect(gi).toContain('secrets.local.json');
+  });
+
+  it('returns {} when no secrets file exists', () => {
+    expect(readLocalSecrets(root)).toEqual({});
+  });
+
+  it('does not duplicate the gitignore entry on rewrite', () => {
+    writeLocalSecrets(root, { anthropic: { apiKey: 'a' } });
+    writeLocalSecrets(root, { anthropic: { apiKey: 'b' } });
+    const gi = readFileSync(join(root, '.horus', '.gitignore'), 'utf8');
+    expect(gi.split('\n').filter((l) => l.trim() === 'secrets.local.json')).toHaveLength(1);
+    expect(readLocalSecrets(root).anthropic?.apiKey).toBe('b');
   });
 });

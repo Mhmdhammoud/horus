@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { createJiti } from 'jiti';
-import { resolve } from 'node:path';
+import { resolve, dirname } from 'node:path';
 import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import {
@@ -8,6 +8,7 @@ import {
   findRepoRoot,
   lookupProject,
   readLocalConfig,
+  readLocalSecrets,
 } from './discovery.js';
 
 const DEFAULT_DB_URL = 'postgresql://horus:horus@localhost:5433/horus';
@@ -629,12 +630,20 @@ async function loadConfigFile(target: string): Promise<HorusConfig> {
   if (target.endsWith('.json')) {
     // A local `.horus/config.json` wraps a single project.
     const file = readLocalConfig(target);
+    // Hydrate the API key from `.horus/secrets.local.json` (HOR-212) so it never has to
+    // live in config.json. The secret is merged into the in-memory ai block only.
+    const root = dirname(dirname(target));
+    const secrets = readLocalSecrets(root);
+    let ai = file.ai as { anthropic?: { apiKey?: string } } | undefined;
+    if (secrets.anthropic?.apiKey) {
+      ai = { ...(ai ?? {}), anthropic: { ...(ai?.anthropic ?? {}), apiKey: secrets.anthropic.apiKey } };
+    }
     const raw = {
       projects: file.project ? [file.project] : [],
       database: file.database ?? {
         url: process.env['DATABASE_URL'] ?? DEFAULT_DB_URL,
       },
-      ...(file.ai !== undefined ? { ai: file.ai } : {}),
+      ...(ai !== undefined ? { ai } : {}),
     };
     return parseConfig(raw, target);
   }

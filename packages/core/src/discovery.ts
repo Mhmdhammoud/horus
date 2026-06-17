@@ -133,6 +133,54 @@ export function readLocalConfig(path: string): LocalConfigFile {
   return JSON.parse(readFileSync(path, 'utf8')) as LocalConfigFile;
 }
 
+// ---------------------------------------------------------------------------
+// Local secrets (HOR-212) — API keys live OUTSIDE config.json so the config can
+// be shared/committed without leaking credentials. Always gitignored.
+// ---------------------------------------------------------------------------
+
+export const LOCAL_SECRETS_FILE = 'secrets.local.json';
+
+export interface LocalSecrets {
+  anthropic?: { apiKey?: string };
+}
+
+/** Absolute path to a repo's local secrets file. */
+export function localSecretsPath(root: string): string {
+  return join(root, HORUS_DIR, LOCAL_SECRETS_FILE);
+}
+
+/** Read `.horus/secrets.local.json`, or `{}` when absent/unreadable. */
+export function readLocalSecrets(root: string): LocalSecrets {
+  const p = localSecretsPath(root);
+  if (!existsSync(p)) return {};
+  try {
+    return JSON.parse(readFileSync(p, 'utf8')) as LocalSecrets;
+  } catch {
+    return {};
+  }
+}
+
+/** Write `.horus/secrets.local.json` (mode 0600) and ensure it is gitignored. */
+export function writeLocalSecrets(root: string, secrets: LocalSecrets): string {
+  const dir = join(root, HORUS_DIR);
+  mkdirSync(dir, { recursive: true });
+  const p = localSecretsPath(root);
+  writeFileSync(p, JSON.stringify(secrets, null, 2) + '\n', { mode: 0o600 });
+  chmodSync(p, 0o600);
+  // Belt-and-suspenders: explicitly ignore the secrets file (in addition to `.horus/`).
+  const gitignorePath = join(dir, '.gitignore');
+  const entry = LOCAL_SECRETS_FILE;
+  if (existsSync(gitignorePath)) {
+    const existing = readFileSync(gitignorePath, 'utf8');
+    if (!existing.split('\n').some((l) => l.trim() === entry)) {
+      writeFileSync(gitignorePath, existing.trimEnd() + '\n' + entry + '\n');
+    }
+  } else {
+    writeFileSync(gitignorePath, entry + '\n');
+  }
+  return p;
+}
+
 /**
  * Ensure the project's root `.gitignore` ignores the `.horus/` directory, so the
  * local config and machine-specific runtime state (host.json, logs, source index)

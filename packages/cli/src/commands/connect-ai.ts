@@ -13,7 +13,8 @@ import {
   localConfigPath,
   readLocalConfig,
   writeLocalConfig,
-  ensureCredentialGitignore,
+  readLocalSecrets,
+  writeLocalSecrets,
   ensureProjectGitignore,
   AI_PROVIDERS,
   type AiProvider,
@@ -115,9 +116,9 @@ export async function runConnectAi(opts: ConnectAiOpts): Promise<number> {
         }
         console.log(`\n${pc.green('✓')} anthropic ${pc.dim(`(${probe.detail})`)}`);
       }
-      const anthropic: Record<string, unknown> = { apiKey };
-      if (opts.model) anthropic['model'] = opts.model;
-      aiBlock['anthropic'] = anthropic;
+      // The key goes to .horus/secrets.local.json (HOR-212), NOT config.json — only
+      // the non-secret model preference is stored in the config's ai block.
+      if (opts.model) aiBlock['anthropic'] = { model: opts.model };
       storedKey = apiKey;
     } else {
       // Local CLI provider — record the preference. Note the current limitation.
@@ -144,15 +145,23 @@ export async function runConnectAi(opts: ConnectAiOpts): Promise<number> {
       : { version: 1, project: { name: root.split('/').pop() ?? 'project', repositories: [{ name: root.split('/').pop() ?? 'project', path: root }], environments: [{ name: 'production', readOnly: true, connectors: {} }] } };
     file.ai = aiBlock;
     writeLocalConfig(root, file);
-    // A stored API key is a secret — make sure the config is gitignored.
+    ensureProjectGitignore(root);
+    // The API key is a secret — store it in .horus/secrets.local.json (gitignored),
+    // never in config.json which a user may choose to share/commit (HOR-212).
+    let secretsPathStr: string | undefined;
     if (storedKey !== undefined) {
-      ensureCredentialGitignore(root);
-      ensureProjectGitignore(root);
+      const existing = readLocalSecrets(root);
+      secretsPathStr = writeLocalSecrets(root, {
+        ...existing,
+        anthropic: { ...(existing.anthropic ?? {}), apiKey: storedKey },
+      });
     }
 
     console.log(`\n${pc.green('✓')} ${pc.bold('ai')} provider saved → ${pc.dim(configPath)}`);
     console.log(pc.dim(`  provider: ${provider}`));
-    if (storedKey) console.log(pc.dim(`  anthropic key: ${redactKey(storedKey)}`));
+    if (storedKey && secretsPathStr) {
+      console.log(pc.dim(`  anthropic key: ${redactKey(storedKey)} → ${secretsPathStr} (gitignored)`));
+    }
     console.log(pc.dim('  run: horus investigate "<hint>" --ai'));
     return 0;
   } catch (err) {
