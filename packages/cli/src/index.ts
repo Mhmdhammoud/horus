@@ -33,6 +33,7 @@ import { runDoctor } from './commands/doctor.js';
 import { runProvidersDoctorCommand } from './commands/providers-doctor.js';
 import { runGenerateConfig } from './commands/generate-config.js';
 import { runReadiness } from './commands/readiness.js';
+import { runSkillInstall, runSkillPrint, runSkillPath } from './commands/skill.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -762,6 +763,57 @@ Examples:
         process.exitCode = await runMetrics(hint, opts);
       },
     );
+
+  const skill = program
+    .command('skill')
+    .description('Manage the Horus agent skill — install playbooks that teach agents to use Horus as their evidence layer');
+
+  skill
+    .command('install <target>')
+    .description('Install the Horus skill for a coding agent (claude | codex | gemini | cursor | generic)')
+    .option('--force', 'overwrite an existing skill file')
+    .option('--global', 'install into the home directory instead of the current repo')
+    .action(async (target: string, opts: { force?: boolean; global?: boolean }) => {
+      process.exitCode = await runSkillInstall(target, { force: opts.force, global: opts.global });
+    })
+    .addHelpText('after', `
+Targets:
+  claude   → .claude/skills/horus.md  (Claude Code — loaded automatically)
+  codex    → .horus/skills/horus-codex.md
+  gemini   → .horus/skills/horus-gemini.md
+  cursor   → .horus/skills/horus-cursor.md
+  generic  → .horus/skills/horus-generic.md
+
+Examples:
+  horus skill install claude
+  horus skill install generic --force
+  horus skill install claude --global
+`);
+
+  skill
+    .command('print <target>')
+    .description('Print the Horus skill to stdout — copy it into any agent setup')
+    .action(async (target: string) => {
+      process.exitCode = await runSkillPrint(target, {});
+    })
+    .addHelpText('after', `
+Examples:
+  horus skill print generic
+  horus skill print claude
+`);
+
+  skill
+    .command('path <target>')
+    .description('Print the install path for the given target')
+    .option('--global', 'show the global (home directory) path')
+    .action(async (target: string, opts: { global?: boolean }) => {
+      process.exitCode = await runSkillPath(target, { global: opts.global });
+    })
+    .addHelpText('after', `
+Examples:
+  horus skill path claude
+  horus skill path generic --global
+`);
 
   return program;
 }
