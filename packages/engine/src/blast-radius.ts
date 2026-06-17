@@ -22,7 +22,7 @@ export interface BlastRadiusReport {
 
 export async function analyzeBlastRadius(
   query: string,
-  deps: { code: CodeProvider; db: HorusDb },
+  deps: { code: CodeProvider; db: HorusDb; project?: string },
   depth = 3,
 ): Promise<BlastRadiusReport | null> {
   const seeds = await deps.code.searchSymbols(query, 5);
@@ -40,7 +40,7 @@ export async function analyzeBlastRadius(
   // downstream = callers by depth = affected if the seed fails
   const downstream: { depth: number; symbols: Symbol[] }[] = impact.byDepth;
 
-  const edges = await listQueueEdges(deps.db);
+  const edges = await listQueueEdges(deps.db, { project: deps.project });
 
   // asyncDownstream: seed is the producer -> workers are downstream
   const asyncDownstreamMap = new Map<string, AsyncDependency>();

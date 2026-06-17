@@ -1,12 +1,12 @@
 import pc from 'picocolors';
-import { loadConfig } from '@horus/core';
+import { loadConfig, resolveEnvironment } from '@horus/core';
 import { createConnectors } from '@horus/connectors';
 import { createDb } from '@horus/db';
 import { analyzeBlastRadius, renderBlastRadius, blastRadiusToJSON } from '@horus/engine';
 
 export async function runBlastRadius(
   query: string,
-  opts: { config?: string; depth?: number; json?: boolean },
+  opts: { config?: string; repo?: string; depth?: number; json?: boolean },
 ): Promise<number> {
   try {
     const config = await loadConfig(opts.config);
@@ -18,9 +18,16 @@ export async function runBlastRadius(
       return 1;
     }
 
+    let project: string | undefined;
+    try {
+      project = resolveEnvironment(config, { project: opts.repo }).project;
+    } catch {
+      /* unresolvable — leave unscoped */
+    }
+
     const { db, sql } = createDb(config.database.url);
     try {
-      const r = await analyzeBlastRadius(query, { code, db }, opts.depth ?? 3);
+      const r = await analyzeBlastRadius(query, { code, db, project }, opts.depth ?? 3);
       if (!r) {
         console.log(`No symbol found for: ${query}`);
         console.log(pc.dim(`  Tip: use an exact class or function name, e.g. "MyService"`));

@@ -1,0 +1,68 @@
+/**
+ * HOR-207 — architecture async boundaries must be scoped to the active project.
+ * A shared Horus DB holds queue edges for multiple projects; discoverArchitecture
+ * must only surface the active project's queues, never another project's.
+ */
+import { describe, it, expect, vi } from 'vitest';
+import type { QueueEdge } from '@horus/db';
+import type { CodeProvider } from '@horus/connectors';
+
+const now = new Date();
+function edge(queueName: string, project: string, producer: string, worker: string): QueueEdge {
+  return {
+    id: `${project}-${queueName}`,
+    queueName,
+    producerSymbol: producer,
+    producerFile: `src/${producer}.ts`,
+    workerSymbol: worker,
+    workerFile: `src/${worker}.ts`,
+    source: 'stitcher',
+    project,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+const ALL_EDGES: QueueEdge[] = [
+  edge('POST_SEED_PRODUCT_SYNC', 'maison-safqa', 'PostSeed', 'postSeedWorker'),
+  edge('brand-webhooks', 'maison-safqa', 'webhookQueue', 'webhookWorker'),
+  edge('zoho-sync-batch', 'leadcall-api', 'ZohoCron', 'ZohoBatchProcessor'),
+  edge('zoho-sync-realtime', 'leadcall-api', 'ZohoService', 'ZohoRealtimeProcessor'),
+];
+
+// Simulate the shared DB: filter by project exactly like the real listQueueEdges.
+vi.mock('@horus/db', () => ({
+  listQueueEdges: vi.fn(async (_db: unknown, opts?: { project?: string }) =>
+    ALL_EDGES.filter((e) => opts?.project === undefined || e.project === opts.project),
+  ),
+}));
+
+const { discoverArchitecture } = await import('./architecture.js');
+
+// Minimal CodeProvider — every architecture cypher query returns no rows, so the
+// async boundaries come solely from the (mocked) queue edges.
+const fakeCode = { cypher: async () => ({ rows: [] }) } as unknown as CodeProvider;
+const fakeDb = {} as never;
+
+describe('discoverArchitecture — project scoping (HOR-207)', () => {
+  it('returns only the active project queues, never another project (no Zoho leak)', async () => {
+    const m = await discoverArchitecture({ code: fakeCode, db: fakeDb, project: 'maison-safqa' });
+    const queues = m.asyncBoundaries.map((b) => b.queueName);
+    expect(queues.sort()).toEqual(['POST_SEED_PRODUCT_SYNC', 'brand-webhooks']);
+    expect(queues.some((q) => q.toLowerCase().includes('zoho'))).toBe(false);
+    // Worker classes from the other project must not appear either.
+    const workers = m.asyncBoundaries.flatMap((b) => b.workers);
+    expect(workers).not.toContain('ZohoBatchProcessor');
+    expect(workers).not.toContain('ZohoRealtimeProcessor');
+  });
+
+  it('the other project sees only its own queues', async () => {
+    const m = await discoverArchitecture({ code: fakeCode, db: fakeDb, project: 'leadcall-api' });
+    expect(m.asyncBoundaries.map((b) => b.queueName).sort()).toEqual(['zoho-sync-batch', 'zoho-sync-realtime']);
+  });
+
+  it('REGRESSION: unscoped (no project) leaks all projects — callers MUST pass project', async () => {
+    const m = await discoverArchitecture({ code: fakeCode, db: fakeDb });
+    expect(m.asyncBoundaries.map((b) => b.queueName)).toContain('zoho-sync-batch');
+  });
+});

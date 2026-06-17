@@ -34,7 +34,10 @@ export async function runOnboard(
 
     const { db, sql } = createDb(config.database.url);
     try {
-      const g = await buildOnboarding({ area }, { code, db, repoPath: repo.path });
+      const g = await buildOnboarding(
+        { area },
+        { code, db, repoPath: repo.path, project: renv.project },
+      );
       console.log(opts.json ? onboardingToJSON(g) : renderOnboarding(g));
     } finally {
       await sql.end();

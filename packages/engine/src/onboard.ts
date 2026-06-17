@@ -164,9 +164,13 @@ export function filterArchitecture(
 
 export async function buildOnboarding(
   input: { area?: string },
-  deps: { code: CodeProvider; db: HorusDb; repoPath: string },
+  deps: { code: CodeProvider; db: HorusDb; repoPath: string; project?: string },
 ): Promise<OnboardingGuide> {
-  const architecture = await discoverArchitecture({ code: deps.code, db: deps.db });
+  const architecture = await discoverArchitecture({
+    code: deps.code,
+    db: deps.db,
+    project: deps.project,
+  });
 
   const area = input.area?.trim();
   let filteredArchitecture = architecture;

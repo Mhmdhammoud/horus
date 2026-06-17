@@ -1,5 +1,5 @@
 import pc from 'picocolors';
-import { loadConfig } from '@horus/core';
+import { loadConfig, resolveEnvironment } from '@horus/core';
 import type { HorusConfig, Symbol, SymbolContext, ImpactResult, Flow } from '@horus/core';
 import { codeForRepo } from '@horus/connectors';
 import { createDb, listQueueEdges } from '@horus/db';
@@ -85,9 +85,17 @@ export async function runExplain(
 
 async function isQueueBoundary(config: HorusConfig, query: string): Promise<boolean> {
   try {
+    // Scope to the active project so a same-named queue in another project doesn't
+    // produce a false positive (HOR-207).
+    let project: string | undefined;
+    try {
+      project = resolveEnvironment(config).project;
+    } catch {
+      /* unresolvable — leave unscoped */
+    }
     const { db, sql } = createDb(config.database.url);
     try {
-      const edges = await listQueueEdges(db, { queueName: query });
+      const edges = await listQueueEdges(db, { queueName: query, project });
       return edges.length > 0;
     } finally {
       await sql.end().catch(() => {});

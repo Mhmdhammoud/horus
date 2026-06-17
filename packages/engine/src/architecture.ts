@@ -47,6 +47,8 @@ const EXTERNAL_MARKERS = [
 export async function discoverArchitecture(deps: {
   code: CodeProvider;
   db: HorusDb;
+  /** Active project — scopes queue edges so other projects' queues don't leak in (HOR-207). */
+  project?: string;
 }): Promise<ArchitectureModel> {
   // 1. Node label counts
   const nodeStats = await (async () => {
@@ -85,7 +87,7 @@ export async function discoverArchitecture(deps: {
   // 3. Async boundaries from queue edges
   const asyncBoundaries = await (async () => {
     try {
-      const edges: QueueEdge[] = await listQueueEdges(deps.db);
+      const edges: QueueEdge[] = await listQueueEdges(deps.db, { project: deps.project });
       const byQueue = new Map<string, { producers: Set<string>; workers: Set<string> }>();
       for (const edge of edges) {
         const key = edge.queueName;
