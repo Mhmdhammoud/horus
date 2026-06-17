@@ -121,6 +121,27 @@ export async function runMetrics(
     // --query: raw escape hatch — execute a single PromQL expression
     if (opts.query !== undefined && opts.query !== '') {
       const series = await metrics.rawRange(opts.query, from, to, stepNum);
+      if (opts.json === true) {
+        // Respect --json on the query path too (HOR-210) — empty results return a
+        // structured empty response, not plain text.
+        console.log(
+          JSON.stringify(
+            {
+              query: opts.query,
+              from,
+              to,
+              step: stepNum,
+              series: series.map((s) => {
+                const summary = summarize(s);
+                return { labels: s.labels, last: summary.last, avg: summary.avg };
+              }),
+            },
+            null,
+            2,
+          ),
+        );
+        return 0;
+      }
       if (series.length === 0) {
         console.log(pc.dim('No series returned.'));
         return 0;

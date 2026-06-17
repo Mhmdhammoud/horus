@@ -8,7 +8,7 @@ import type { QueueCounts } from '@horus/connectors';
 
 export async function runQueues(
   name: string | undefined,
-  opts: { config?: string; project?: string; name?: string; live?: boolean },
+  opts: { config?: string; project?: string; name?: string; live?: boolean; json?: boolean },
 ): Promise<number> {
   try {
     const config = await loadConfig(opts.config, { name: opts.name });
@@ -31,6 +31,15 @@ export async function runQueues(
         }
       }
       const rows = await listQueueEdges(db, { project, queueName: name });
+
+      // JSON: structured static topology (+ live state when --live).
+      if (opts.json) {
+        const topology = topologyToJson(buildQueueMap(rows));
+        const out: Record<string, unknown> = { project: project ?? null, topology };
+        if (opts.live) out['live'] = await gatherLiveState(config, rows, name);
+        console.log(JSON.stringify(out, null, 2));
+        return 0;
+      }
 
       // ── Source topology ──────────────────────────────────────────────────────
       console.log(
@@ -84,6 +93,64 @@ function buildQueueMap(rows: QueueEdge[]): Map<string, QueueEdge[]> {
     }
   }
   return byQueue;
+}
+
+/** Distinct {symbol, file} pairs for a queue's producers or workers. */
+function endpoints(edges: QueueEdge[], symKey: 'producerSymbol' | 'workerSymbol', fileKey: 'producerFile' | 'workerFile') {
+  const seen = new Map<string, { symbol: string; file: string | null }>();
+  for (const e of edges) {
+    const symbol = e[symKey];
+    if (!symbol) continue;
+    if (!seen.has(symbol)) seen.set(symbol, { symbol, file: e[fileKey] ?? null });
+  }
+  return [...seen.values()];
+}
+
+/** Structured static topology for --json. */
+function topologyToJson(byQueue: Map<string, QueueEdge[]>) {
+  return [...byQueue.entries()].map(([queueName, edges]) => ({
+    queueName,
+    producers: endpoints(edges, 'producerSymbol', 'producerFile'),
+    workers: endpoints(edges, 'workerSymbol', 'workerFile'),
+  }));
+}
+
+/** Gather live BullMQ state as structured data (shared by --live --json). */
+async function gatherLiveState(
+  config: Awaited<ReturnType<typeof loadConfig>>,
+  rows: QueueEdge[],
+  nameFilter: string | undefined,
+): Promise<Record<string, unknown>> {
+  let renv: ReturnType<typeof resolveEnvironment>;
+  try {
+    renv = resolveEnvironment(config);
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+  const queueProvider = queueForEnv(renv);
+  if (!queueProvider) return { ok: false, error: 'Redis not configured' };
+  try {
+    const health = await queueProvider.health();
+    if (!health.ok) return { ok: false, error: health.detail };
+    const staticNames = new Set(buildQueueMap(rows).keys());
+    let queueNames: string[] | undefined;
+    if (nameFilter !== undefined) {
+      queueNames = [nameFilter];
+    } else {
+      const discovered = await queueProvider.discoverQueues().catch(() => [] as string[]);
+      const union = new Set<string>([...staticNames, ...discovered]);
+      queueNames = union.size > 0 ? [...union] : undefined;
+    }
+    const state = await queueProvider.analyzeQueues({ queueNames });
+    return {
+      ok: true,
+      prefix: state.prefix,
+      collectedAt: state.collectedAt,
+      queues: state.queues.map((q) => ({ ...q, runtimeOnly: !staticNames.has(q.queueName) })),
+    };
+  } finally {
+    await queueProvider.close().catch(() => {});
+  }
 }
 
 function printTopology(byQueue: Map<string, QueueEdge[]>): void {

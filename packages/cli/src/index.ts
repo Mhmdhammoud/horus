@@ -280,16 +280,18 @@ Examples:
     .option('--name <name>', 'registered project name (resolves via registry)')
     .option('--project <name>', 'filter edges by project')
     .option('--live', 'fetch real-time queue depths and failed-job counts from Redis/BullMQ')
+    .option('--json', 'output JSON')
     .action(
       async (
         name: string | undefined,
-        opts: { config?: string; name?: string; project?: string; live?: boolean },
+        opts: { config?: string; name?: string; project?: string; live?: boolean; json?: boolean },
       ) => {
         process.exitCode = await runQueues(name, {
           config: opts.config,
           name: opts.name,
           project: opts.project,
           live: opts.live,
+          json: opts.json,
         });
       },
     );
@@ -639,8 +641,10 @@ Examples:
     .option('--since <when>', 'time window, e.g. 24h, 7d, or an ISO date')
     .option('--level <level>', 'minimum level (with --raw): trace|debug|info|warn|error|fatal')
     .option('--grep <text>', 'match text in the message')
-    .option('--raw', 'dump individual log lines instead of synthesized evidence')
+    .option('--raw', 'dump individual log lines instead of synthesized evidence (error+ by default)')
+    .option('--all-levels', 'with --raw: show all severity levels, not just error+')
     .option('--limit <n>', 'max records (with --raw)')
+    .option('--json', 'output JSON')
     .action(
       async (
         service: string | undefined,
@@ -653,7 +657,9 @@ Examples:
           level?: string;
           grep?: string;
           raw?: boolean;
+          allLevels?: boolean;
           limit?: string;
+          json?: boolean;
         },
       ) => {
         process.exitCode = await runLogs(service, opts);
@@ -670,6 +676,7 @@ Examples:
     .option('--project <name>', 'project name')
     .option('--env <name>', 'environment name (e.g. production)')
     .option('--stale-hours <n>', 'staleness threshold in hours (default 24)')
+    .option('--json', 'output JSON')
     .action(
       async (opts: {
         config?: string;
@@ -677,6 +684,7 @@ Examples:
         project?: string;
         env?: string;
         staleHours?: string;
+        json?: boolean;
       }) => {
         process.exitCode = await runState(opts);
       },

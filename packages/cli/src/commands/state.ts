@@ -14,6 +14,7 @@ export async function runState(opts: {
   project?: string;
   env?: string;
   staleHours?: string;
+  json?: boolean;
 }): Promise<number> {
   try {
     const config = await loadConfig(opts.config, { name: opts.name });
@@ -49,6 +50,24 @@ export async function runState(opts: {
       const analysis = await mongo.analyzeState(
         staleHours !== undefined ? { staleHours } : {},
       );
+
+      if (opts.json) {
+        const staleSignals = analysis.collections.filter((c) => c.isStale === true).length;
+        const anomalousSignals = analysis.collections.reduce((n, c) => n + c.anomalies.length, 0);
+        console.log(
+          JSON.stringify(
+            {
+              scope: { project: renv.project, env: renv.env, database: analysis.database },
+              autoDiscovered: analysis.autoDiscovered,
+              signals: { stale: staleSignals, anomalous: anomalousSignals },
+              collections: analysis.collections,
+            },
+            null,
+            2,
+          ),
+        );
+        return 0;
+      }
 
       const discoveryNote = analysis.autoDiscovered
         ? pc.dim(` (${analysis.collections.length} collections, auto-discovered)`)
