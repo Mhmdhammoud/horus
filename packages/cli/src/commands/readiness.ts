@@ -22,6 +22,31 @@ import {
 } from '@horus/core';
 import { checkDatabase, type DbHealth } from '@horus/db';
 import { getSourceVersion } from '@horus/connectors';
+import { renderInterpretation } from '@horus/ai';
+import type { InterpretationProvider } from '@horus/ai';
+import { renderAiInterpretation } from '../lib/ai-provider.js';
+
+export const READINESS_AI_CONTRACT = `Provide a clearly separated AI readiness summary with:
+
+Overall assessment
+- Release/demo readiness in plain language (Ready / Partially ready / Not ready)
+- One sentence explaining why
+
+Blockers
+- Each failing blocking check and what it means operationally
+- Only reference checks that Horus found failing
+
+Risks
+- Non-blocking warnings that could limit investigation depth or demo quality
+- Prioritize by likely impact
+
+Recommended next action
+- The single most impactful step to take right now
+- Exact command or config change based on the checks above
+
+Confidence / gaps
+- Which checks Horus could verify vs. which require manual confirmation`;
+
 
 const DEFAULT_DB_URL = 'postgresql://horus:horus@localhost:5433/horus';
 
@@ -52,6 +77,10 @@ export async function runReadiness(opts?: {
   _sourceVersion?: () => Promise<string | null>;
   /** Injectable for tests — defaults to the real loadConfig. */
   _loadConfig?: typeof loadConfig;
+  ai?: boolean;
+  aiModel?: string;
+  /** Injectable AI provider for tests — bypasses credential resolution. */
+  _aiProvider?: InterpretationProvider;
 }): Promise<number> {
   const cwd = opts?.cwd ?? process.cwd();
   const write = opts?.write ?? ((line: string) => console.log(line));
@@ -287,5 +316,22 @@ export async function runReadiness(opts?: {
   }
 
   write('');
+
+  if (opts?.ai) {
+    const result = await renderAiInterpretation({
+      command: 'readiness',
+      evidence: checks,
+      promptKind: 'readiness',
+      outputContract: READINESS_AI_CONTRACT,
+      config: opts.config,
+      modelOverride: opts.aiModel,
+      provider: opts._aiProvider,
+    });
+    console.log('\n' + renderInterpretation(result));
+    if (!result.ok) {
+      console.error(pc.yellow(`[ai] ${result.warning}`));
+    }
+  }
+
   return blockingFails.length > 0 ? 1 : 0;
 }

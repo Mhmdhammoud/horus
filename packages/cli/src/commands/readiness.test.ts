@@ -1,5 +1,6 @@
 /**
  * HOR-97 — Release readiness command tests.
+ * HOR-212 — AI contract and prompt shape tests.
  *
  * Three canonical states:
  *   1. ready       — DB pass, Axon at pinned version, ES configured → exit 0, "Ready"
@@ -10,7 +11,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { runReadiness } from './readiness.js';
+import { runReadiness, READINESS_AI_CONTRACT } from './readiness.js';
+import { buildInterpretationPrompt } from '@horus/ai';
 import { PINNED_SOURCE_VERSION } from '@horus/core';
 import type { DbHealth } from '@horus/db';
 import type { loadConfig } from '@horus/core';
@@ -312,5 +314,83 @@ describe('horus readiness — blocking (DB failure)', () => {
       _loadConfig: async () => { throw new Error('no config'); },
     });
     expect(lines(out)).toContain('Re-run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-212 — AI contract and prompt shape tests
+// ---------------------------------------------------------------------------
+
+const SAMPLE_CHECKS = [
+  { label: 'CLI', status: 'pass', blocking: true, detail: 'horus 0.1.15' },
+  { label: 'Database', status: 'fail', blocking: true, detail: 'Postgres not reachable', next: 'docker run ...' },
+  { label: 'Local config', status: 'warn', blocking: false, detail: '.horus/config.json not found', next: 'run horus init' },
+  { label: 'Source intelligence', status: 'pass', blocking: false, detail: '0.3.1 — ready' },
+  { label: 'Elasticsearch', status: 'warn', blocking: false, detail: 'not configured — no runtime log evidence' },
+];
+
+describe('READINESS_AI_CONTRACT (HOR-212)', () => {
+  it('describes all required output sections', () => {
+    expect(READINESS_AI_CONTRACT).toContain('Overall assessment');
+    expect(READINESS_AI_CONTRACT).toContain('Blockers');
+    expect(READINESS_AI_CONTRACT).toContain('Risks');
+    expect(READINESS_AI_CONTRACT).toContain('Recommended next action');
+    expect(READINESS_AI_CONTRACT).toContain('Confidence / gaps');
+  });
+
+  it('is a non-empty string', () => {
+    expect(typeof READINESS_AI_CONTRACT).toBe('string');
+    expect(READINESS_AI_CONTRACT.length).toBeGreaterThan(0);
+  });
+});
+
+describe('buildInterpretationPrompt for readiness (HOR-212)', () => {
+  it('prompt contains the command name and readiness promptKind', () => {
+    const prompt = buildInterpretationPrompt({
+      command: 'readiness',
+      evidence: SAMPLE_CHECKS,
+      promptKind: 'readiness',
+      outputContract: READINESS_AI_CONTRACT,
+    });
+
+    expect(prompt).toContain('readiness');
+  });
+
+  it('prompt serializes checks — blocking failure and optional warnings visible to model', () => {
+    const prompt = buildInterpretationPrompt({
+      command: 'readiness',
+      evidence: SAMPLE_CHECKS,
+      promptKind: 'readiness',
+      outputContract: READINESS_AI_CONTRACT,
+    });
+
+    expect(prompt).toContain('Database');
+    expect(prompt).toContain('Postgres not reachable');
+    expect(prompt).toContain('Elasticsearch');
+    expect(prompt).toContain('.horus/config.json not found');
+  });
+
+  it('prompt includes grounding rules', () => {
+    const prompt = buildInterpretationPrompt({
+      command: 'readiness',
+      evidence: SAMPLE_CHECKS,
+      promptKind: 'readiness',
+      outputContract: READINESS_AI_CONTRACT,
+    });
+
+    expect(prompt).toContain('Use only the evidence provided above');
+  });
+
+  it('output contract sections flow through to the model prompt', () => {
+    const prompt = buildInterpretationPrompt({
+      command: 'readiness',
+      evidence: SAMPLE_CHECKS,
+      promptKind: 'readiness',
+      outputContract: READINESS_AI_CONTRACT,
+    });
+
+    expect(prompt).toContain('Overall assessment');
+    expect(prompt).toContain('Recommended next action');
+    expect(prompt).toContain('Confidence / gaps');
   });
 });

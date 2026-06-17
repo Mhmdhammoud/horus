@@ -9,10 +9,34 @@ import {
   migrateReport,
 } from '@horus/engine';
 import type { InvestigationReport } from '@horus/engine';
+import { renderInterpretation } from '@horus/ai';
+import type { InterpretationProvider } from '@horus/ai';
+import { renderAiInterpretation } from '../lib/ai-provider.js';
+
+export const SCORE_AI_CONTRACT = `Provide a clearly separated AI score explanation with:
+
+Why this scored this way
+- Explain each weak dimension (low value, low weight contribution)
+- Ground each explanation in what Horus found or failed to find
+
+Biggest improvement lever
+- The single dimension where better evidence would move the score most
+- Exact investigation step or command to gather that evidence
+
+Suggested improvements
+- Specific ideas for how Horus could gather better evidence next time
+- Be concrete: what connector, query, or signal is missing`;
 
 export async function runScore(
   id: string,
-  opts: { config?: string; json?: boolean },
+  opts: {
+    config?: string;
+    json?: boolean;
+    ai?: boolean;
+    aiModel?: string;
+    /** Injectable AI provider for tests — bypasses credential resolution. */
+    _aiProvider?: InterpretationProvider;
+  },
 ): Promise<number> {
   const { db, sql } = createDb(await resolveDbUrl(opts.config));
   try {
@@ -26,7 +50,28 @@ export async function runScore(
       return 1;
     }
     const s = scoreInvestigation(migrateReport(row.report) as InvestigationReport);
-    console.log(opts.json ? scoreToJSON(s) : renderScore(s));
+
+    if (opts.json) {
+      console.log(scoreToJSON(s));
+    } else {
+      console.log(renderScore(s));
+      if (opts.ai) {
+        const result = await renderAiInterpretation({
+          command: 'score',
+          userIntent: `investigation: ${id}`,
+          evidence: s,
+          promptKind: 'evidence-summary',
+          outputContract: SCORE_AI_CONTRACT,
+          config: opts.config,
+          modelOverride: opts.aiModel,
+          provider: opts._aiProvider,
+        });
+        console.log('\n' + renderInterpretation(result));
+        if (!result.ok) {
+          console.error(pc.yellow(`[ai] ${result.warning}`));
+        }
+      }
+    }
   } finally {
     await sql.end();
   }

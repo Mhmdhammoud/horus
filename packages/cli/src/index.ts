@@ -128,8 +128,10 @@ Examples:
     .command('readiness')
     .description('Summarize release/demo readiness: DB, source intelligence, connectors, and local config (HOR-97)')
     .option('-c, --config <path>', 'path to horus.config.js')
-    .action(async (opts: { config?: string }) => {
-      process.exitCode = await runReadiness({ config: opts.config });
+    .option('--ai', 'append AI readiness summary and recommended next action')
+    .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
+    .action(async (opts: { config?: string; ai?: boolean; aiModel?: string }) => {
+      process.exitCode = await runReadiness({ config: opts.config, ai: opts.ai, aiModel: opts.aiModel });
     });
 
   program
@@ -360,8 +362,10 @@ Examples:
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--json', 'output JSON')
-    .action(async (base: string, compare: string | undefined, opts: { config?: string; json?: boolean }) => {
-      process.exitCode = await runChanges(base, compare, { config: opts.config, json: opts.json });
+    .option('--ai', 'append AI change-impact review')
+    .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
+    .action(async (base: string, compare: string | undefined, opts: { config?: string; json?: boolean; ai?: boolean; aiModel?: string }) => {
+      process.exitCode = await runChanges(base, compare, { config: opts.config, json: opts.json, ai: opts.ai, aiModel: opts.aiModel });
     });
 
   program
@@ -588,8 +592,10 @@ Examples:
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--json', 'output JSON')
-    .action(async (id: string, opts: { config?: string; json?: boolean }) => {
-      process.exitCode = await runScore(id, { config: opts.config, json: opts.json });
+    .option('--ai', 'append AI score explanation and improvement suggestions')
+    .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
+    .action(async (id: string, opts: { config?: string; json?: boolean; ai?: boolean; aiModel?: string }) => {
+      process.exitCode = await runScore(id, { config: opts.config, json: opts.json, ai: opts.ai, aiModel: opts.aiModel });
     });
 
   program
