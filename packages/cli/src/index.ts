@@ -448,8 +448,10 @@ Examples:
     )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--json', 'output JSON')
-    .action(async (opts: { config?: string; json?: boolean }) => {
-      process.exitCode = await runArchitecture({ config: opts.config, json: opts.json });
+    .option('--ai', 'append AI system explanation grounded in discovered architecture')
+    .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
+    .action(async (opts: { config?: string; json?: boolean; ai?: boolean; aiModel?: string }) => {
+      process.exitCode = await runArchitecture({ config: opts.config, json: opts.json, ai: opts.ai, aiModel: opts.aiModel });
     });
 
   program
@@ -623,11 +625,15 @@ Examples:
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--repo <name>', 'repository name from config')
     .option('--json', 'output JSON')
-    .action(async (area: string | undefined, opts: { config?: string; repo?: string; json?: boolean }) => {
+    .option('--ai', 'append AI onboarding guide grounded in discovered system evidence')
+    .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
+    .action(async (area: string | undefined, opts: { config?: string; repo?: string; json?: boolean; ai?: boolean; aiModel?: string }) => {
       process.exitCode = await runOnboard(area, {
         config: opts.config,
         repo: opts.repo,
         json: opts.json,
+        ai: opts.ai,
+        aiModel: opts.aiModel,
       });
     });
 

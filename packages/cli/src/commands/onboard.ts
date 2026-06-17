@@ -3,10 +3,42 @@ import { loadConfig, resolveEnvironment } from '@horus/core';
 import { codeForRepo } from '@horus/connectors';
 import { createDb } from '@horus/db';
 import { buildOnboarding, renderOnboarding, onboardingToJSON } from '@horus/engine';
+import { renderInterpretation } from '@horus/ai';
+import type { InterpretationProvider } from '@horus/ai';
+import { renderAiInterpretation } from '../lib/ai-provider.js';
+
+export const ONBOARD_AI_CONTRACT = `Provide a clearly separated AI onboarding guide with:
+
+Start here
+- Files and components a new engineer should read first (only those Horus found)
+- Entry points, controllers, workers, or queue producers most relevant to the area
+
+Mental model
+- How this area works in plain language, grounded in what Horus discovered
+- Key data flows and async handoffs
+
+What breaks here
+- Common failure modes based on discovered components, async boundaries, and past incidents
+- Frame each as "if X fails, then Y" using only evidence Horus found
+
+Useful commands
+- Exact Horus commands to continue exploring this area
+
+Confidence / gaps
+- What Horus knows confidently (indexed source, queue edges, past incidents)
+- What is missing and would require manual inspection or a broader index`;
 
 export async function runOnboard(
   area: string | undefined,
-  opts: { config?: string; repo?: string; json?: boolean },
+  opts: {
+    config?: string;
+    repo?: string;
+    json?: boolean;
+    ai?: boolean;
+    aiModel?: string;
+    /** Injectable AI provider for tests — bypasses credential resolution. */
+    _aiProvider?: InterpretationProvider;
+  },
 ): Promise<number> {
   try {
     const config = await loadConfig(opts.config);
@@ -38,7 +70,27 @@ export async function runOnboard(
         { area },
         { code, db, repoPath: repo.path, project: renv.project },
       );
-      console.log(opts.json ? onboardingToJSON(g) : renderOnboarding(g));
+      if (opts.json) {
+        console.log(onboardingToJSON(g));
+      } else {
+        console.log(renderOnboarding(g));
+        if (opts.ai) {
+          const result = await renderAiInterpretation({
+            command: 'onboard',
+            userIntent: area ? `area: ${area}` : undefined,
+            evidence: g,
+            promptKind: 'system-explanation',
+            outputContract: ONBOARD_AI_CONTRACT,
+            config: opts.config,
+            modelOverride: opts.aiModel,
+            provider: opts._aiProvider,
+          });
+          console.log('\n' + renderInterpretation(result));
+          if (!result.ok) {
+            console.error(pc.yellow(`[ai] ${result.warning}`));
+          }
+        }
+      }
     } finally {
       await sql.end();
     }
