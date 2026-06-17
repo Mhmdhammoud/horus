@@ -20,6 +20,10 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Only ever release from master — a workflow_dispatch can target any ref, and this
+    # job holds npm + Homebrew publish secrets. Guard so a dispatch against any other
+    # branch/tag is a no-op rather than publishing from unreviewed code.
+    if: github.ref == 'refs/heads/master'
     permissions:
       contents: write
 
