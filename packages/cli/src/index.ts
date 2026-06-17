@@ -460,12 +460,16 @@ Examples:
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('-d, --depth <n>', 'traversal depth', (v) => parseInt(v, 10))
     .option('--json', 'output JSON')
+    .option('--ai', 'append AI severity and containment interpretation')
+    .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
     .action(
-      async (query: string, opts: { config?: string; depth?: number; json?: boolean }) => {
+      async (query: string, opts: { config?: string; depth?: number; json?: boolean; ai?: boolean; aiModel?: string }) => {
         process.exitCode = await runBlastRadius(query, {
           config: opts.config,
           depth: opts.depth,
           json: opts.json,
+          ai: opts.ai,
+          aiModel: opts.aiModel,
         });
       },
     );
