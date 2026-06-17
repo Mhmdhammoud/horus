@@ -106,6 +106,21 @@ function makeQueueGrowthFinding(queueName: string): MetricFinding {
   };
 }
 
+/** A panel series that was checked but showed no anomaly (the common healthy case). */
+function makeNoneFinding(panel: string): MetricFinding {
+  return {
+    dashboardUid: 'dash-3',
+    panelTitle: panel,
+    kind: 'latency',
+    anomaly: 'none',
+    labels: {},
+    baselineAvg: 0.05,
+    currentAvg: 0.05,
+    ratio: 1,
+    lastValue: 0.05,
+  };
+}
+
 function makeMetricsProvider(findings: MetricFinding[]): MetricsProvider {
   return {
     id: 'grafana',
@@ -204,6 +219,26 @@ describe('investigate() WITH metrics provider — healthy collection (no anomali
     );
     const metricsGap = report.gapAnalysis.gaps.find((g) => g.dimension === 'metrics');
     expect(metricsGap).toBeUndefined();
+  });
+
+  it('records neutral metric evidence + finding when series were checked but nominal (HOR-203)', async () => {
+    const metrics = makeMetricsProvider([
+      makeNoneFinding('getSaleWithLink p99'),
+      makeNoneFinding('error rate'),
+      makeNoneFinding('throughput'),
+    ]);
+    const report = await investigate(
+      { hint: 'getSaleWithLink slow', service: 'leadcall-api-prod' },
+      { code: fakeCode, db: fakeDb, metrics, connectors: { grafana: true } },
+    );
+    // Neutral metric evidence is present (so replay/postmortem show metrics were checked).
+    const metricEv = report.evidence.filter((e) => e.kind === 'metric');
+    expect(metricEv.length).toBe(1);
+    expect(metricEv[0]?.title).toMatch(/no anomalies/i);
+    // A nominal observation finding is recorded.
+    expect(report.findings.some((f) => /Metrics nominal/i.test(f.title))).toBe(true);
+    // The metrics gap is closed.
+    expect(report.gapAnalysis.gaps.find((g) => g.dimension === 'metrics')).toBeUndefined();
   });
 
   it('applies zero confidence penalty when collection ran but found no anomalies', async () => {

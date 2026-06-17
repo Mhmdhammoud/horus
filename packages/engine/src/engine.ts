@@ -634,8 +634,13 @@ export async function investigate(
   const queueMetricEvIds: string[] = [];
   // Per-queue metric IDs — queue-growth anomalies attributed to the matching queue name.
   const queueMetricEvIdsByQueue = new Map<string, string[]>();
+  // Neutral/contradicting metric evidence: metrics WERE checked but found no anomaly.
+  // Recorded so replay/postmortem show metrics were inspected (and weaken metric-driven
+  // causes) rather than the result staying external to the investigation (HOR-203).
+  const nominalMetricEvIds: string[] = [];
   let metricsCollected = false;
   let metricsFailureReason: string | undefined;
+  let metricSeriesChecked = 0;
 
   if (deps.metrics) {
     const ac = new AbortController();
@@ -720,6 +725,22 @@ export async function investigate(
             }
           }
         }
+      }
+      // Metrics were collected but found NO anomaly: record a neutral evidence item so
+      // the result is part of the investigation (visible in replay/postmortem, closes the
+      // metrics gap, and acts as contradicting context for any metric-driven hypothesis).
+      metricSeriesChecked = mFindings.length;
+      if (metricEvIds.length === 0 && mFindings.length > 0) {
+        const panels = [...new Set(mFindings.map((f) => f.panelTitle))];
+        const ev = mkEv(
+          'metric',
+          `Metrics checked — ${mFindings.length} series across ${panels.length} panel(s), no anomalies in window`,
+          { seriesChecked: mFindings.length, panelCount: panels.length, panels: panels.slice(0, 10), anomalies: 0, stance: 'neutral' },
+          {},
+          collectedAt,
+          0.2,
+        );
+        nominalMetricEvIds.push(ev.id);
       }
       // Set only after the full collection + conversion loop completes without error.
       metricsCollected = true;
@@ -996,6 +1017,15 @@ export async function investigate(
       title: `Metric anomalies: ${metricEvIds.length} signal(s) — ${desc}`,
       confidence: 0.7,
       evidenceIds: metricEvIds,
+    });
+  } else if (nominalMetricEvIds.length > 0) {
+    // Metrics checked, nothing anomalous — record as a neutral observation so the
+    // investigation reflects that metrics were inspected and are not implicated (HOR-203).
+    findings.push({
+      kind: 'observation',
+      title: `Metrics nominal — ${metricSeriesChecked} series checked, no anomalies in window`,
+      confidence: 0.5,
+      evidenceIds: nominalMetricEvIds,
     });
   }
 
