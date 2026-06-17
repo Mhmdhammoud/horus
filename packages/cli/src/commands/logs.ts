@@ -23,6 +23,16 @@ function sinceToIso(since: string | undefined): string | undefined {
   return new Date(Date.now() - (msMap[unit] ?? 60_000) * amount).toISOString();
 }
 
+/**
+ * Resolve the severity floor for `--raw` (HOR-209). Defaults to `error` so raw lines
+ * match the summary's error+ view; an explicit `--level` overrides; `--all-levels`
+ * removes the floor entirely (returns undefined = all levels).
+ */
+export function resolveRawLevel(opts: { level?: string; allLevels?: boolean }): LogLevel | undefined {
+  if (opts.allLevels) return undefined;
+  return (opts.level as LogLevel | undefined) ?? 'error';
+}
+
 function levelColor(level: string, text: string): string {
   if (level === 'error' || level === 'fatal') return pc.red(text);
   if (level === 'warn') return pc.yellow(text);
@@ -40,8 +50,11 @@ export async function runLogs(
     level?: string;
     grep?: string;
     raw?: boolean;
+    /** Show all severity levels in --raw (default is error+ to match the summary). */
+    allLevels?: boolean;
     errors?: boolean;
     limit?: string;
+    json?: boolean;
   },
 ): Promise<number> {
   try {
@@ -112,15 +125,51 @@ export async function runLogs(
     const from = sinceToIso(opts.since) ?? new Date(Date.now() - 7 * 86_400_000).toISOString();
     const fromDisplay = from.slice(0, 16).replace('T', ' ');
 
-    // --raw: the escape hatch for an actual line dump.
+    // --raw: the escape hatch for an actual line dump. By default it preserves the
+    // summary's error+ severity filter so `--raw` surfaces the same errors the summary
+    // counts (HOR-209) — previously it dumped recent INFO/DEBUG. An explicit --level
+    // overrides; --all-levels removes the severity floor entirely.
     if (opts.raw === true) {
+      const rawLevel = resolveRawLevel(opts);
+      const limit = opts.limit !== undefined ? Math.min(Number(opts.limit), 1000) : 20;
       const records = await logs.searchLogs({
         service: resolvedService,
         from,
-        level: opts.level as LogLevel | undefined,
+        level: rawLevel,
         text: opts.grep,
-        limit: opts.limit !== undefined ? Number(opts.limit) : 20,
+        limit,
       });
+      if (opts.json) {
+        // Curated record shape — omit the raw ES doc (may be large / contain anything).
+        console.log(
+          JSON.stringify(
+            {
+              scope: {
+                project: renv.project,
+                env: renv.env,
+                service: resolvedService ?? null,
+                index: indexPattern,
+                from,
+                level: rawLevel ?? 'all',
+                grep: opts.grep ?? null,
+              },
+              records: records.map((r) => ({
+                timestamp: r.timestamp,
+                level: r.level,
+                service: r.service ?? null,
+                component: r.component ?? null,
+                eventCode: r.eventCode ?? null,
+                message: r.message,
+                traceId: r.traceId ?? null,
+                requestId: r.requestId ?? null,
+              })),
+            },
+            null,
+            2,
+          ),
+        );
+        return 0;
+      }
       if (records.length === 0) {
         console.log(pc.dim('No logs matched.'));
         return 0;
@@ -156,6 +205,31 @@ export async function runLogs(
         broadeningNote = `No errors found for service "${resolvedService}" — showing all services`;
         scopeService = undefined;
       }
+    }
+
+    if (opts.json) {
+      console.log(
+        JSON.stringify(
+          {
+            scope: {
+              project: renv.project,
+              env: renv.env,
+              service: scopeService ?? null,
+              index: indexPattern,
+              from,
+              severity: 'error+',
+              grep: opts.grep ?? null,
+            },
+            totalErrors: analysis.totalErrors,
+            signatures: analysis.signatures,
+            newSignatures: analysis.newSignatures,
+            affectedServices: analysis.affectedServices,
+          },
+          null,
+          2,
+        ),
+      );
+      return 0;
     }
 
     console.log(
