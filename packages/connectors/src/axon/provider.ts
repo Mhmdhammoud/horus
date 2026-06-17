@@ -88,8 +88,12 @@ export class AxonCodeProvider implements CodeProvider {
     // Phase 1: deterministic exact-name lookup via Cypher.
     // Vector search can rank unrelated symbols above exact-name hits when embedding
     // similarity is misleading (HOR-164). An exact Cypher match is always authoritative.
+    // NB: Kùzu rejects the label-negation predicate `NOT n:File` with a parser error
+    // (HOR-208) — that silently made this whole exact-match phase throw and fall back to
+    // fuzzy search, so e.g. `GaiaController` resolved to `SchedulerController`. Use the
+    // portable `label(n) <> "File"` form instead.
     const exactQuery =
-      `MATCH (n) WHERE toLower(n.name) = toLower("${E}") AND NOT n:File ` +
+      `MATCH (n) WHERE toLower(n.name) = toLower("${E}") AND label(n) <> "File" ` +
       `RETURN n.id, n.name, n.file_path LIMIT ${limit}`;
 
     // Phase 2: semantic search — run in parallel with Phase 1.
