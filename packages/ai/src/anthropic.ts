@@ -20,6 +20,7 @@ import type {
   AIHypothesisJudgment,
   AIRootCauseAssessment,
 } from './contract.js';
+import type { InterpretationProvider } from './interpretation.js';
 
 export interface AnthropicProviderOptions {
   /** Anthropic API key. Defaults to process.env.ANTHROPIC_API_KEY. */
@@ -36,7 +37,7 @@ export interface AnthropicProviderOptions {
  * Reads the API key from opts.apiKey or ANTHROPIC_API_KEY env var. Model
  * defaults to 'claude-opus-4-8' and can be overridden per-instance.
  */
-export class AnthropicNarrativeProvider implements NarrativeProvider {
+export class AnthropicNarrativeProvider implements NarrativeProvider, InterpretationProvider {
   readonly name = 'anthropic';
   private readonly apiKey: string;
   private readonly model: string;
@@ -53,6 +54,16 @@ export class AnthropicNarrativeProvider implements NarrativeProvider {
     const prompt = buildPrompt(input, ceiling);
     const raw = await this.callApi(prompt);
     return parseOutput(raw, input, ceiling);
+  }
+
+  /**
+   * HOR-211 — generic command-level interpretation. Reuses the same Messages API
+   * call as render(), but with a caller-supplied command prompt (built by
+   * buildInterpretationPrompt) instead of the investigation narrative prompt.
+   * Returns the raw model text; the shared helper handles parsing/rendering.
+   */
+  async interpret(prompt: string): Promise<string> {
+    return this.callApi(prompt);
   }
 
   private async callApi(prompt: string): Promise<string> {

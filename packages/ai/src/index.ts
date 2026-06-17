@@ -74,3 +74,18 @@ export type {
 } from './provider-execution.js';
 
 export { createMockedProviderAdapter } from './provider-execution.js';
+
+// HOR-211 — shared command-level AI interpretation helper.
+export type {
+  InterpretationPromptKind,
+  InterpretationRequest,
+  InterpretationProvider,
+  InterpretationResult,
+} from './interpretation.js';
+
+export {
+  INTERPRETATION_GROUNDING_RULES,
+  buildInterpretationPrompt,
+  generateInterpretation,
+  renderInterpretation,
+} from './interpretation.js';

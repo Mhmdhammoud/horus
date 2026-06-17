@@ -6,7 +6,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildNarrativeProvider } from './ai-provider.js';
+import { buildNarrativeProvider, renderAiInterpretation } from './ai-provider.js';
+import type { InterpretationProvider } from '@horus/ai';
 
 let dir: string;
 beforeEach(() => {
@@ -53,5 +54,55 @@ describe('buildNarrativeProvider (HOR-215)', () => {
     const { provider, model } = await buildNarrativeProvider({ config: join(dir, 'nope.js') });
     expect(provider.name).toBe('anthropic');
     expect(model).toBe('claude-opus-4-8');
+  });
+});
+
+describe('renderAiInterpretation (HOR-211)', () => {
+  function fake(impl: (p: string) => Promise<string>): InterpretationProvider {
+    return { name: 'fake', interpret: impl };
+  }
+
+  it('is callable by a command without duplicating provider plumbing (success)', async () => {
+    const result = await renderAiInterpretation({
+      command: 'what-changed',
+      evidence: { changes: 2 },
+      promptKind: 'change-risk',
+      outputContract: 'Rank risky changes.',
+      provider: fake(async () => 'risk: low'),
+    });
+    expect(result.ok).toBe(true);
+    expect(result.text).toBe('risk: low');
+  });
+
+  it('degrades gracefully when the injected provider errors', async () => {
+    const result = await renderAiInterpretation({
+      command: 'what-changed',
+      evidence: {},
+      promptKind: 'change-risk',
+      outputContract: 'x',
+      provider: fake(async () => {
+        throw new Error('upstream 500');
+      }),
+    });
+    expect(result.ok).toBe(false);
+    expect(result.warning).toContain('upstream 500');
+  });
+
+  it('returns a graceful "unavailable" result when no provider is configured', async () => {
+    const prev = process.env['ANTHROPIC_API_KEY'];
+    delete process.env['ANTHROPIC_API_KEY'];
+    try {
+      const result = await renderAiInterpretation({
+        config: join(dir, 'nope.js'),
+        command: 'what-changed',
+        evidence: {},
+        promptKind: 'change-risk',
+        outputContract: 'x',
+      });
+      expect(result.ok).toBe(false);
+      expect(result.warning).toMatch(/connect ai|ANTHROPIC_API_KEY/i);
+    } finally {
+      if (prev !== undefined) process.env['ANTHROPIC_API_KEY'] = prev;
+    }
   });
 });
