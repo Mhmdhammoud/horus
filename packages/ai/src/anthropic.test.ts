@@ -148,13 +148,15 @@ describe('AnthropicNarrativeProvider — failure', () => {
     ).rejects.toThrow('Anthropic API error: 401');
   });
 
-  it('throws when the response text contains no JSON object', async () => {
-    const noJson = { content: [{ type: 'text', text: 'I cannot help with that.' }] };
+  it('preserves a raw narrative fallback when the response contains no JSON (HOR-205)', async () => {
+    const noJson = { content: [{ type: 'text', text: 'The workers stalled because Redis ran out of connections.' }] };
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(makeResponse(noJson)));
 
-    await expect(
-      new AnthropicNarrativeProvider({ apiKey: 'k' }).render(FIXTURE_INPUT),
-    ).rejects.toThrow('did not contain a JSON object');
+    const out = await new AnthropicNarrativeProvider({ apiKey: 'k' }).render(FIXTURE_INPUT);
+    // The AI prose is preserved (not discarded) rather than throwing.
+    expect(out.why).toContain('Redis ran out of connections');
+    expect(out.citations).toEqual([]);
+    expect(out.confidence).toBeLessThanOrEqual(FIXTURE_INPUT.reportConfidence);
   });
 
   it('throws when fetch itself rejects (network error)', async () => {
@@ -221,5 +223,75 @@ describe('renderNarrative + AnthropicNarrativeProvider', () => {
     expect(result.fromProvider).toBe(false);
     expect(result.output).toBeDefined();
     expect(typeof result.output.what).toBe('string');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// JSON extraction + repair (HOR-205)
+// ---------------------------------------------------------------------------
+
+import { extractJson } from './anthropic.js';
+
+/** Wrap arbitrary text as the model's response and render it. */
+function renderRawText(text: string) {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(makeResponse({ content: [{ type: 'text', text }] })));
+  return new AnthropicNarrativeProvider({ apiKey: 'k' }).render(FIXTURE_INPUT);
+}
+
+describe('extractJson', () => {
+  const obj = { what: 'x', why: 'y', whereNext: [], citations: [], confidence: 0.5 };
+
+  it('parses raw valid JSON', () => {
+    expect(extractJson(JSON.stringify(obj))).toMatchObject(obj);
+  });
+
+  it('extracts JSON from a fenced ```json block', () => {
+    const fenced = '```json\n' + JSON.stringify(obj) + '\n```';
+    expect(extractJson(fenced)).toMatchObject(obj);
+  });
+
+  it('extracts JSON from a bare ``` fence', () => {
+    expect(extractJson('```\n' + JSON.stringify(obj) + '\n```')).toMatchObject(obj);
+  });
+
+  it('extracts JSON surrounded by prose', () => {
+    const prose = `Here is my analysis:\n${JSON.stringify(obj)}\nHope that helps!`;
+    expect(extractJson(prose)).toMatchObject(obj);
+  });
+
+  it('repairs trailing commas', () => {
+    const bad = '{ "what": "x", "whereNext": ["a", "b",], "confidence": 0.5, }';
+    expect(extractJson(bad)).toMatchObject({ what: 'x', whereNext: ['a', 'b'], confidence: 0.5 });
+  });
+
+  it('returns null for truly unparseable text', () => {
+    expect(extractJson('this is not json at all')).toBeNull();
+    expect(extractJson('{ unbalanced ["a", "b"')).toBeNull();
+  });
+
+  it('ignores stray braces inside string values when slicing', () => {
+    const tricky = `prose { not json } more\n${JSON.stringify(obj)}`;
+    // The first balanced object is "{ not json }" which fails to parse; extraction
+    // must fall through to the real object later in the text.
+    expect(extractJson(tricky)).toMatchObject(obj);
+  });
+});
+
+describe('AnthropicNarrativeProvider — resilient parsing (HOR-205)', () => {
+  it('parses a fenced JSON response end-to-end', async () => {
+    const out = await renderRawText('```json\n' + JSON.stringify(VALID_NARRATIVE) + '\n```');
+    expect(out.what).toContain('BullMQ workers stalled');
+    expect(out.citations.length).toBe(2);
+  });
+
+  it('parses JSON with surrounding prose end-to-end', async () => {
+    const out = await renderRawText(`Sure — here is the report:\n${JSON.stringify(VALID_NARRATIVE)}\nLet me know if you need more.`);
+    expect(out.why).toContain('Redis connection pool');
+  });
+
+  it('repairs a trailing-comma response instead of falling back', async () => {
+    const withTrailingComma = JSON.stringify(VALID_NARRATIVE).replace('}', ',}');
+    const out = await renderRawText(withTrailingComma);
+    expect(out.what).toContain('BullMQ workers stalled');
   });
 });

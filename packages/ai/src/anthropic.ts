@@ -151,19 +151,111 @@ Hard rules:
 - only include services from: ${input.knownServices.join(', ')}
 - hypothesisJudgments must only reference hypothesis IDs from the hypotheses list above
 - verdict must be exactly one of: supported, weakened, eliminated, unconfirmed
-- uncertainty must be exactly one of: low, medium, high`;
+- uncertainty must be exactly one of: low, medium, high
+- output raw JSON only: no markdown code fences, no text before or after the JSON`;
+}
+
+/**
+ * Pull every balanced top-level `{…}` object out of a string by brace-counting
+ * while respecting string literals and escapes (a greedy regex would over/under-match
+ * when prose contains stray braces). Returned longest-first, since the real payload
+ * is almost always the largest object — a tiny `{ note }` before it parses and is
+ * skipped in favour of the full report.
+ */
+function sliceBalancedObjects(s: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inStr = false;
+  let escaped = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === '}') {
+      if (depth > 0) {
+        depth--;
+        if (depth === 0 && start !== -1) out.push(s.slice(start, i + 1));
+      }
+    }
+  }
+  return out.sort((a, b) => b.length - a.length);
+}
+
+/** Remove trailing commas before `}`/`]` — the most common model JSON defect. */
+function stripTrailingCommas(s: string): string {
+  return s.replace(/,(\s*[}\]])/g, '$1');
+}
+
+/**
+ * Best-effort structured extraction from a model response (HOR-205). Tries, in order:
+ * direct parse, fenced ```json block, first balanced object, and a trailing-comma
+ * repair of each. Returns the parsed object, or null when nothing parses.
+ */
+export function extractJson(raw: string): Record<string, unknown> | null {
+  const candidates: string[] = [];
+  const trimmed = raw.trim();
+  candidates.push(trimmed);
+
+  // Fenced code block: ```json … ``` or ``` … ```
+  const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence?.[1]) candidates.push(fence[1].trim());
+
+  // Balanced objects anywhere in the text (handles surrounding prose / stray braces).
+  candidates.push(...sliceBalancedObjects(trimmed));
+
+  for (const c of candidates) {
+    for (const variant of [c, stripTrailingCommas(c)]) {
+      try {
+        const parsed = JSON.parse(variant);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed as Record<string, unknown>;
+        }
+      } catch {
+        /* try the next candidate/variant */
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Build a NarrativeOutput from unparseable model text so a malformed JSON response
+ * does not discard the AI narrative entirely (HOR-205). The raw prose becomes the
+ * `why` narrative; citations/services are empty (nothing to validate against) and
+ * confidence is capped, so it passes validation and reaches the user as degraded
+ * AI output rather than silently falling back to the deterministic summary.
+ */
+function rawNarrativeFallback(raw: string, input: NarrativeInput, ceiling: number): NarrativeOutput {
+  const cleaned = raw.replace(/```(?:json)?/gi, '').trim();
+  return {
+    what: input.deterministicSummary || 'AI returned an unstructured response.',
+    why: cleaned.slice(0, 4000),
+    whereNext: [],
+    citations: [],
+    confidence: Math.min(input.reportConfidence, ceiling),
+  };
 }
 
 function parseOutput(raw: string, input: NarrativeInput, ceiling: number): NarrativeOutput {
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('Anthropic response did not contain a JSON object');
-    }
-    parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+  const parsed = extractJson(raw);
+  if (parsed === null) {
+    // Could not recover structured JSON — preserve the raw narrative instead of
+    // throwing (which would discard the entire AI response). Log enough to debug
+    // without dumping the full text (which may echo user evidence).
+    console.error(
+      `[ai] structured JSON parse failed (response length ${raw.length}); ` +
+        `preserving raw narrative fallback`,
+    );
+    return rawNarrativeFallback(raw, input, ceiling);
   }
 
   const confidence = Math.min(
