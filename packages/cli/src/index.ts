@@ -779,11 +779,11 @@ Examples:
     })
     .addHelpText('after', `
 Targets:
-  claude   → .claude/skills/horus.md  (Claude Code — loaded automatically)
-  codex    → .horus/skills/horus-codex.md
-  gemini   → .horus/skills/horus-gemini.md
-  cursor   → .horus/skills/horus-cursor.md
-  generic  → .horus/skills/horus-generic.md
+  claude   → .claude/skills/horus/SKILL.md  (Claude Code skill)
+  codex    → AGENTS.md                     (Codex CLI project instructions)
+  gemini   → .gemini/skills/horus/SKILL.md  (Gemini CLI skill)
+  cursor   → .cursor/rules/horus.mdc        (Cursor project rule)
+  generic  → .horus/skills/horus-generic.md (plain Markdown)
 
 Examples:
   horus skill install claude

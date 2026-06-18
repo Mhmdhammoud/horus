@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
+import { createInterface } from 'node:readline/promises';
 import pc from 'picocolors';
 
 export const SUPPORTED_TARGETS = ['claude', 'codex', 'gemini', 'cursor', 'generic'] as const;
@@ -10,15 +11,32 @@ export function isValidTarget(target: string): target is SkillTarget {
   return (SUPPORTED_TARGETS as readonly string[]).includes(target);
 }
 
+/** Legacy flat-file path used by early Horus Claude skill installers. */
+export function getLegacyClaudeSkillPath(opts: { global?: boolean; cwd?: string }): string {
+  const base = opts.global ? homedir() : (opts.cwd ?? process.cwd());
+  return join(base, '.claude', 'skills', 'horus.md');
+}
+
 export function getSkillInstallPath(
   target: SkillTarget,
   opts: { global?: boolean; cwd?: string },
 ): string {
   const base = opts.global ? homedir() : (opts.cwd ?? process.cwd());
-  if (target === 'claude') {
-    return join(base, '.claude', 'skills', 'horus.md');
+  switch (target) {
+    case 'claude':
+      return join(base, '.claude', 'skills', 'horus', 'SKILL.md');
+    case 'gemini':
+      return join(base, '.gemini', 'skills', 'horus', 'SKILL.md');
+    case 'cursor':
+      return opts.global
+        ? join(base, '.cursorrules')
+        : join(base, '.cursor', 'rules', 'horus.mdc');
+    case 'codex':
+      return opts.global ? join(base, '.codex', 'AGENTS.md') : join(base, 'AGENTS.md');
+    case 'generic':
+    default:
+      return join(base, '.horus', 'skills', `horus-${target}.md`);
   }
-  return join(base, '.horus', 'skills', `horus-${target}.md`);
 }
 
 const BASE_SKILL = `\
@@ -86,22 +104,78 @@ horus score <id>
 - Do not hallucinate evidence. If Horus returns nothing, say so explicitly.
 `;
 
-const CLAUDE_SUFFIX = `\
+function skillFrontmatter(target: SkillTarget): string {
+  const description = 'Use Horus as the grounded evidence layer for production incident investigation.';
+  switch (target) {
+    case 'claude':
+    case 'gemini':
+      return `---\nname: horus\ndescription: ${description}\n---\n\n`;
+    case 'cursor':
+      return `---\ndescription: ${description}\nglobs: *\nalwaysApply: true\n---\n\n`;
+    default:
+      return '';
+  }
+}
+
+const PROVIDER_NOTES: Record<SkillTarget, string> = {
+  claude: `\
 ## Claude Code notes
 
-This skill is loaded automatically when present at \`.claude/skills/horus.md\`.
+This skill is loaded automatically when present at \`.claude/skills/horus/SKILL.md\`.
 
 Useful starting points:
 - \`horus investigations\` — list saved investigation IDs
 - \`horus doctor\` — check system health
 - \`horus onboard [area]\` — get oriented in a new codebase area
-`;
+`,
+  gemini: `\
+## Gemini CLI notes
+
+This skill is loaded automatically when present at \`.gemini/skills/horus/SKILL.md\`.
+
+Useful starting points:
+- \`horus investigations\` — list saved investigation IDs
+- \`horus doctor\` — check system health
+- \`horus onboard [area]\` — get oriented in a new codebase area
+`,
+  cursor: `\
+## Cursor notes
+
+This rule is loaded automatically when present at \`.cursor/rules/horus.mdc\`.
+
+Useful starting points:
+- \`horus investigations\` — list saved investigation IDs
+- \`horus doctor\` — check system health
+- \`horus onboard [area]\` — get oriented in a new codebase area
+`,
+  codex: `\
+## Codex notes
+
+This file is loaded automatically by Codex CLI as project instructions.
+
+Useful starting points:
+- \`horus investigations\` — list saved investigation IDs
+- \`horus doctor\` — check system health
+- \`horus onboard [area]\` — get oriented in a new codebase area
+`,
+  generic: '',
+};
 
 export function generateSkillContent(target: SkillTarget): string {
-  if (target === 'claude') {
-    return BASE_SKILL + '\n' + CLAUDE_SUFFIX;
+  return skillFrontmatter(target) + BASE_SKILL + '\n' + PROVIDER_NOTES[target];
+}
+
+async function confirm(message: string): Promise<boolean> {
+  if (!process.stdin.isTTY) {
+    return false;
   }
-  return BASE_SKILL;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question(`${message} [y/N] `);
+    return /^y(es)?$/i.test(answer.trim());
+  } finally {
+    rl.close();
+  }
 }
 
 export async function runSkillInstall(
@@ -111,6 +185,7 @@ export async function runSkillInstall(
     global?: boolean;
     cwd?: string;
     write?: (line: string) => void;
+    confirm?: (message: string) => Promise<boolean>;
   },
 ): Promise<number> {
   const log = opts.write ?? ((line: string) => console.log(line));
@@ -123,6 +198,30 @@ export async function runSkillInstall(
 
   const outPath = getSkillInstallPath(target, { global: opts.global, cwd: opts.cwd });
   const content = generateSkillContent(target);
+
+  // Migrate legacy flat Claude skill file to the new directory layout.
+  if (target === 'claude') {
+    const legacyPath = getLegacyClaudeSkillPath({ global: opts.global, cwd: opts.cwd });
+    if (existsSync(legacyPath)) {
+      if (!opts.force) {
+        const confirmed = await (opts.confirm ?? confirm)(
+          `Found old flat skill file at ${legacyPath}. Replace it with the new directory layout?`,
+        );
+        if (!confirmed) {
+          log(`${pc.yellow('!')} Migration cancelled; existing skill left untouched.`);
+          log(pc.dim('  Pass --force to replace without prompting.'));
+          return 1;
+        }
+      }
+      try {
+        rmSync(legacyPath);
+        log(`${pc.yellow('!')} Replaced old flat skill file: ${legacyPath}`);
+      } catch (err) {
+        log(`${pc.red('✗')} Could not remove legacy skill file ${legacyPath}: ${(err as Error).message}`);
+        return 1;
+      }
+    }
+  }
 
   if (existsSync(outPath) && !opts.force) {
     log(`${pc.red('✗')} ${outPath} already exists`);
@@ -143,6 +242,12 @@ export async function runSkillInstall(
   if (target === 'claude') {
     log(pc.dim('  Claude Code will load this skill automatically.'));
     log(pc.dim('  Invoke it with: /horus'));
+  } else if (target === 'gemini') {
+    log(pc.dim('  Gemini CLI will load this skill automatically.'));
+  } else if (target === 'cursor') {
+    log(pc.dim('  Cursor will load this rule automatically.'));
+  } else if (target === 'codex') {
+    log(pc.dim('  Codex CLI will load this file automatically.'));
   } else {
     log(pc.dim(`  Copy or reference this file in your ${target} agent instructions.`));
   }

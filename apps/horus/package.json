@@ -1,6 +1,6 @@
 {
   "name": "@merittdev/horus",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "description": "Local-first, source-aware production-incident investigation engine",
   "type": "module",
   "bin": {

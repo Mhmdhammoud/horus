@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   runSkillInstall,
@@ -8,8 +8,10 @@ import {
   runSkillPath,
   generateSkillContent,
   getSkillInstallPath,
+  getLegacyClaudeSkillPath,
   skillContentLeaksSecrets,
   SUPPORTED_TARGETS,
+  type SkillTarget,
 } from './skill.js';
 
 const dirs: string[] = [];
@@ -87,12 +89,37 @@ describe('generateSkillContent', () => {
     expect(content).toContain('hallucinate');
   });
 
-  it('claude target includes Claude Code integration notes', () => {
+  it('claude target includes skill frontmatter and native path', () => {
     const content = generateSkillContent('claude');
-    expect(content).toContain('.claude/skills/horus.md');
+    expect(content).toContain('name: horus');
+    expect(content).toContain('.claude/skills/horus/SKILL.md');
   });
 
-  it('non-claude targets do not include claude-specific notes', () => {
+  it('gemini target includes skill frontmatter and native path', () => {
+    const content = generateSkillContent('gemini');
+    expect(content).toContain('name: horus');
+    expect(content).toContain('.gemini/skills/horus/SKILL.md');
+  });
+
+  it('cursor target includes mdc frontmatter and native path', () => {
+    const content = generateSkillContent('cursor');
+    expect(content).toContain('globs: *');
+    expect(content).toContain('alwaysApply: true');
+    expect(content).toContain('.cursor/rules/horus.mdc');
+  });
+
+  it('codex target has no frontmatter and includes codex note', () => {
+    const content = generateSkillContent('codex');
+    expect(content).not.toContain('---');
+    expect(content).toContain('Codex CLI');
+  });
+
+  it('generic target has no frontmatter', () => {
+    const content = generateSkillContent('generic');
+    expect(content).not.toContain('---');
+  });
+
+  it('non-claude targets do not include claude-specific path', () => {
     for (const target of SUPPORTED_TARGETS.filter((t) => t !== 'claude')) {
       const content = generateSkillContent(target);
       expect(content).not.toContain('.claude/skills');
@@ -104,26 +131,51 @@ describe('generateSkillContent', () => {
 // Install paths
 // ---------------------------------------------------------------------------
 
+const LOCAL_PATHS: Record<SkillTarget, string> = {
+  claude: '.claude/skills/horus/SKILL.md',
+  gemini: '.gemini/skills/horus/SKILL.md',
+  cursor: '.cursor/rules/horus.mdc',
+  codex: 'AGENTS.md',
+  generic: '.horus/skills/horus-generic.md',
+};
+
 describe('getSkillInstallPath', () => {
-  it('claude → .claude/skills/horus.md under cwd', () => {
-    const p = getSkillInstallPath('claude', { cwd: '/projects/my-app' });
-    expect(p).toBe('/projects/my-app/.claude/skills/horus.md');
-  });
+  for (const target of SUPPORTED_TARGETS) {
+    it(`${target} → ${LOCAL_PATHS[target]} under cwd`, () => {
+      const p = getSkillInstallPath(target, { cwd: '/projects/my-app' });
+      expect(p).toBe(`/projects/my-app/${LOCAL_PATHS[target]}`);
+    });
+  }
 
-  it('generic → .horus/skills/horus-generic.md under cwd', () => {
-    const p = getSkillInstallPath('generic', { cwd: '/projects/my-app' });
-    expect(p).toBe('/projects/my-app/.horus/skills/horus-generic.md');
-  });
-
-  it('codex → .horus/skills/horus-codex.md under cwd', () => {
-    const p = getSkillInstallPath('codex', { cwd: '/projects/my-app' });
-    expect(p).toBe('/projects/my-app/.horus/skills/horus-codex.md');
-  });
-
-  it('claude --global → .claude/skills/horus.md under home', () => {
+  it('claude --global → .claude/skills/horus/SKILL.md under home', () => {
     const p = getSkillInstallPath('claude', { global: true });
-    expect(p).toContain('.claude/skills/horus.md');
+    expect(p).toContain('.claude/skills/horus/SKILL.md');
     expect(p).not.toContain('/projects');
+  });
+
+  it('gemini --global → .gemini/skills/horus/SKILL.md under home', () => {
+    const p = getSkillInstallPath('gemini', { global: true });
+    expect(p).toContain('.gemini/skills/horus/SKILL.md');
+    expect(p).not.toContain('/projects');
+  });
+
+  it('cursor --global → .cursorrules under home', () => {
+    const p = getSkillInstallPath('cursor', { global: true });
+    expect(p).toContain('.cursorrules');
+    expect(p).not.toContain('/projects');
+  });
+
+  it('codex --global → .codex/AGENTS.md under home', () => {
+    const p = getSkillInstallPath('codex', { global: true });
+    expect(p).toContain('.codex/AGENTS.md');
+    expect(p).not.toContain('/projects');
+  });
+});
+
+describe('getLegacyClaudeSkillPath', () => {
+  it('returns the old flat horus.md path under cwd', () => {
+    const p = getLegacyClaudeSkillPath({ cwd: '/projects/my-app' });
+    expect(p).toBe('/projects/my-app/.claude/skills/horus.md');
   });
 });
 
@@ -132,26 +184,14 @@ describe('getSkillInstallPath', () => {
 // ---------------------------------------------------------------------------
 
 describe('runSkillInstall — success', () => {
-  it('exits 0 and creates the skill file for claude target', async () => {
-    const dir = tempDir();
-    const code = await runSkillInstall('claude', { cwd: dir, write: () => {} });
-    expect(code).toBe(0);
-    const outPath = getSkillInstallPath('claude', { cwd: dir });
-    expect(existsSync(outPath)).toBe(true);
-  });
-
-  it('exits 0 and creates the skill file for generic target', async () => {
-    const dir = tempDir();
-    const code = await runSkillInstall('generic', { cwd: dir, write: () => {} });
-    expect(code).toBe(0);
-    expect(existsSync(getSkillInstallPath('generic', { cwd: dir }))).toBe(true);
-  });
-
-  it('creates parent directories when they do not exist', async () => {
-    const dir = tempDir();
-    const code = await runSkillInstall('codex', { cwd: dir, write: () => {} });
-    expect(code).toBe(0);
-  });
+  for (const target of SUPPORTED_TARGETS) {
+    it(`exits 0 and creates the skill for ${target} target`, async () => {
+      const dir = tempDir();
+      const code = await runSkillInstall(target, { cwd: dir, write: () => {} });
+      expect(code).toBe(0);
+      expect(existsSync(getSkillInstallPath(target, { cwd: dir }))).toBe(true);
+    });
+  }
 
   it('written content matches generated content', async () => {
     const dir = tempDir();
@@ -206,6 +246,79 @@ describe('runSkillInstall — overwrite protection', () => {
     expect(code).toBe(0);
     expect(readFileSync(outPath, 'utf8')).not.toBe('old content');
   });
+
+  it('protects existing claude directory SKILL.md without --force', async () => {
+    const dir = tempDir();
+    const outPath = getSkillInstallPath('claude', { cwd: dir });
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(outPath, 'existing skill', 'utf8');
+    const code = await runSkillInstall('claude', { cwd: dir, write: () => {} });
+    expect(code).toBe(1);
+    expect(readFileSync(outPath, 'utf8')).toBe('existing skill');
+  });
+
+  it('overwrites existing claude directory SKILL.md with --force', async () => {
+    const dir = tempDir();
+    const outPath = getSkillInstallPath('claude', { cwd: dir });
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(outPath, 'existing skill', 'utf8');
+    const code = await runSkillInstall('claude', { cwd: dir, force: true, write: () => {} });
+    expect(code).toBe(0);
+    expect(readFileSync(outPath, 'utf8')).not.toBe('existing skill');
+  });
+});
+
+describe('runSkillInstall — legacy flat claude migration', () => {
+  it('migrates old flat horus.md to directory layout when confirmed', async () => {
+    const dir = tempDir();
+    const legacyPath = getLegacyClaudeSkillPath({ cwd: dir });
+    mkdirSync(dirname(legacyPath), { recursive: true });
+    writeFileSync(legacyPath, 'old flat skill', 'utf8');
+
+    const code = await runSkillInstall('claude', {
+      cwd: dir,
+      write: () => {},
+      confirm: async () => true,
+    });
+
+    expect(code).toBe(0);
+    expect(existsSync(legacyPath)).toBe(false);
+    expect(existsSync(getSkillInstallPath('claude', { cwd: dir }))).toBe(true);
+  });
+
+  it('cancels migration when user declines confirmation', async () => {
+    const dir = tempDir();
+    const legacyPath = getLegacyClaudeSkillPath({ cwd: dir });
+    mkdirSync(dirname(legacyPath), { recursive: true });
+    writeFileSync(legacyPath, 'old flat skill', 'utf8');
+
+    const code = await runSkillInstall('claude', {
+      cwd: dir,
+      write: () => {},
+      confirm: async () => false,
+    });
+
+    expect(code).toBe(1);
+    expect(existsSync(legacyPath)).toBe(true);
+    expect(existsSync(getSkillInstallPath('claude', { cwd: dir }))).toBe(false);
+  });
+
+  it('migrates old flat horus.md without prompting when --force is passed', async () => {
+    const dir = tempDir();
+    const legacyPath = getLegacyClaudeSkillPath({ cwd: dir });
+    mkdirSync(dirname(legacyPath), { recursive: true });
+    writeFileSync(legacyPath, 'old flat skill', 'utf8');
+
+    const code = await runSkillInstall('claude', {
+      cwd: dir,
+      force: true,
+      write: () => {},
+    });
+
+    expect(code).toBe(0);
+    expect(existsSync(legacyPath)).toBe(false);
+    expect(existsSync(getSkillInstallPath('claude', { cwd: dir }))).toBe(true);
+  });
 });
 
 describe('runSkillInstall — unknown target', () => {
@@ -230,14 +343,16 @@ describe('runSkillInstall — unknown target', () => {
 // ---------------------------------------------------------------------------
 
 describe('runSkillPath', () => {
-  it('prints the install path and exits 0', async () => {
-    const dir = tempDir();
-    const { lines, code } = await capture((write) =>
-      runSkillPath('claude', { cwd: dir, write }),
-    );
-    expect(code).toBe(0);
-    expect(lines[0]).toContain('.claude/skills/horus.md');
-  });
+  for (const target of SUPPORTED_TARGETS) {
+    it(`prints the ${target} install path and exits 0`, async () => {
+      const dir = tempDir();
+      const { lines, code } = await capture((write) =>
+        runSkillPath(target, { cwd: dir, write }),
+      );
+      expect(code).toBe(0);
+      expect(lines[0]).toContain(LOCAL_PATHS[target]);
+    });
+  }
 
   it('exits 1 for an unknown target', async () => {
     const dir = tempDir();
