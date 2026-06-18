@@ -35,6 +35,9 @@ import { runGenerateConfig } from './commands/generate-config.js';
 import { runReadiness } from './commands/readiness.js';
 import { runSkillInstall, runSkillPrint, runSkillPath } from './commands/skill.js';
 import { runUpdate } from './commands/update.js';
+import { runLogin, runLogout } from './commands/login.js';
+import { runContextList, runContextUse } from './commands/context.js';
+import { runCloudLink, runCloudUnlink, runCloudStatus, runCloudSync } from './commands/cloud.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -781,7 +784,7 @@ Examples:
 Targets:
   claude   → .claude/skills/horus/SKILL.md  (Claude Code skill)
   codex    → AGENTS.md                     (Codex CLI project instructions)
-  gemini   → .gemini/skills/horus/SKILL.md  (Gemini CLI skill)
+  gemini   → GEMINI.md                     (Gemini CLI project context)
   cursor   → .cursor/rules/horus.mdc        (Cursor project rule)
   generic  → .horus/skills/horus-generic.md (plain Markdown)
 
@@ -830,6 +833,87 @@ Examples:
   horus update --check      # check without installing
   horus update --force      # re-download current version
 `);
+
+  // --- Horus Cloud: login, context selection, repo↔project linking (HOR-226) ---
+  program
+    .command('login')
+    .description('Log in to Horus Cloud; stores a CLI token in ~/.horus/auth.json (never in the repo)')
+    .option('--token <token>', 'CLI token (or set HORUS_TOKEN); otherwise prompts when interactive')
+    .option('--api-url <url>', 'Horus Cloud API base URL (or set HORUS_CLOUD_API_URL)')
+    .action(async (opts: { token?: string; apiUrl?: string }) => {
+      process.exitCode = await runLogin({ token: opts.token, apiUrl: opts.apiUrl });
+    })
+    .addHelpText('after', `
+Examples:
+  horus login --token <token>
+  HORUS_TOKEN=<token> horus login`);
+
+  program
+    .command('logout')
+    .description('Revoke the current CLI token and clear local credentials')
+    .action(async () => {
+      process.exitCode = await runLogout();
+    });
+
+  const context = program
+    .command('context')
+    .description('Select where this repo stores investigations (local or a cloud project)');
+  context
+    .command('list')
+    .description('List the local context and the cloud contexts you can use')
+    .action(async () => {
+      process.exitCode = await runContextList();
+    });
+  context
+    .command('use <target>')
+    .description('Switch context: "local" or "<org>/<workspace>/<project>"')
+    .action(async (target: string) => {
+      process.exitCode = await runContextUse(target);
+    });
+
+  const cloud = program
+    .command('cloud')
+    .description('Link this repo to a Horus Cloud project and inspect cloud state');
+  cloud
+    .command('link')
+    .description('Link the current repo to a cloud project (Git-aware)')
+    .option('--project <org/workspace/project>', 'target project (skips the interactive picker)')
+    .option('-y, --yes', 'skip confirmation prompts')
+    .action(async (opts: { project?: string; yes?: boolean }) => {
+      process.exitCode = await runCloudLink({ project: opts.project, yes: opts.yes });
+    });
+  cloud
+    .command('unlink')
+    .description("Remove this repo's cloud link (returns to local mode)")
+    .action(async () => {
+      process.exitCode = await runCloudUnlink();
+    });
+  cloud
+    .command('status')
+    .description('Show the active context, linked project, repository, and auth state')
+    .action(async () => {
+      process.exitCode = await runCloudStatus();
+    });
+  cloud
+    .command('sync')
+    .description('Upload existing local investigations to the linked cloud project')
+    .option('-c, --config <path>', 'path to horus config for the local database')
+    .option('--limit <n>', 'max local investigations to consider', (v) => Number.parseInt(v, 10))
+    .option('--dry-run', 'show what would be uploaded without uploading')
+    .option('-y, --yes', 'skip the confirmation prompt')
+    .action(async (opts: { config?: string; limit?: number; dryRun?: boolean; yes?: boolean }) => {
+      process.exitCode = await runCloudSync({
+        config: opts.config,
+        limit: opts.limit,
+        dryRun: opts.dryRun,
+        yes: opts.yes,
+      });
+    })
+    .addHelpText('after', `
+Examples:
+  horus cloud sync --dry-run     # preview what would upload
+  horus cloud sync               # confirm, then upload
+  horus cloud sync --yes         # upload without prompting`);
 
   return program;
 }
