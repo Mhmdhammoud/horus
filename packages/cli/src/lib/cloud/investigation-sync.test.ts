@@ -78,9 +78,12 @@ describe("investigation-sync", () => {
             investigationId: "inv-1",
             projectId: "p1",
             organizationId: "o1",
-            type: "horus:report",
+            type: "note",
             source: "cli",
-            payload: { report: { id: "rep-1", summary: "from cloud" } },
+            title: "Investigation report snapshot",
+            content: JSON.stringify({ id: "rep-1", summary: "from cloud" }),
+            contentFormat: "application/json",
+            payload: { kind: "horus:report", report: { id: "rep-1", summary: "from cloud" } },
             idempotencyKey: "rep-1:report",
             createdAt: "2026-06-18T10:00:00.000Z",
           },
@@ -102,20 +105,24 @@ describe("investigation-sync", () => {
         });
       }
       if (u.endsWith("/investigations") && method === "GET") {
-        return json([
-          {
-            id: "inv-1",
-            projectId: "p1",
-            workspaceId: "w1",
-            organizationId: "o1",
-            title: "test hint",
-            hint: "test hint",
-            status: "completed",
-            idempotencyKey: null,
-            createdAt: "2026-06-18T10:00:00.000Z",
-            updatedAt: "2026-06-18T10:00:00.000Z",
-          },
-        ]);
+        // Cloud list endpoint returns a paginated object (HOR-244), not an array.
+        return json({
+          investigations: [
+            {
+              id: "inv-1",
+              projectId: "p1",
+              workspaceId: "w1",
+              organizationId: "o1",
+              title: "test hint",
+              hint: "test hint",
+              status: "completed",
+              idempotencyKey: null,
+              createdAt: "2026-06-18T10:00:00.000Z",
+              updatedAt: "2026-06-18T10:00:00.000Z",
+            },
+          ],
+          nextCursor: undefined,
+        });
       }
       return json({ error: { code: "not_found", message: "no route" } }, 404);
     });
@@ -156,8 +163,12 @@ describe("investigation-sync", () => {
     );
     expect(createEvidence).toBeDefined();
     const evidenceBody = JSON.parse((createEvidence![1] as RequestInit).body as string);
-    expect(evidenceBody.type).toBe("horus:report");
+    // Must satisfy the cloud createEvidenceSchema: valid enum type + required fields.
+    expect(["code_snippet", "log", "db_result", "runtime_evidence", "file_reference", "command_output", "note"]).toContain(evidenceBody.type);
     expect(evidenceBody.source).toBe("cli");
+    expect(evidenceBody.title).toBeTruthy();
+    expect(evidenceBody.contentFormat).toBe("application/json");
+    expect(JSON.parse(evidenceBody.content).id).toBe("rep-1");
     expect(evidenceBody.payload.report.id).toBe("rep-1");
 
     const createRun = fetchSpy.mock.calls.find(
