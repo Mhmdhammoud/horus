@@ -23,8 +23,16 @@ export interface QueueCounts {
   isPaused: boolean;
   /** Age of the oldest waiting job in milliseconds; undefined when the queue is empty. */
   oldestWaitingMs?: number;
-  /** Top failed-reason buckets, sorted by count descending. */
-  failedBreakdown?: Array<{ reason: string; count: number }>;
+  /**
+   * Age (ms) of the most recent failed job in the sample (HOR-217). Lets callers
+   * distinguish a job that failed minutes ago from a stale failure days old.
+   */
+  newestFailedAgeMs?: number;
+  /**
+   * Top failed-reason buckets, sorted by count descending. `lastFailedAgeMs` is the
+   * age (ms) of the most recent sampled failure for that reason (HOR-217).
+   */
+  failedBreakdown?: Array<{ reason: string; count: number; lastFailedAgeMs?: number }>;
 }
 
 export interface QueueRuntimeState {
@@ -63,6 +71,16 @@ const OLD_JOB_WARN_MS = 5 * 60_000;
 const OLD_JOB_HIGH_MS = 60 * 60_000;
 /** Only emit a failed-breakdown signal when the top reason owns at least this share. */
 const BREAKDOWN_PCT_THRESHOLD = 30;
+/**
+ * A failed job older than this is "stale" — its error reflects a past run, not a
+ * live incident. Surfaced so investigations don't report an old 401 as current (HOR-217).
+ */
+export const STALE_FAILED_MS = 60 * 60_000;
+
+/** Is a failed-job age stale (older than the threshold)? */
+export function isStaleFailure(ageMs: number | undefined): boolean {
+  return ageMs !== undefined && ageMs > STALE_FAILED_MS;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -126,12 +144,23 @@ export function analyzeQueueSignals(q: QueueCounts): QueueSignal[] {
 
   if (q.failed > FAILED_WARN) {
     const severe = q.failed > 100;
+    const stale = isStaleFailure(q.newestFailedAgeMs);
+    const ageStr =
+      q.newestFailedAgeMs !== undefined
+        ? ` (most recent ${fmtMs(q.newestFailedAgeMs)} ago${stale ? ', STALE' : ''})`
+        : '';
     signals.push({
       queueName: q.queueName,
       kind: 'failed-spike',
-      title: `${q.queueName}: ${q.failed} failed jobs${severe ? ' (severe)' : ''}`,
-      relevance: severe ? 0.85 : 0.75,
-      payload: { queueName: q.queueName, failed: q.failed },
+      title: `${q.queueName}: ${q.failed} failed jobs${severe ? ' (severe)' : ''}${ageStr}`,
+      // A purely stale failure pile is less likely to be the live incident — hedge.
+      relevance: stale ? 0.5 : severe ? 0.85 : 0.75,
+      payload: {
+        queueName: q.queueName,
+        failed: q.failed,
+        newestFailedAgeMs: q.newestFailedAgeMs ?? null,
+        stale,
+      },
     });
   }
 
@@ -154,17 +183,25 @@ export function analyzeQueueSignals(q: QueueCounts): QueueSignal[] {
     const sampleTotal = q.failedBreakdown.reduce((sum, b) => sum + b.count, 0);
     const pct = Math.round((top.count / Math.max(sampleTotal, 1)) * 100);
     if (pct >= BREAKDOWN_PCT_THRESHOLD) {
+      const stale = isStaleFailure(top.lastFailedAgeMs);
+      const ageStr =
+        top.lastFailedAgeMs !== undefined
+          ? `, last failed ${fmtMs(top.lastFailedAgeMs)} ago${stale ? ' [STALE]' : ''}`
+          : '';
       signals.push({
         queueName: q.queueName,
         kind: 'failed-breakdown',
-        title: `${q.queueName}: ${pct}% of recently sampled failures (${top.count}/${sampleTotal} sampled) are "${top.reason}"`,
-        relevance: 0.82,
+        title: `${q.queueName}: ${pct}% of recently sampled failures (${top.count}/${sampleTotal} sampled) are "${top.reason}"${ageStr}`,
+        // Demote a stale-only breakdown so a days-old error isn't read as live (HOR-217).
+        relevance: stale ? 0.5 : 0.82,
         payload: {
           queueName: q.queueName,
           topReason: top.reason,
           topCount: top.count,
           topPct: pct,
           totalFailed: q.failed,
+          topLastFailedAgeMs: top.lastFailedAgeMs ?? null,
+          topStale: stale,
           breakdown: q.failedBreakdown.slice(0, 3),
         },
       });

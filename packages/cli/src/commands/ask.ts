@@ -11,6 +11,10 @@ import {
   migrateReport,
 } from '@horus/engine';
 import type { InvestigationReport } from '@horus/engine';
+import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
+import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
+import { fetchInvestigationReportFromCloud } from '../lib/cloud/investigation-sync.js';
+import { reportCloudError } from './context.js';
 
 /**
  * HOR-21 / HOR-204 — ask: answer a follow-up question about a saved investigation,
@@ -25,11 +29,73 @@ import type { InvestigationReport } from '@horus/engine';
  * Either way it reuses the persisted report's evidence — never re-queries Axon or
  * any production connector.
  */
+function renderAnswer(
+  report: InvestigationReport,
+  directive: string,
+  opts: { json?: boolean },
+): number {
+  const answer = answerQuestion(report, directive);
+  if (answer) {
+    console.log(opts.json ? qaToJSON(answer) : renderQAAnswer(answer));
+    return 0;
+  }
+
+  const v = refineInvestigation(report, directive);
+  console.log(opts.json ? refinedToJSON(report, v) : renderRefined(report, v));
+
+  if (!opts.json && report.aiJudgment) {
+    const j = report.aiJudgment;
+    console.log('');
+    console.log(pc.dim('─'.repeat(60)));
+    console.log(pc.dim(`Stored AI judgment (${j.provider}, ${j.generatedAt}):`));
+    if (j.rootCauseAssessment) {
+      console.log(pc.bold('Root cause (AI):'), j.rootCauseAssessment.summary);
+      console.log(pc.dim(`Uncertainty: ${j.rootCauseAssessment.uncertainty}`));
+    } else {
+      console.log(pc.bold('AI Why:'), j.why);
+    }
+  }
+  return 0;
+}
+
 export async function runAsk(
   id: string,
   directive: string,
   opts: { config?: string; json?: boolean },
 ): Promise<number> {
+  const repoRoot = repoRootOrCwd();
+  const cloudCfg = readCloudConfig(repoRoot);
+
+  if (isCloudActive(cloudCfg)) {
+    const session = authedClient();
+    if (!session) {
+      console.error(
+        pc.red(
+          `This repo is linked to Horus Cloud but you are not logged in. Run ${pc.bold('horus login')} first.`,
+        ),
+      );
+      return 1;
+    }
+    try {
+      const report = await fetchInvestigationReportFromCloud(
+        session.client,
+        cloudCfg,
+        id,
+      );
+      if (!report) {
+        console.error(
+          pc.red(
+            `Cloud investigation ${id} has no saved report. Run this investigation with ${pc.bold('horus investigate')} first.`,
+          ),
+        );
+        return 1;
+      }
+      return renderAnswer(report, directive, opts);
+    } catch (err) {
+      return reportCloudError(err);
+    }
+  }
+
   const { db, sql } = createDb(await resolveDbUrl(opts.config));
   try {
     const row = await getInvestigation(db, id);
@@ -42,35 +108,8 @@ export async function runAsk(
       return 1;
     }
     const report = migrateReport(row.report) as InvestigationReport;
-
-    // Q&A first: if the input is a recognized investigation question, answer it
-    // directly instead of falling back to an all-evidence topic view.
-    const answer = answerQuestion(report, directive);
-    if (answer) {
-      console.log(opts.json ? qaToJSON(answer) : renderQAAnswer(answer));
-      return 0;
-    }
-
-    const v = refineInvestigation(report, directive);
-    console.log(opts.json ? refinedToJSON(report, v) : renderRefined(report, v));
-
-    // Supplement answer with stored AI judgment when available (HOR-198)
-    if (!opts.json && report.aiJudgment) {
-      const j = report.aiJudgment;
-      console.log('');
-      console.log(pc.dim('─'.repeat(60)));
-      console.log(pc.dim(`Stored AI judgment (${j.provider}, ${j.generatedAt}):`));
-      if (j.rootCauseAssessment) {
-        console.log(pc.bold('Root cause (AI):'), j.rootCauseAssessment.summary);
-        console.log(pc.dim(`Uncertainty: ${j.rootCauseAssessment.uncertainty}`));
-      } else {
-        console.log(pc.bold('AI Why:'), j.why);
-      }
-    }
+    return renderAnswer(report, directive, opts);
   } catch (err) {
-    // A malformed id is not a valid UUID; Postgres rejects the cast with
-    // SQLSTATE 22P02. Treat that the same as "no such investigation" rather
-    // than leaking a raw driver error.
     const code =
       typeof err === 'object' && err !== null && 'code' in err
         ? String((err as { code: unknown }).code)
@@ -84,5 +123,4 @@ export async function runAsk(
   } finally {
     await sql.end();
   }
-  return 0;
 }

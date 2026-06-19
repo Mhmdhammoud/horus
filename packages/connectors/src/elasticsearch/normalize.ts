@@ -187,6 +187,18 @@ export interface LogRecord {
   traceId?: string;
   requestId?: string;
   host?: string;
+  /**
+   * Structured context object attached to the log (Meritt `context.*`). Carries the
+   * fields that make a raw error line actionable — entity ids, error strings, etc.
+   * (HOR-215). Parsed from a JSON string when the logger serialised it.
+   */
+  context?: Record<string, unknown>;
+  /**
+   * Free-form `detail` field — where some loggers bury the real error (e.g. the
+   * AxiosError / `getaddrinfo ENOTFOUND ...` string). Surfaced for raw output and
+   * searched by broad text queries (HOR-216).
+   */
+  detail?: string;
   index: string;
   raw: Record<string, unknown>;
 }
@@ -198,6 +210,18 @@ export interface LogQuery {
   to?: string;
   level?: LogLevel;
   text?: string;
+  /**
+   * When true, `text` is matched across the message, `detail`, and `context.*`
+   * fields (not just the message) so error strings buried in `detail`/`context`
+   * are found (HOR-216). Default false preserves the message-only match.
+   */
+  broadText?: boolean;
+  /**
+   * Scope an aggregation to a single error signature (event_code). Only applied
+   * by `buildErrorAggBody` — used to count distinct failing entities for one
+   * signature (HOR-215).
+   */
+  eventCode?: string;
   limit?: number;
 }
 
@@ -273,6 +297,26 @@ export function buildLevelFilter(
 // Query builders
 // ---------------------------------------------------------------------------
 
+/**
+ * Build the `must` clause for a text query. By default matches only the message
+ * field; when `q.broadText` is set, matches the query as a phrase across the
+ * message, `detail`, and `context.*` fields so error strings buried outside the
+ * message (e.g. an AxiosError in `detail`) are still found (HOR-216).
+ */
+export function buildTextMust(
+  q: LogQuery,
+  mapping: ElasticsearchFieldMapping = MERITT_FIELD_MAPPING,
+): unknown[] {
+  if (q.text === undefined) return [{ match_all: {} }];
+  if (q.broadText === true) {
+    const fields = [mapping.messageField];
+    if (mapping.messageFallbackField !== undefined) fields.push(mapping.messageFallbackField);
+    fields.push('detail', 'context.*');
+    return [{ multi_match: { query: q.text, fields, type: 'phrase', lenient: true } }];
+  }
+  return [{ match: { [mapping.messageField]: q.text } }];
+}
+
 export function buildSearchBody(
   q: LogQuery,
   mapping: ElasticsearchFieldMapping = MERITT_FIELD_MAPPING,
@@ -294,10 +338,7 @@ export function buildSearchBody(
     filters.push({ term: { [serviceTermField(mapping)]: q.service } });
   }
 
-  const mustClause: unknown[] =
-    q.text !== undefined
-      ? [{ match: { [mapping.messageField]: q.text } }]
-      : [{ match_all: {} }];
+  const mustClause = buildTextMust(q, mapping);
 
   return {
     query: {
@@ -334,6 +375,10 @@ export function buildErrorAggBody(
     filters.push({ term: { [serviceTermField(mapping)]: q.service } });
   }
 
+  if (q.eventCode !== undefined) {
+    filters.push({ term: { [signatureTermField(mapping)]: q.eventCode } });
+  }
+
   // Use the mapping's keyword-aware term field when the field matches the
   // configured eventCodeField; otherwise fall back to appending .keyword
   // (for explicit field overrides from callers that pre-date HOR-47).
@@ -345,6 +390,7 @@ export function buildErrorAggBody(
     query: {
       bool: {
         filter: filters,
+        must: buildTextMust(q, mapping),
       },
     },
     aggs: {
@@ -489,6 +535,33 @@ export function normalizeHit(
         ? src['host_name']
         : undefined;
 
+  // Structured context: an object directly, or a JSON string the logger serialised.
+  // Surfaced so raw output can show the fields that actually identify a failure
+  // (entity ids, error strings) instead of just the generic message (HOR-215).
+  let context: Record<string, unknown> | undefined;
+  const ctxRaw = src['context'];
+  if (ctxRaw !== null && typeof ctxRaw === 'object' && !Array.isArray(ctxRaw)) {
+    context = ctxRaw as Record<string, unknown>;
+  } else if (typeof ctxRaw === 'string') {
+    try {
+      const parsed = JSON.parse(ctxRaw) as unknown;
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        context = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // not JSON — leave context undefined
+    }
+  }
+
+  // `detail`: where some loggers bury the real error (e.g. AxiosError / ENOTFOUND).
+  const detailRaw = getField(src, 'detail');
+  const detail =
+    typeof detailRaw === 'string'
+      ? detailRaw
+      : detailRaw !== null && typeof detailRaw === 'object'
+        ? safeStringify(detailRaw)
+        : undefined;
+
   const index = typeof h['_index'] === 'string' ? h['_index'] : '';
 
   return {
@@ -502,9 +575,65 @@ export function normalizeHit(
     traceId,
     requestId,
     host,
+    ...(context !== undefined ? { context } : {}),
+    ...(detail !== undefined ? { detail } : {}),
     index,
     raw: src,
   };
+}
+
+/** Compact one-line JSON, defensively bounded. Returns undefined on failure. */
+function safeStringify(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Raw context display (HOR-215)
+// ---------------------------------------------------------------------------
+
+export interface ContextField {
+  key: string;
+  value: string;
+}
+
+/** Stringify a scalar context value for display; objects/arrays compacted. */
+function displayValue(v: unknown): string | undefined {
+  if (v === null || v === undefined) return undefined;
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  return safeStringify(v);
+}
+
+/**
+ * Flatten a record's structured fields (eventCode + context.* + detail) into an
+ * ordered, displayable key/value list for `horus logs --raw` (HOR-215). One level
+ * deep — nested objects are compacted to JSON. Empty/blank values are skipped.
+ */
+export function extractContextFields(record: LogRecord, limit = 16): ContextField[] {
+  const out: ContextField[] = [];
+  const seen = new Set<string>();
+  const push = (key: string, raw: unknown) => {
+    if (out.length >= limit || seen.has(key)) return;
+    const value = displayValue(raw);
+    if (value === undefined || value.trim() === '') return;
+    seen.add(key);
+    out.push({ key, value });
+  };
+
+  if (record.eventCode !== undefined) push('code', record.eventCode);
+  if (record.context !== undefined) {
+    for (const [k, v] of Object.entries(record.context)) {
+      // traceId/requestId already shown via their own columns when present.
+      if (k === 'traceId' || k === 'trace_id') continue;
+      push(k, v);
+    }
+  }
+  if (record.detail !== undefined) push('detail', record.detail);
+  return out;
 }
 
 export function hitsToRecords(

@@ -14,6 +14,10 @@ import type { InvestigationReport, StoredAIJudgment } from '@horus/engine';
 import { renderNarrative, AnthropicNarrativeProvider } from '@horus/ai';
 import type { NarrativeInput, NarrativeOutput, NarrativeProvider } from '@horus/ai';
 import type { Evidence } from '@horus/engine';
+import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
+import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
+import { uploadInvestigationToCloud } from '../lib/cloud/investigation-sync.js';
+import { reportCloudError } from './context.js';
 
 function extractEvidenceExcerpt(e: Evidence): string | undefined {
   if (!e.payload || typeof e.payload !== 'object') return undefined;
@@ -180,6 +184,19 @@ export async function runInvestigate(
       return 1;
     }
 
+    const repoRoot = repoRootOrCwd(renv.path);
+    const cloudCfg = readCloudConfig(repoRoot);
+    const cloudActive = isCloudActive(cloudCfg);
+    const cloudSession = cloudActive ? authedClient() : null;
+    if (cloudActive && !cloudSession) {
+      console.error(
+        pc.red(
+          `This repo is linked to Horus Cloud but you are not logged in. Run ${pc.bold('horus login')} first.`,
+        ),
+      );
+      return 1;
+    }
+
     const code = codeForEnv(renv);
     if (!code) {
       console.error(
@@ -295,6 +312,15 @@ export async function runInvestigate(
         } else {
           const reason = classifyAIFailure(validationErrors?.[0]);
           console.error(pc.yellow(`[ai] fallback to deterministic — ${reason}`));
+        }
+      }
+
+      if (cloudActive && cloudSession && cloudCfg) {
+        try {
+          const refs = await uploadInvestigationToCloud(cloudSession.client, cloudCfg, report);
+          console.log(pc.dim(`[cloud] investigation saved: ${refs.investigationId}`));
+        } catch (err) {
+          return reportCloudError(err);
         }
       }
     } finally {

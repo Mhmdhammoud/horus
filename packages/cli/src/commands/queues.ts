@@ -403,10 +403,23 @@ function printLiveTable(queues: QueueCounts[], staticNames: Set<string> = new Se
       console.log(pc.dim(`    oldest waiting: ${age}`));
     }
 
-    // Failed breakdown
+    // Newest failure age for the queue overall — tells a live failure from a stale
+    // pile at a glance (HOR-217). 1h is the staleness cutoff.
+    if (q.newestFailedAgeMs !== undefined) {
+      const stale = q.newestFailedAgeMs > 3_600_000;
+      const ageLine = `    most recent failure: ${formatAge(q.newestFailedAgeMs)} ago`;
+      console.log(stale ? pc.yellow(`${ageLine} [STALE]`) : pc.dim(ageLine));
+    }
+
+    // Failed breakdown — annotate each reason with how long ago it last failed.
     if (q.failedBreakdown && q.failedBreakdown.length > 0) {
-      for (const { reason, count } of q.failedBreakdown.slice(0, 3)) {
-        console.log(pc.red(`    ✗ [${count}x] ${reason}`));
+      for (const fb of q.failedBreakdown.slice(0, 3)) {
+        let suffix = '';
+        if (fb.lastFailedAgeMs !== undefined) {
+          const stale = fb.lastFailedAgeMs > 3_600_000;
+          suffix = pc.dim(` (last ${formatAge(fb.lastFailedAgeMs)} ago)`) + (stale ? pc.yellow(' [STALE]') : '');
+        }
+        console.log(pc.red(`    ✗ [${fb.count}x] ${fb.reason}`) + suffix);
       }
     }
   }

@@ -212,6 +212,92 @@ export function classifyLogRelevance(
 }
 
 /**
+ * Detect context field names that look like entity identifiers worth aggregating
+ * (HOR-215) — brand_id, order_id, userId, etc. Used to surface "16 brands × 50
+ * orders affected" instead of only an error-signature count. Returns at most
+ * `limit` field names, in object order, with scalar values only.
+ */
+export function detectEntityFields(
+  context: Record<string, unknown> | undefined,
+  limit = 2,
+): string[] {
+  if (context === undefined) return [];
+  const out: string[] = [];
+  for (const [k, v] of Object.entries(context)) {
+    if (v === null || (typeof v !== 'string' && typeof v !== 'number')) continue;
+    const looksLikeId =
+      /(^|_)ids?$/i.test(k) ||
+      /id$/.test(k) ||
+      /^(brand|order|user|customer|account|tenant|shop|merchant|product|seller)/i.test(k);
+    if (looksLikeId) {
+      out.push(k);
+      if (out.length >= limit) break;
+    }
+  }
+  return out;
+}
+
+/** Result of seeding an investigation from a log match instead of the hint (HOR-216). */
+export interface LogReseed {
+  seeds: Symbol[];
+  /** Human note: what the hint matched in logs and which symbol it resolved to. */
+  note: string;
+  /** The component the matching log named, if any. */
+  component?: string;
+  /** The event_code the matching log carried, if any. */
+  eventCode?: string;
+}
+
+/**
+ * Fallback seed resolution for raw error-string hints (HOR-216).
+ *
+ * When the hint matches no source symbol, search the logs for it across message +
+ * detail + context.* (broadText), then back-resolve the matching log's component to
+ * a source symbol so a normal structural investigation can proceed. Returns null
+ * when logs are unavailable, nothing matches, or no component resolves to a symbol.
+ */
+export async function reseedFromLogs(
+  hint: string,
+  input: InvestigationInput,
+  deps: EngineDeps,
+): Promise<LogReseed | null> {
+  if (!deps.logs || typeof deps.logs.searchLogs !== 'function') return null;
+  try {
+    const from = logWindowFrom(input.since);
+    const records = await deps.logs.searchLogs({
+      text: hint,
+      broadText: true,
+      from,
+      limit: 5,
+      service: input.service,
+    });
+    if (records.length === 0) return null;
+
+    // Components are the most likely class/file names to resolve to a symbol.
+    const candidates = [...new Set(records.map((r) => r.component).filter((c): c is string => !!c))];
+    for (const name of candidates) {
+      const syms = await deps.code.searchSymbols(name, 5);
+      if (syms.length > 0) {
+        const rankedSeeds = rankSeeds(syms, [...new Set(tokenize(name))]);
+        const first = records[0];
+        const componentLabel = first?.component ?? 'log entry';
+        const codeLabel = first?.eventCode ? ` (${first.eventCode})` : '';
+        const seedName = rankedSeeds[0]?.symbol.name ?? name;
+        return {
+          seeds: rankedSeeds.map((r) => r.symbol),
+          note: `Hint matched no symbol; resolved via logs: ${componentLabel}${codeLabel} → ${seedName}`,
+          ...(first?.component !== undefined ? { component: first.component } : {}),
+          ...(first?.eventCode !== undefined ? { eventCode: first.eventCode } : {}),
+        };
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Derive the confidence for the queue-runtime anomaly finding.
  * Exported for unit testing — logic must stay in sync with the inline usage below.
  *
@@ -282,9 +368,22 @@ export async function investigate(
   const rawSeeds = await code.searchSymbols(hint, 5);
   const hintTokens = [...new Set(tokenize(hint))];
   const ranked = rankSeeds(rawSeeds, hintTokens);
-  const seeds = ranked.map((r) => r.symbol);
+  let seeds = ranked.map((r) => r.symbol);
   // noUncheckedIndexedAccess: a non-empty array could still index to undefined.
-  const top = seeds[0];
+  let top = seeds[0];
+
+  // HOR-216: a raw error string (e.g. "getaddrinfo ENOTFOUND host") matches no
+  // source symbol. Before giving up, search the logs for the hint (across message,
+  // detail, and context.*), then back-resolve the matching log's component to a
+  // source symbol and seed the investigation from there. Best-effort.
+  let logReseed: LogReseed | null = null;
+  if (!top) {
+    logReseed = await reseedFromLogs(hint, input, deps);
+    if (logReseed !== null) {
+      seeds = logReseed.seeds;
+      top = seeds[0];
+    }
+  }
 
   if (!top) {
     const report: InvestigationReport = {
@@ -303,7 +402,9 @@ export async function investigate(
       graph: { nodes: [], edges: [] },
       confidence: 0,
       nextActions: [
-        `No symbols matched "${hint}". Try a more specific hint — an exact function, class, or file name.`,
+        deps.logs != null
+          ? `No symbols matched "${hint}", and no recent error log matched it either. Try a more specific hint — an exact function, class, or file name — or widen --since.`
+          : `No symbols matched "${hint}". Try a more specific hint — an exact function, class, or file name.`,
       ],
     };
     const persistedId = await persist(db, input, report);
@@ -447,6 +548,9 @@ export async function investigate(
   const logEvIds: string[] = [];
   const directLogEvIds: string[] = [];
   const ambientLogEvIds: string[] = [];
+  // HOR-215: distinct-failing-entity evidence (e.g. "16 brand_id, 50 order_id").
+  const entityEvIds: string[] = [];
+  const entitySummaries: string[] = [];
   let logsCollected = false;
   let logsCompatibilityError: string | undefined;
 
@@ -538,6 +642,60 @@ export async function investigate(
           logEvIds.push(ev.id);
           if (relevanceClass === 'direct') directLogEvIds.push(ev.id);
           else ambientLogEvIds.push(ev.id);
+        }
+
+        // HOR-215: surface the DISTINCT failing entities behind the dominant error
+        // signature (e.g. "16 brands × 50 orders") instead of only a signature count.
+        // Pick the top signature that carries id-like context fields and aggregate
+        // each, scoped to that signature. Best-effort — never breaks the investigation.
+        if (typeof deps.logs.aggregateErrors === 'function') {
+          const sigForEntities = analysis.signatures.find(
+            (s) => detectEntityFields(s.sampleContext).length > 0,
+          );
+          if (sigForEntities !== undefined) {
+            for (const f of detectEntityFields(sigForEntities.sampleContext)) {
+              try {
+                const buckets = await deps.logs.aggregateErrors(
+                  {
+                    service: input.service,
+                    from,
+                    eventCode:
+                      sigForEntities.key !== '(none)' ? sigForEntities.key : undefined,
+                  },
+                  `context.${f}`,
+                );
+                if (buckets.length > 0) {
+                  const top3 = buckets
+                    .slice(0, 3)
+                    .map((b) => `${b.key} (${b.count}x)`)
+                    .join(', ');
+                  // aggregateErrors caps at 20 buckets — show "N+" when saturated.
+                  const plus = buckets.length >= 20 ? '+' : '';
+                  const ev = mkEv(
+                    'log',
+                    `Distinct context.${f} for ${sigForEntities.key}: ${buckets.length}${plus} value(s) (top: ${top3})`.slice(
+                      0,
+                      180,
+                    ),
+                    {
+                      field: `context.${f}`,
+                      signature: sigForEntities.key,
+                      distinctShown: buckets.length,
+                      capped: buckets.length >= 20,
+                      top: buckets.slice(0, 10),
+                    },
+                    {},
+                    undefined,
+                    0.6,
+                  );
+                  entityEvIds.push(ev.id);
+                  entitySummaries.push(`${buckets.length}${plus} ${f}`);
+                }
+              } catch {
+                // best-effort per-field; skip on error
+              }
+            }
+          }
         }
       }
     } catch {
@@ -831,6 +989,18 @@ export async function investigate(
     evidenceIds: [seedEv.id],
   });
 
+  // HOR-216: when the seed came from a log match (raw error-string hint), record
+  // how it was resolved so the trail from "error string" → symbol is transparent.
+  if (logReseed !== null) {
+    findings.push({
+      kind: 'observation',
+      title: logReseed.note,
+      detail: 'Seed was resolved by matching the hint against recent logs, not source search.',
+      confidence: 0.6,
+      evidenceIds: [seedEv.id],
+    });
+  }
+
   // Surface the other ranked candidate areas so a narrow pick is transparent.
   if (ranked.length > 1) {
     const candidates = ranked
@@ -951,6 +1121,17 @@ export async function investigate(
         evidenceIds: ambientLogEvIds.slice(0, 1),
       });
     }
+  }
+
+  // Distinct failing-entity finding (HOR-215) — aggregated entity counts behind
+  // the dominant error signature, so the report names what's actually stuck.
+  if (entityEvIds.length > 0) {
+    findings.push({
+      kind: 'observation',
+      title: `Distinct failing entities: ${entitySummaries.join(' × ')}`,
+      confidence: 0.6,
+      evidenceIds: entityEvIds,
+    });
   }
 
   // Application-state findings (MongoDB, HOR-33)

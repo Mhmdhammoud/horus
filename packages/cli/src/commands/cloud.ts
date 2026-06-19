@@ -16,7 +16,7 @@ import {
 } from "../lib/cloud/context-store.js";
 import { detectGitRemote } from "../lib/cloud/git.js";
 import { authedClient, repoRootOrCwd } from "../lib/cloud/session.js";
-import { resolveTriple, reportCloudError } from "./context.js";
+import { resolveTriple, reportCloudError, syncMetaLines } from "./context.js";
 import { createDb, listInvestigationsWithReports } from "@horus/db";
 import type { InvestigationReport } from "@horus/engine";
 import { resolveDbUrl } from "../lib/db-url.js";
@@ -70,27 +70,13 @@ export async function runCloudLink(
     return 1;
   }
 
-  const repoSlug = remote?.repoName ?? resolved.project.slug;
-
-  // Register the repository server-side if the endpoint exists (best-effort).
-  let repositoryId: string | undefined;
-  try {
-    const created = await session.client.createRepository(resolved.project.id, {
-      slug: repoSlug,
-      name: repoSlug,
-      remoteUrl: remote?.remoteUrl,
-    });
-    repositoryId = created?.id;
-  } catch (err) {
-    return reportCloudError(err);
-  }
-
+  // A project IS the repository/codebase (HOR-280); the link stores the
+  // org/workspace/project triple only — no separate Repository concept (HOR-278).
   writeCloudConfig(root, {
     context: "cloud",
     organization: resolved.organization,
     workspace: resolved.workspace,
     project: resolved.project,
-    repository: { id: repositoryId, slug: repoSlug },
   });
 
   console.log(
@@ -131,8 +117,11 @@ export async function runCloudStatus(opts: { cwd?: string } = {}): Promise<numbe
   const triple = `${cfg.organization?.slug}/${cfg.workspace?.slug}/${cfg.project.slug}`;
   console.log(`${pc.bold("Context:")}     ${triple}   ${pc.dim("(cloud)")}`);
 
-  // Enrich with names when logged in + online; fall back to slugs otherwise.
+  // Enrich with the project's name + repo/sync metadata when logged in + online;
+  // fall back to the cached slug otherwise. A project IS the repository (HOR-280),
+  // so there is no separate Repository line (HOR-278).
   let projectLine = `${cfg.project.slug}`;
+  let metaLines: string[] = [];
   let account = pc.dim("not logged in");
   if (session) {
     account = session.auth.account.email;
@@ -143,19 +132,15 @@ export async function runCloudStatus(opts: { cwd?: string } = {}): Promise<numbe
       const org = ctx.organizations.find((o) => o.id === project?.organizationId);
       if (project && ws && org) {
         projectLine = `${project.name}  ·  workspace ${ws.name}  ·  org ${org.name}`;
+        metaLines = syncMetaLines(project);
       }
     } catch {
-      // offline — keep slug-only line
+      // offline — keep slug-only line, no metadata
     }
   }
   console.log(`${pc.bold("Project:")}     ${projectLine}`);
-  console.log(
-    `${pc.bold("Repository:")}  ${cfg.repository?.slug ?? pc.dim("(none)")}` +
-      (cfg.repository?.id ? " (linked)" : cfg.repository ? pc.dim(" (pending sync)") : ""),
-  );
+  for (const line of metaLines) console.log(line);
   console.log(`${pc.bold("Account:")}     ${account}`);
-  // Sync counts arrive with cloud persistence (HOR-227); not available yet.
-  console.log(`${pc.bold("Sync:")}        ${pc.dim("— (cloud persistence pending: HOR-227)")}`);
   return 0;
 }
 

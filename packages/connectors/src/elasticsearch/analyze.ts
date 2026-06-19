@@ -11,6 +11,7 @@ import type { Evidence } from '@horus/core';
 import {
   levelToValue,
   buildLevelFilter,
+  buildTextMust,
   getField,
   serviceTermField,
   signatureTermField,
@@ -31,6 +32,11 @@ export interface ErrorSignature {
   services: string[];
   sampleMessage?: string;
   sampleComponent?: string;
+  /**
+   * Structured context from a representative log of this signature (HOR-215).
+   * Used to discover entity fields (brand_id, order_id, …) to aggregate on.
+   */
+  sampleContext?: Record<string, unknown>;
   /** True when this signature did not occur in the baseline (preceding) window. */
   isNew?: boolean;
   baselineCount?: number;
@@ -82,10 +88,7 @@ export function buildErrorAnalysisBody(
     filters.push({ term: { [serviceTermField(mapping)]: q.service } });
   }
 
-  const mustClause: unknown[] =
-    q.text !== undefined
-      ? [{ match: { [mapping.messageField]: q.text } }]
-      : [{ match_all: {} }];
+  const mustClause = buildTextMust(q, mapping);
 
   const svcTerm = serviceTermField(mapping);
   const sigTerm =
@@ -105,7 +108,7 @@ export function buildErrorAnalysisBody(
           sample: {
             top_hits: {
               size: 1,
-              _source: [mapping.messageField, 'component', 'log_logger'],
+              _source: [mapping.messageField, 'component', 'log_logger', 'context', 'detail'],
               sort: [{ [mapping.timestampField]: { order: 'desc' } }],
             },
           },
@@ -165,6 +168,12 @@ export function parseErrorAnalysis(
           ? sampleSrc['message']
           : undefined;
 
+    const ctx = sampleSrc['context'];
+    const sampleContext =
+      ctx !== null && typeof ctx === 'object' && !Array.isArray(ctx)
+        ? (ctx as Record<string, unknown>)
+        : undefined;
+
     return {
       key: String(b['key'] ?? '') || '(none)',
       count: typeof b['doc_count'] === 'number' ? b['doc_count'] : 0,
@@ -178,6 +187,7 @@ export function parseErrorAnalysis(
           : typeof sampleSrc['log_logger'] === 'string'
             ? sampleSrc['log_logger']
             : undefined,
+      ...(sampleContext !== undefined ? { sampleContext } : {}),
     };
   });
 

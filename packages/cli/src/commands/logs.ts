@@ -9,7 +9,7 @@
 
 import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
-import { logsForEnv, shortTs } from '@horus/connectors';
+import { logsForEnv, shortTs, extractContextFields } from '@horus/connectors';
 import type { LogLevel } from '@horus/connectors';
 import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
@@ -74,6 +74,8 @@ export async function runLogs(
     raw?: boolean;
     /** Show all severity levels in --raw (default is error+ to match the summary). */
     allLevels?: boolean;
+    /** Aggregate error counts by a context/structured field (e.g. context.brand_id). */
+    groupBy?: string;
     errors?: boolean;
     limit?: string;
     json?: boolean;
@@ -119,12 +121,14 @@ export async function runLogs(
     // Pass requiresService so a missing service field blocks rather than silently
     // returning zero results.
     try {
+      // Only the default analysis path aggregates by the event-code + service
+      // fields. raw mode dumps lines (searchLogs); --group-by aggregates a custom
+      // field — neither requires the configured event-code field to be present.
+      const aggregatesEventCode = opts.raw !== true && opts.groupBy === undefined;
       const compat = await logs.checkCompatibility({
         requiresService: resolvedService !== undefined,
-        // raw mode dumps log lines (searchLogs); only the default path calls
-        // analyzeErrors() which requires aggregatable event-code and service fields.
-        requiresServiceAggregation: opts.raw !== true,
-        requiresEventCode: opts.raw !== true,
+        requiresServiceAggregation: aggregatesEventCode,
+        requiresEventCode: aggregatesEventCode,
       });
       for (const w of compat.issues.filter((i) => i.severity === 'warning')) {
         console.warn(pc.yellow(`[warn] ${w.field}: ${w.message}`));
@@ -163,6 +167,9 @@ export async function runLogs(
         from,
         level: rawLevel,
         text: opts.grep,
+        // grep searches message + detail + context.* so error strings buried
+        // outside the message field are still found (HOR-216).
+        broadText: opts.grep !== undefined,
         limit,
       });
       if (opts.json) {
@@ -186,6 +193,9 @@ export async function runLogs(
                 component: r.component ?? null,
                 eventCode: r.eventCode ?? null,
                 message: r.message,
+                // Structured fields restored to raw output (HOR-215/216).
+                context: r.context ?? null,
+                detail: r.detail ?? null,
                 traceId: r.traceId ?? null,
                 requestId: r.requestId ?? null,
               })),
@@ -206,7 +216,71 @@ export async function runLogs(
         const comp = (r.component ?? r.service ?? '').padEnd(30).slice(0, 30);
         const line = `${ts}  ${lvl}  ${comp}  ${r.message.slice(0, 120)}`;
         console.log(levelColor(r.level, line));
+        // Restore structured context beneath the message line so the raw view is
+        // actually debuggable (event_code, entity ids, buried error) (HOR-215).
+        for (const { key, value } of extractContextFields(r)) {
+          console.log(pc.dim(`    ${key}: ${value.slice(0, 200)}`));
+        }
       }
+      return 0;
+    }
+
+    // --group-by: aggregate error counts by a structured/context field and show the
+    // top entities — the manual "aggregate by context.brand_id in ES" detour, built
+    // in (HOR-215). error+ severity, scoped by service/window/grep.
+    if (opts.groupBy !== undefined) {
+      const field = opts.groupBy;
+      const buckets = await logs.aggregateErrors(
+        {
+          service: resolvedService,
+          from,
+          text: opts.grep,
+          broadText: opts.grep !== undefined,
+        },
+        field,
+      );
+      if (opts.json) {
+        console.log(
+          JSON.stringify(
+            {
+              scope: {
+                project: renv.project,
+                env: renv.env,
+                service: resolvedService ?? null,
+                index: indexPattern,
+                from,
+                severity: 'error+',
+                grep: opts.grep ?? null,
+                groupBy: field,
+              },
+              buckets,
+            },
+            null,
+            2,
+          ),
+        );
+        return 0;
+      }
+      console.log(
+        pc.bold(`Top ${field}`) +
+          pc.dim(
+            ` — ${renv.project}/${renv.env}` +
+              (resolvedService ? ` · service ${resolvedService}` : '') +
+              (opts.grep ? ` · grep "${opts.grep}"` : ''),
+          ),
+      );
+      console.log(pc.dim(`  index: ${indexPattern} · from: ${fromDisplay} UTC · severity: error+`));
+      console.log('');
+      if (buckets.length === 0) {
+        console.log(pc.dim(`  No error logs with field "${field}" in the window.`));
+        console.log(pc.dim(`  Tip: ensure "${field}" is an aggregatable (keyword) field.`));
+        return 0;
+      }
+      for (const b of buckets) {
+        console.log(`  ${pc.red(String(b.count).padStart(6))}  ${b.key}`);
+      }
+      console.log('');
+      console.log(pc.dim(`  ${buckets.length} distinct ${field} value(s) shown (top by error count).`));
       return 0;
     }
 
@@ -215,6 +289,7 @@ export async function runLogs(
       service: resolvedService,
       from,
       text: opts.grep,
+      broadText: opts.grep !== undefined,
     });
 
     let scopeService = resolvedService;
@@ -225,7 +300,7 @@ export async function runLogs(
     // This prevents `horus logs "sale"` from silently implying there are no errors
     // when investigation can find thousands (HOR-157).
     if (analysis.signatures.length === 0 && resolvedService !== undefined) {
-      const broader = await logs.analyzeErrors({ from, text: opts.grep });
+      const broader = await logs.analyzeErrors({ from, text: opts.grep, broadText: opts.grep !== undefined });
       if (broader.signatures.length > 0) {
         analysis = broader;
         broadeningNote = `No errors found for service "${resolvedService}" — showing all services`;

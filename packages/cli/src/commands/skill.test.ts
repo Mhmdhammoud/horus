@@ -81,12 +81,25 @@ describe('generateSkillContent', () => {
   it('includes read-only safety note', () => {
     const content = generateSkillContent('generic');
     expect(content).toContain('read-only');
-    expect(content).toContain('never use Horus to mutate production');
+    expect(content).toContain('Never use Horus to mutate production');
   });
 
   it('includes hallucination warning', () => {
     const content = generateSkillContent('generic');
     expect(content).toContain('hallucinate');
+  });
+
+  it('includes logic and behavior question guidance', () => {
+    const content = generateSkillContent('generic');
+    expect(content).toContain('Logic and behavior questions');
+    expect(content).toContain('horus ask <id>');
+    expect(content).toContain('requires an investigation ID and a directive');
+  });
+
+  it('includes change and fix workflow', () => {
+    const content = generateSkillContent('generic');
+    expect(content).toContain('Change and fix workflow');
+    expect(content).toContain('blast radius');
   });
 
   it('claude target includes skill frontmatter and native path', () => {
@@ -95,10 +108,11 @@ describe('generateSkillContent', () => {
     expect(content).toContain('.claude/skills/horus/SKILL.md');
   });
 
-  it('gemini target includes skill frontmatter and native path', () => {
+  it('gemini target has no frontmatter and references GEMINI.md', () => {
     const content = generateSkillContent('gemini');
-    expect(content).toContain('name: horus');
-    expect(content).toContain('.gemini/skills/horus/SKILL.md');
+    expect(content).not.toContain('name: horus');
+    expect(content).toContain('GEMINI.md');
+    expect(content).toContain('Gemini CLI');
   });
 
   it('cursor target includes mdc frontmatter and native path', () => {
@@ -110,12 +124,14 @@ describe('generateSkillContent', () => {
 
   it('codex target has no frontmatter and includes codex note', () => {
     const content = generateSkillContent('codex');
-    expect(content).not.toContain('---');
+    expect(content).not.toContain('name: horus');
     expect(content).toContain('Codex CLI');
+    expect(content).toContain('AGENTS.md');
   });
 
   it('generic target has no frontmatter', () => {
     const content = generateSkillContent('generic');
+    expect(content).not.toContain('name: horus');
     expect(content).not.toContain('---');
   });
 
@@ -133,7 +149,7 @@ describe('generateSkillContent', () => {
 
 const LOCAL_PATHS: Record<SkillTarget, string> = {
   claude: '.claude/skills/horus/SKILL.md',
-  gemini: '.gemini/skills/horus/SKILL.md',
+  gemini: 'GEMINI.md',
   cursor: '.cursor/rules/horus.mdc',
   codex: 'AGENTS.md',
   generic: '.horus/skills/horus-generic.md',
@@ -153,9 +169,9 @@ describe('getSkillInstallPath', () => {
     expect(p).not.toContain('/projects');
   });
 
-  it('gemini --global → .gemini/skills/horus/SKILL.md under home', () => {
+  it('gemini --global → .gemini/GEMINI.md under home', () => {
     const p = getSkillInstallPath('gemini', { global: true });
-    expect(p).toContain('.gemini/skills/horus/SKILL.md');
+    expect(p).toContain('.gemini/GEMINI.md');
     expect(p).not.toContain('/projects');
   });
 

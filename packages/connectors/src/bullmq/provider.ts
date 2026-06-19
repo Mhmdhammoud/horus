@@ -85,23 +85,46 @@ export class BullMQRuntimeProvider implements QueueRuntimeProvider {
       }
     }
 
-    // Failed breakdown: sample the most recent failed jobs, group by error message
+    // Failed breakdown: sample the most recent failed jobs, group by error message.
+    // Also read each job's `finishedOn` (epoch ms, set by BullMQ when a job fails)
+    // so callers can tell a live failure from a stale one (HOR-217).
     if (failed > 0) {
       const failedJobIds = await this.client.sortedSetTail(
         this.client.queueKey(name, 'failed'),
         FAILED_SAMPLE,
       );
-      const reasons = await this.client.pipelineHget(name, failedJobIds, 'failedReason');
-      const byReason = new Map<string, number>();
-      for (const r of reasons) {
-        if (r === null || r === '') continue;
+      const [reasons, finished] = await Promise.all([
+        this.client.pipelineHget(name, failedJobIds, 'failedReason'),
+        this.client.pipelineHget(name, failedJobIds, 'finishedOn'),
+      ]);
+      const now = Date.now();
+      // Per-reason: count + the most recent finishedOn (epoch ms) seen for it.
+      const byReason = new Map<string, { count: number; newestFinished: number }>();
+      let newestFinishedOverall = 0;
+      for (let i = 0; i < failedJobIds.length; i++) {
+        const r = reasons[i];
+        if (r === null || r === undefined || r === '') continue;
         // First line only — avoid folding distinct stack traces into one bucket
         const key = r.split('\n')[0]!.trim().slice(0, 120);
-        byReason.set(key, (byReason.get(key) ?? 0) + 1);
+        const finRaw = finished[i];
+        const fin = finRaw !== null && finRaw !== undefined ? Number(finRaw) : NaN;
+        const hasFin = Number.isFinite(fin) && fin > 0;
+        const entry = byReason.get(key) ?? { count: 0, newestFinished: 0 };
+        entry.count += 1;
+        if (hasFin && fin > entry.newestFinished) entry.newestFinished = fin;
+        byReason.set(key, entry);
+        if (hasFin && fin > newestFinishedOverall) newestFinishedOverall = fin;
       }
       counts.failedBreakdown = [...byReason.entries()]
-        .map(([reason, count]) => ({ reason, count }))
+        .map(([reason, v]) => ({
+          reason,
+          count: v.count,
+          ...(v.newestFinished > 0 ? { lastFailedAgeMs: Math.max(0, now - v.newestFinished) } : {}),
+        }))
         .sort((a, b) => b.count - a.count);
+      if (newestFinishedOverall > 0) {
+        counts.newestFailedAgeMs = Math.max(0, now - newestFinishedOverall);
+      }
     }
 
     return counts;

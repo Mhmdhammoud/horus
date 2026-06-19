@@ -33,7 +33,21 @@ export interface ContextResponse {
   user: { id: string; primaryEmail: string; displayName?: string | null };
   organizations: { id: string; slug: string; name: string; role: "owner" | "admin" | "member" }[];
   workspaces: { id: string; slug: string; name: string; organizationId: string }[];
-  projects: { id: string; slug: string; name: string; workspaceId: string; organizationId: string }[];
+  // A project IS the repository/codebase (HOR-280). The cloud `/v1/context`
+  // returns repo/sync metadata on each project (HOR-277); the fields are optional
+  // so the CLI degrades gracefully against an older cloud build.
+  projects: {
+    id: string;
+    slug: string;
+    name: string;
+    workspaceId: string;
+    organizationId: string;
+    provider?: string | null;
+    remoteUrl?: string | null;
+    defaultBranch?: string | null;
+    lastSeenCommit?: string | null;
+    lastSyncedAt?: string | null;
+  }[];
 }
 
 export interface TokenSummary {
@@ -145,29 +159,6 @@ export class CloudClient {
 
   revokeToken(id: string): Promise<void> {
     return this.request<void>("DELETE", `/v1/cli/tokens/${id}`);
-  }
-
-  /**
-   * Best-effort repository registration during `cloud link`. The endpoint lands
-   * with cloud persistence (HOR-227/HOR-241); until then a 404 is tolerated and
-   * the link still succeeds locally.
-   */
-  async createRepository(
-    projectId: string,
-    repo: { slug: string; name: string; remoteUrl?: string },
-  ): Promise<{ id: string; slug: string } | null> {
-    try {
-      return await this.request<{ id: string; slug: string }>(
-        "POST",
-        `/v1/projects/${projectId}/repositories`,
-        repo,
-      );
-    } catch (err) {
-      if (err instanceof CloudError && (err.status === 404 || err.status === 405)) {
-        return null; // endpoint not implemented yet — non-fatal
-      }
-      throw err;
-    }
   }
 
   createInvestigation(

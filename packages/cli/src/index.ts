@@ -36,7 +36,7 @@ import { runReadiness } from './commands/readiness.js';
 import { runSkillInstall, runSkillPrint, runSkillPath } from './commands/skill.js';
 import { runUpdate } from './commands/update.js';
 import { runLogin, runLogout } from './commands/login.js';
-import { runContextList, runContextUse } from './commands/context.js';
+import { runContextList, runContextUse, runContextShow } from './commands/context.js';
 import { runCloudLink, runCloudUnlink, runCloudStatus, runCloudSync } from './commands/cloud.js';
 
 /**
@@ -680,6 +680,7 @@ Examples:
     .option('--grep <text>', 'match text in the message')
     .option('--raw', 'dump individual log lines instead of synthesized evidence (error+ by default)')
     .option('--all-levels', 'with --raw: show all severity levels, not just error+')
+    .option('--group-by <field>', 'aggregate error counts by a context field, e.g. context.brand_id')
     .option('--limit <n>', 'max records (with --raw)')
     .option('--json', 'output JSON')
     .option('--ai', 'append AI narration of error signatures (default mode only, not --raw or --json)')
@@ -697,6 +698,7 @@ Examples:
           grep?: string;
           raw?: boolean;
           allLevels?: boolean;
+          groupBy?: string;
           limit?: string;
           json?: boolean;
           ai?: boolean;
@@ -870,6 +872,12 @@ Examples:
     .action(async (target: string) => {
       process.exitCode = await runContextUse(target);
     });
+  context
+    .command('show')
+    .description('Show the active context and the selected project\'s sync metadata')
+    .action(async () => {
+      process.exitCode = await runContextShow();
+    });
 
   const cloud = program
     .command('cloud')
@@ -890,7 +898,7 @@ Examples:
     });
   cloud
     .command('status')
-    .description('Show the active context, linked project, repository, and auth state')
+    .description('Show the active context, linked project, sync metadata, and auth state')
     .action(async () => {
       process.exitCode = await runCloudStatus();
     });
