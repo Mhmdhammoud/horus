@@ -1,4 +1,5 @@
 import { loadConfig } from '@horus/core';
+import { assertLocalDatabaseUrl } from '@horus/db';
 
 /** Local-default Postgres URL, matching the docker-compose dev instance. */
 export const DEFAULT_DB_URL = 'postgresql://horus:horus@localhost:5433/horus';
@@ -16,10 +17,16 @@ export const DEFAULT_DB_URL = 'postgresql://horus:horus@localhost:5433/horus';
  * consistent URL in both branches.
  */
 export async function resolveDbUrl(configPath?: string): Promise<string> {
+  let url: string;
   try {
     const config = await loadConfig(configPath);
-    return config.database.url;
+    url = config.database.url;
   } catch {
-    return process.env['DATABASE_URL'] ?? DEFAULT_DB_URL;
+    url = process.env['DATABASE_URL'] ?? DEFAULT_DB_URL;
   }
+  // Guardrail (HOR-298): the local CLI database is never the Horus Cloud database.
+  // Selecting a cloud context (`.horus/cloud.json`) changes only the /v1 API sync
+  // target — never this connection string. Fail early with a clear message.
+  assertLocalDatabaseUrl(url);
+  return url;
 }

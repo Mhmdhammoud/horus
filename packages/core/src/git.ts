@@ -68,6 +68,41 @@ export function collectLocalChanges(opts?: {
   return { kind: 'local-changes', baseRef, changedFiles, commits };
 }
 
+function runGit(args: string[], cwd?: string): string | null {
+  const res = spawnSync('git', args, {
+    cwd: cwd ?? process.cwd(),
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (res.status !== 0) return null;
+  const out = (res.stdout ?? '').trim();
+  return out.length > 0 ? out : null;
+}
+
+/** Current HEAD commit SHA, or null outside a git repo. Never throws. */
+export function getHeadSha(cwd?: string): string | null {
+  return runGit(['rev-parse', 'HEAD'], cwd);
+}
+
+/** Current branch name (or 'HEAD' when detached), or null outside a git repo. Never throws. */
+export function getCurrentBranch(cwd?: string): string | null {
+  return runGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+}
+
+/**
+ * Whether the working tree has uncommitted changes. Returns null outside a git
+ * repo (cannot determine). Never throws.
+ */
+export function isWorkingTreeDirty(cwd?: string): boolean | null {
+  const res = spawnSync('git', ['status', '--porcelain'], {
+    cwd: cwd ?? process.cwd(),
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (res.status !== 0) return null;
+  return (res.stdout ?? '').trim().length > 0;
+}
+
 function parseDiff(stdout: string): ChangedFile[] {
   const files: ChangedFile[] = [];
   for (const line of stdout.split('\n')) {

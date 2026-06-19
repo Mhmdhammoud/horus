@@ -105,6 +105,41 @@ export interface AgentRunRecord {
   createdAt: string;
 }
 
+/**
+ * A knowledge snapshot record stored in Horus Cloud (HOR-296). The cloud stores
+ * the structured snapshot + manifest keyed by content hash for dedup + freshness;
+ * it never owns indexing (the CLI is the source of truth).
+ */
+export interface KnowledgeSnapshotRecord {
+  id: string;
+  projectId: string;
+  schemaVersion: number;
+  contentHash: string;
+  gitSha: string | null;
+  branch: string | null;
+  generatedAt: string;
+  counts: Record<string, number>;
+  /** The serialized KnowledgeSnapshot (present on detail/latest reads). */
+  snapshot?: unknown;
+  /** The serialized KnowledgeManifest. */
+  manifest?: unknown;
+  archived: boolean;
+  createdAt: string;
+}
+
+export interface PushKnowledgeSnapshotBody {
+  schemaVersion: number;
+  contentHash: string;
+  gitSha?: string;
+  branch?: string;
+  generatedAt: string;
+  counts?: Record<string, number>;
+  snapshot: unknown;
+  manifest: unknown;
+  /** Defaults to the content hash — server dedups idempotent re-pushes. */
+  idempotencyKey?: string;
+}
+
 export class CloudClient {
   constructor(
     private readonly baseUrl: string,
@@ -255,6 +290,28 @@ export class CloudClient {
       "POST",
       `/v1/projects/${projectId}/investigations/${investigationId}/agent-runs`,
       body,
+    );
+  }
+
+  // ── Knowledge snapshots (HOR-296) ──────────────────────────────────────────
+
+  /** Upload a local knowledge snapshot. Content-hash idempotent (server dedups). */
+  pushKnowledgeSnapshot(
+    projectId: string,
+    body: PushKnowledgeSnapshotBody,
+  ): Promise<KnowledgeSnapshotRecord> {
+    return this.request<KnowledgeSnapshotRecord>(
+      "POST",
+      `/v1/projects/${projectId}/knowledge-snapshots`,
+      body,
+    );
+  }
+
+  /** Fetch the latest (non-archived) knowledge snapshot for a project. */
+  getLatestKnowledgeSnapshot(projectId: string): Promise<KnowledgeSnapshotRecord> {
+    return this.request<KnowledgeSnapshotRecord>(
+      "GET",
+      `/v1/projects/${projectId}/knowledge-snapshots/latest`,
     );
   }
 }

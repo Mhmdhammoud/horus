@@ -40,6 +40,7 @@ vi.mock('@horus/db', () => ({
     sql: { end: vi.fn().mockResolvedValue(undefined) },
   }),
   getInvestigation: vi.fn(),
+  assertLocalDatabaseUrl: () => {},
 }));
 
 import { runInit } from './init.js';

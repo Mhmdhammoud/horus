@@ -9,6 +9,7 @@ const h = vi.hoisted(() => ({ rows: [] as Array<{ id: string; title: string | nu
 vi.mock("@horus/db", () => ({
   createDb: () => ({ db: {}, sql: { end: async () => {} } }),
   listInvestigationsWithReports: async () => h.rows,
+  assertLocalDatabaseUrl: () => {},
 }));
 
 import { runCloudSync } from "./cloud.js";

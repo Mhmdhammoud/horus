@@ -27,6 +27,12 @@ export type {
   ProviderCacheRow,
 } from './schema.js';
 export { createDb, type HorusDb, type DbHandle } from './client.js';
+export {
+  assertLocalDatabaseUrl,
+  looksLikeCloudDatabaseUrl,
+  cloudDatabaseUrlReason,
+  CloudDatabaseUrlError,
+} from './guard.js';
 export { eq, desc, sql, and, or } from 'drizzle-orm';
 export { replaceQueueEdges, listQueueEdges } from './queue.js';
 export {

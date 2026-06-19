@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { collectLocalChanges } from './git.js';
+import { collectLocalChanges, getHeadSha, getCurrentBranch } from './git.js';
 
 function git(args: string[], cwd: string): void {
   const r = spawnSync('git', args, { cwd, stdio: 'pipe', encoding: 'utf8' });
@@ -72,5 +72,37 @@ describe('collectLocalChanges', () => {
 
     const deleted = result.changedFiles.find((f) => f.path === 'README.md');
     expect(deleted?.status).toBe('deleted');
+  });
+});
+
+describe('getHeadSha / getCurrentBranch', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'horus-git-head-'));
+    git(['init'], root);
+    git(['config', 'user.email', 'test@horus.local'], root);
+    git(['config', 'user.name', 'Horus Test'], root);
+    git(['checkout', '-b', 'work'], root);
+    writeFileSync(join(root, 'README.md'), 'initial\n');
+    git(['add', 'README.md'], root);
+    git(['commit', '-m', 'initial commit'], root);
+  });
+
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('returns the HEAD sha and current branch', () => {
+    expect(getHeadSha(root)).toMatch(/^[0-9a-f]{40}$/);
+    expect(getCurrentBranch(root)).toBe('work');
+  });
+
+  it('returns null outside a git repo (never throws)', () => {
+    const plain = mkdtempSync(join(tmpdir(), 'horus-nogit-'));
+    try {
+      expect(getHeadSha(plain)).toBeNull();
+      expect(getCurrentBranch(plain)).toBeNull();
+    } finally {
+      rmSync(plain, { recursive: true, force: true });
+    }
   });
 });

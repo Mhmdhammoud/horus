@@ -3,6 +3,20 @@ import { HORUS_VERSION } from '@horus/core';
 import { runStatus } from './commands/status.js';
 import { runExplain } from './commands/explain.js';
 import { runIndex } from './commands/index-repo.js';
+import {
+  runKnowledgeStatus,
+  runKnowledgeSearch,
+  runKnowledgeContracts,
+  runKnowledgeTrace,
+  runKnowledgeAsk,
+  runKnowledgeValidate,
+} from './commands/knowledge.js';
+import { runMcpServer } from './commands/mcp/server.js';
+import {
+  runKnowledgePush,
+  runKnowledgePull,
+  runKnowledgeCloudStatus,
+} from './commands/knowledge-cloud.js';
 import { runQueues } from './commands/queues.js';
 import { runInvestigate } from './commands/investigate.js';
 import { runChanges } from './commands/changes.js';
@@ -269,16 +283,93 @@ Examples:
 
   program
     .command('index')
-    .description('Build the queue map for a project (run the stitcher against its source-intelligence host)')
+    .description('Build the queue map + local project-knowledge snapshot for a project')
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--name <name>', 'registered project name (resolves via the registry)')
     .option('--project <name>', 'project name')
     .option('--env <name>', 'environment name (e.g. production)')
+    .option('--full', 'build a full project-knowledge snapshot (default)')
+    .option('--changed', 'pre-push-safe: refresh knowledge for changed files only')
+    .option('--fast', 'speed hint, used with --changed')
+    .option('--import-kb <path>', 'import a knowledge-base JSON (e.g. Maison Safqa MCP) as the knowledge source')
     .action(
-      async (opts: { config?: string; name?: string; project?: string; env?: string }) => {
+      async (opts: {
+        config?: string;
+        name?: string;
+        project?: string;
+        env?: string;
+        full?: boolean;
+        changed?: boolean;
+        fast?: boolean;
+        importKb?: string;
+      }) => {
         process.exitCode = await runIndex(opts);
       },
     );
+
+  const knowledge = program
+    .command('knowledge')
+    .description('Query the local project-knowledge index (.horus/index) — offline, no Cloud');
+  knowledge
+    .command('status')
+    .description('Show last indexed commit, schema version, item counts, and stale/dirty status')
+    .option('--cloud', 'also compare the local index with the linked cloud snapshot')
+    .action(async (opts: { cloud?: boolean }) => {
+      const local = runKnowledgeStatus();
+      const cloud = opts.cloud ? await runKnowledgeCloudStatus() : 0;
+      process.exitCode = local || cloud;
+    });
+  knowledge
+    .command('search <query>')
+    .description('Keyword search across indexed operations, types, concepts, and patterns')
+    .action((query: string) => {
+      process.exitCode = runKnowledgeSearch(query);
+    });
+  knowledge
+    .command('contracts <name>')
+    .description('Show operations/types/enums/auth rules verbatim (no hallucinated values)')
+    .action((name: string) => {
+      process.exitCode = runKnowledgeContracts(name);
+    });
+  knowledge
+    .command('trace <query>')
+    .description('Walk known concept ↔ operation ↔ type / data-flow links')
+    .action((query: string) => {
+      process.exitCode = runKnowledgeTrace(query);
+    });
+  knowledge
+    .command('ask <question>')
+    .description('Grounded answer from the local index, with provenance (offline)')
+    .action((question: string) => {
+      process.exitCode = runKnowledgeAsk(question);
+    });
+  knowledge
+    .command('validate')
+    .description('Validate the index (schema + content hash + staleness) — pre-push friendly')
+    .action(() => {
+      process.exitCode = runKnowledgeValidate();
+    });
+  knowledge
+    .command('push')
+    .description('Upload the local knowledge snapshot to the linked cloud project (optional; content-hash deduped)')
+    .option('--dry-run', 'preview what would be uploaded without sending')
+    .action(async (opts: { dryRun?: boolean }) => {
+      process.exitCode = await runKnowledgePush({ dryRun: opts.dryRun });
+    });
+  knowledge
+    .command('pull')
+    .description('Download the latest knowledge snapshot from the linked cloud project')
+    .option('--force', 'overwrite local knowledge that differs from the cloud snapshot')
+    .action(async (opts: { force?: boolean }) => {
+      process.exitCode = await runKnowledgePull({ force: opts.force });
+    });
+
+  program
+    .command('mcp')
+    .description('Run the Horus MCP server (stdio) — exposes the local project-knowledge index to agents')
+    .action(async () => {
+      process.exitCode = await runMcpServer();
+    });
 
   program
     .command('queues [name]')

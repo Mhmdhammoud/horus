@@ -3,11 +3,14 @@ import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, resolve } from 'node:path';
+import { assertLocalDatabaseUrl } from './guard.js';
 
 const migrationsFolder = resolve(dirname(fileURLToPath(import.meta.url)), '../drizzle');
 
 /** Apply all pending migrations against `url`. Idempotent. */
 export async function runMigrations(url: string): Promise<void> {
+  // Guardrail (HOR-298): never migrate the Cloud DB from the CLI.
+  assertLocalDatabaseUrl(url);
   const sql = postgres(url, { max: 1, onnotice: () => {} });
   try {
     await migrate(drizzle(sql), { migrationsFolder });

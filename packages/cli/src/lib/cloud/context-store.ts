@@ -3,6 +3,16 @@
  *
  * Holds IDs + slugs only — never the token. Safe to commit (teams may share the
  * cloud context) or git-ignore for per-developer choice.
+ *
+ * CACHE, NOT A CONNECTION OR AN AUTH BOUNDARY (HOR-298): the stored cloud
+ * org/workspace/project IDs+slugs are a convenience cache of *which* Cloud project
+ * this repo syncs to. They do NOT change the CLI's local database connection:
+ * `context: "cloud"` selects the `/v1` API sync target only — the CLI engine still
+ * uses its local Postgres (`DATABASE_URL`, default port 5433/db `horus`) for all
+ * local execution state. The CLI never connects to the Cloud database, and the
+ * Cloud API re-checks the caller's authorization server-side on every sync/write,
+ * so a stale or hand-edited `cloud.json` can never grant access or repoint the DB.
+ * See docs/cloud-vs-cli-databases.md.
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";

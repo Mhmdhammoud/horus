@@ -20,9 +20,18 @@ import {
   discoverLocalConfig,
   readLocalConfig,
   ensureProjectGitignore,
+  getHeadSha,
+  getCurrentBranch,
+  collectLocalChanges,
   type HorusConfig,
   type LocalConfigFile,
 } from '@horus/core';
+import {
+  buildProjectKnowledge,
+  createJsonKnowledgeStore,
+  importKnowledgeBaseFile,
+  type RepoInput,
+} from '@horus/knowledge';
 import {
   SourceHttpClient,
   sourceAvailable,
@@ -70,12 +79,81 @@ function findConfiguredRepo(
   return null;
 }
 
-export async function runIndex(opts: {
+export interface IndexOptions {
   config?: string;
   name?: string;
   project?: string;
   env?: string;
-}): Promise<number> {
+  /** Build a full project-knowledge snapshot (default mode). */
+  full?: boolean;
+  /** Pre-push-safe mode: only changed files, avoid heavy re-indexing. */
+  changed?: boolean;
+  /** Speed hint, used with --changed. */
+  fast?: boolean;
+  /** Import a Maison Safqa knowledge-base JSON instead of deriving from source. */
+  importKb?: string;
+}
+
+/**
+ * Additive project-knowledge pass (HOR-293). Best-effort: never fails `horus index`.
+ * `--changed --fast` is the pre-push-safe path (cheap landscape refresh + changed-file
+ * awareness); `--full` rebuilds the landscape. Deeper per-file extraction (contracts,
+ * types, data flows) layers on top later using the changed-file set.
+ */
+function buildKnowledgeIndex(
+  root: string,
+  config: HorusConfig | null,
+  label: string,
+  configuredProject: string | null,
+  opts: IndexOptions,
+): void {
+  try {
+    const gitSha = getHeadSha(root) ?? undefined;
+    const branch = getCurrentBranch(root) ?? undefined;
+
+    // Import mode: a provided KB is the knowledge source (HOR-292).
+    if (opts.importKb) {
+      const res = importKnowledgeBaseFile(resolve(opts.importKb), { root, project: label });
+      const total = res.manifest ? Object.values(res.manifest.counts).reduce((a, b) => a + b, 0) : 0;
+      console.log(pc.dim(`  project knowledge: imported ${total} item(s) from ${opts.importKb}`));
+      if (res.warnings.length) console.log(pc.dim(`  (${res.warnings.length} import warning(s))`));
+      return;
+    }
+
+    const changedMode = opts.changed === true && opts.full !== true;
+    if (changedMode) {
+      // Pre-push-safe: note what changed (future per-file extraction will use this),
+      // but keep the build to the cheap landscape pass.
+      const changes = collectLocalChanges({ cwd: root });
+      const n = changes.kind === 'local-changes' ? changes.changedFiles.length : 0;
+      console.log(pc.dim(`  project knowledge: fast refresh (${n} changed file(s))`));
+    }
+
+    // Repos to profile: the configured project's repos, else the current repo root.
+    const repos: RepoInput[] = [];
+    if (config && configuredProject) {
+      const proj = config.projects.find((p) => p.name === configuredProject);
+      for (const r of proj?.repositories ?? []) repos.push({ name: r.name, path: resolve(r.path) });
+    }
+    if (repos.length === 0) repos.push({ name: label, path: root });
+
+    const snapshot = buildProjectKnowledge(repos, { project: label, gitSha });
+    createJsonKnowledgeStore(root).write(snapshot, {
+      generator: { tool: 'horus-cli' },
+      git: { sha: gitSha, branch },
+      repositories: repos.map((r) => ({ name: r.name, path: r.path, headSha: gitSha })),
+      sourceIntelligence: config ? { tool: 'axon', version: config.axon.pinnedVersion } : undefined,
+    });
+    console.log(
+      pc.dim(`  project knowledge: ${snapshot.repositories.length} repo profile(s) → .horus/index/`),
+    );
+  } catch (err) {
+    // Knowledge building is best-effort and must never break `horus index`.
+    console.log(pc.dim(`  project knowledge skipped: ${(err as Error).message}`));
+  }
+}
+
+export async function runIndex(opts: IndexOptions): Promise<number> {
   try {
     const cwd = process.cwd();
     const root = findRepoRoot(cwd) ?? cwd;
@@ -168,6 +246,9 @@ export async function runIndex(opts: {
 
     // Build the queue map.
     await stitchQueueMap(hostUrl, dbUrl, label);
+
+    // Build/refresh the local project-knowledge snapshot (HOR-293). Best-effort.
+    buildKnowledgeIndex(root, config, label, configuredProject, opts);
 
     if (spawned && !isConfigured) {
       // Brand new repo — write a full local config and register it.
