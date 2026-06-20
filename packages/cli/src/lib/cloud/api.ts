@@ -3,7 +3,7 @@
  * cloud ONLY through this contract — it never holds DB credentials (HOR-221).
  */
 
-export const DEFAULT_API_BASE_URL = "https://api.horus.dev";
+export const DEFAULT_API_BASE_URL = "https://api.horus.sh";
 
 export class CloudError extends Error {
   constructor(
@@ -27,6 +27,24 @@ export class CloudOfflineError extends Error {
 export interface MeResponse {
   user: { id: string; primaryEmail: string; displayName?: string | null };
   memberships: { organizationId: string; role: "owner" | "admin" | "member"; workspaceIds: string[] }[];
+}
+
+/** Response from POST /v1/cli-sessions/start (device-login init). */
+export interface CliSessionStart {
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  verificationUriComplete: string;
+  expiresIn: number;
+  interval: number;
+}
+
+/** Response from POST /v1/cli-sessions/poll. `token` is present only once, on approval. */
+export interface CliSessionPoll {
+  status: "pending" | "slow_down" | "approved" | "denied" | "expired";
+  interval?: number;
+  token?: string;
+  account?: { userId: string; email: string };
 }
 
 export interface ContextResponse {
@@ -182,6 +200,16 @@ export class CloudClient {
 
   me(): Promise<MeResponse> {
     return this.request<MeResponse>("GET", "/v1/me");
+  }
+
+  /** Begin a browser device-login session (no auth required). */
+  startCliSession(): Promise<CliSessionStart> {
+    return this.request<CliSessionStart>("POST", "/v1/cli-sessions/start");
+  }
+
+  /** Poll a device-login session until it is approved, denied, or expires. */
+  pollCliSession(deviceCode: string): Promise<CliSessionPoll> {
+    return this.request<CliSessionPoll>("POST", "/v1/cli-sessions/poll", { deviceCode });
   }
 
   context(): Promise<ContextResponse> {
