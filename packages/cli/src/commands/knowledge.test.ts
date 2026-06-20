@@ -77,8 +77,13 @@ afterEach(() => {
   dirs.length = 0;
 });
 
+// Strip ANSI color codes so assertions are color-agnostic. picocolors enables
+// color when CI/GITHUB_ACTIONS is set (but not under a plain local vitest run),
+// which would otherwise insert escapes between tokens and break `toMatch`.
+// eslint-disable-next-line no-control-regex
+const ANSI = /\x1b\[[0-9;]*m/g;
 function out(): string {
-  return logs.join('\n');
+  return logs.join('\n').replace(ANSI, '');
 }
 function emptyRoot(): string {
   const d = mkdtempSync(join(tmpdir(), 'horus-kn-empty-'));
