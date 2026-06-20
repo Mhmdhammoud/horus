@@ -7,14 +7,20 @@
  */
 import pc from "picocolors";
 import { createInterface } from "node:readline/promises";
-import type { ContextResponse } from "../lib/cloud/api.js";
+import type { ContextResponse, CloudClient } from "../lib/cloud/api.js";
 import {
   readCloudConfig,
   writeCloudConfig,
   clearCloudConfig,
   isCloudActive,
 } from "../lib/cloud/context-store.js";
-import { detectGitRemote } from "../lib/cloud/git.js";
+import {
+  detectGitRemote,
+  remotesMatch,
+  inferProvider,
+  parseRepoName,
+  type GitRemote,
+} from "../lib/cloud/git.js";
 import { authedClient, repoRootOrCwd } from "../lib/cloud/session.js";
 import { resolveTriple, reportCloudError, syncMetaLines } from "./context.js";
 import { createDb, listInvestigationsWithReports } from "@horus/db";
@@ -42,7 +48,12 @@ export async function runCloudLink(
   const remote = detectGitRemote(root);
   if (remote) console.log(pc.dim(`Detected git remote: ${remote.remoteUrl}`));
 
-  // Resolve the target project: explicit flag → existing cloud binding → prompt.
+  // Resolve the target project, in order of preference:
+  //   1. explicit --project flag
+  //   2. existing cloud binding for this repo
+  //   3. AUTO-MATCH: a cloud project whose remoteUrl matches this git remote
+  //   4. CREATE-FROM-REPO: interactively create a project from this repo
+  let resolved: ReturnType<typeof resolveTriple> | null = null;
   let target = opts.project;
   if (!target) {
     const existing = readCloudConfig(root);
@@ -50,25 +61,49 @@ export async function runCloudLink(
       target = `${existing.organization.slug}/${existing.workspace.slug}/${existing.project.slug}`;
     }
   }
-  if (!target) {
-    target = await pickProjectInteractively(ctx);
-  }
-  if (!target) {
-    console.error(
-      pc.red("No project specified.") +
-        `\n  Pass ${pc.bold("--project <org/workspace/project>")}, or run ${pc.bold("horus context list")} to see options.`,
-    );
-    return 1;
+
+  // 3. Auto-match by git remote — link with no flag when a project already maps
+  // to this repository (HOR-307).
+  if (!target && remote) {
+    const match = ctx.projects.find((p) => p.remoteUrl && remotesMatch(p.remoteUrl, remote.remoteUrl));
+    if (match) {
+      const ws = ctx.workspaces.find((w) => w.id === match.workspaceId);
+      const org = ctx.organizations.find((o) => o.id === match.organizationId);
+      if (ws && org) {
+        target = `${org.slug}/${ws.slug}/${match.slug}`;
+        console.log(pc.dim(`Matched existing project by remote: ${pc.bold(target)}`));
+      }
+    }
   }
 
-  const resolved = resolveTriple(ctx, target);
-  if (!resolved) {
-    console.error(
-      pc.red(`You don't have access to ${pc.bold(target)}.`) +
-        `\n  Run ${pc.bold("horus context list")} to see available projects.`,
-    );
-    return 1;
+  // 4. Nothing matched — offer to create a project from this repo.
+  if (!target) {
+    const created = await createProjectFromRepo(session.client, ctx, remote, opts.yes);
+    if (created === "aborted") return 1;
+    if (!created) {
+      console.error(
+        pc.red("No project to link.") +
+          `\n  Run ${pc.bold("horus cloud link")} in a TTY to create one, pass ${pc.bold("--project <org/workspace/project>")}, ` +
+          `or create a project at ${pc.bold("https://cloud.horus.sh")}.`,
+      );
+      return 1;
+    }
+    resolved = created;
   }
+
+  // Resolve the slug triple (flag / binding / auto-match paths).
+  if (!resolved) {
+    resolved = resolveTriple(ctx, target!);
+    if (!resolved) {
+      console.error(
+        pc.red(`You don't have access to ${pc.bold(target!)}.`) +
+          `\n  Run ${pc.bold("horus context list")} to see available projects.`,
+      );
+      return 1;
+    }
+  }
+
+  const label = `${resolved.organization.slug}/${resolved.workspace.slug}/${resolved.project.slug}`;
 
   // A project IS the repository/codebase (HOR-280); the link stores the
   // org/workspace/project triple only — no separate Repository concept (HOR-278).
@@ -80,7 +115,7 @@ export async function runCloudLink(
   });
 
   console.log(
-    `${pc.green("✓")} Linked. Context for this repo is now ${pc.bold(target)} ${pc.dim("(cloud)")}.`,
+    `${pc.green("✓")} Linked. Context for this repo is now ${pc.bold(label)} ${pc.dim("(cloud)")}.`,
   );
   console.log(
     pc.dim(`  Investigations here save to Horus Cloud. ${pc.bold("horus context use local")} to switch back.`),
@@ -257,24 +292,93 @@ export async function runCloudSync(
   return failed > 0 ? 1 : 0;
 }
 
-async function pickProjectInteractively(ctx: ContextResponse): Promise<string | undefined> {
-  if (!process.stdin.isTTY) return undefined;
-  const labels = ctx.projects
-    .map((p) => {
-      const ws = ctx.workspaces.find((w) => w.id === p.workspaceId);
-      const org = ctx.organizations.find((o) => o.id === p.organizationId);
-      return ws && org ? `${org.slug}/${ws.slug}/${p.slug}` : null;
-    })
-    .filter((x): x is string => !!x);
-  if (labels.length === 0) return undefined;
+interface LinkTriple {
+  organization: { id: string; slug: string };
+  workspace: { id: string; slug: string };
+  project: { id: string; slug: string };
+}
 
-  console.log("Select a project to link:");
-  labels.forEach((label, i) => console.log(`  ${i + 1}) ${label}`));
+/**
+ * Interactive create-from-repo (HOR-307). When no project matches the repo, walk
+ * the user through choosing an org + workspace (or creating one) and naming the
+ * project (defaulting to the repo name), then create it with the repo's remote so
+ * a future `cloud link` auto-matches. Returns the new triple, null (non-TTY / no
+ * org), or "aborted" when the user declines.
+ */
+async function createProjectFromRepo(
+  client: CloudClient,
+  ctx: ContextResponse,
+  remote: GitRemote | null,
+  yes?: boolean,
+): Promise<LinkTriple | null | "aborted"> {
+  if (!process.stdin.isTTY && !yes) return null;
+  if (ctx.organizations.length === 0) {
+    console.error(
+      pc.red("You're not a member of any organization yet.") +
+        `\n  Create one at ${pc.bold("https://cloud.horus.sh")} first.`,
+    );
+    return null;
+  }
+
   const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const ask = async (q: string, def?: string): Promise<string> => {
+    if (yes && def !== undefined) return def;
+    const a = (await rl.question(def ? `${q} (${def}): ` : `${q}: `)).trim();
+    return a || def || "";
+  };
+
   try {
-    const answer = (await rl.question("Number: ")).trim();
-    const idx = Number(answer) - 1;
-    return labels[idx];
+    // Org — auto-select when there's only one. (Length ≥ 1 checked above.)
+    let org = ctx.organizations[0]!;
+    if (ctx.organizations.length > 1) {
+      console.log("Organizations:");
+      ctx.organizations.forEach((o, i) => console.log(`  ${i + 1}) ${o.slug}`));
+      const idx = Number(await ask("Org number", "1")) - 1;
+      org = ctx.organizations[idx] ?? org;
+    }
+
+    // Workspace — pick an existing one in this org or create a new one.
+    const orgWorkspaces = ctx.workspaces.filter((w) => w.organizationId === org.id);
+    let workspace: { id: string; slug: string };
+    const repoName = remote ? parseRepoName(remote.remoteUrl) : "";
+    if (orgWorkspaces.length === 0) {
+      const wsName = await ask("New workspace name", repoName || "default");
+      const ws = await client.createWorkspace(org.id, { name: wsName });
+      workspace = { id: ws.id, slug: ws.slug };
+      console.log(pc.dim(`Created workspace ${pc.bold(ws.slug)}.`));
+    } else {
+      console.log(`Workspaces in ${pc.bold(org.slug)}:`);
+      orgWorkspaces.forEach((w, i) => console.log(`  ${i + 1}) ${w.slug}`));
+      console.log(`  ${orgWorkspaces.length + 1}) + create a new workspace`);
+      const pick = Number(await ask("Workspace number", "1"));
+      if (pick === orgWorkspaces.length + 1) {
+        const wsName = await ask("New workspace name", repoName || "default");
+        const ws = await client.createWorkspace(org.id, { name: wsName });
+        workspace = { id: ws.id, slug: ws.slug };
+        console.log(pc.dim(`Created workspace ${pc.bold(ws.slug)}.`));
+      } else {
+        const chosen = orgWorkspaces[pick - 1] ?? orgWorkspaces[0]!;
+        workspace = { id: chosen.id, slug: chosen.slug };
+      }
+    }
+
+    // Project — default the name to the repo name.
+    const projName = await ask("Project name", repoName || "project");
+    const project = await client.createProject(org.id, workspace.id, {
+      name: projName,
+      remoteUrl: remote?.remoteUrl,
+      provider: remote ? inferProvider(remote.remoteUrl) : undefined,
+    });
+    console.log(pc.dim(`Created project ${pc.bold(project.slug)}.`));
+
+    return {
+      organization: { id: org.id, slug: org.slug },
+      workspace,
+      project: { id: project.id, slug: project.slug },
+    };
+  } catch (err) {
+    reportCloudError(err);
+    return "aborted";
   } finally {
     rl.close();
   }
