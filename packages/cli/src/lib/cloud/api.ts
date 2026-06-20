@@ -216,6 +216,27 @@ export class CloudClient {
     return this.request<ContextResponse>("GET", "/v1/context");
   }
 
+  /** Create a workspace in an org (HOR-307 — used by `cloud link` create-from-repo). */
+  createWorkspace(
+    organizationId: string,
+    body: { name: string; slug?: string },
+  ): Promise<{ id: string; slug: string; name: string; organizationId: string }> {
+    return this.request("POST", `/v1/organizations/${organizationId}/workspaces`, body);
+  }
+
+  /** Create a project in a workspace, optionally with its repo identity (HOR-307). */
+  createProject(
+    organizationId: string,
+    workspaceId: string,
+    body: { name: string; slug?: string; remoteUrl?: string; provider?: string },
+  ): Promise<{ id: string; slug: string; name: string; workspaceId: string; organizationId: string }> {
+    return this.request(
+      "POST",
+      `/v1/organizations/${organizationId}/workspaces/${workspaceId}/projects`,
+      body,
+    );
+  }
+
   listTokens(): Promise<{ tokens: TokenSummary[] }> {
     return this.request<{ tokens: TokenSummary[] }>("GET", "/v1/cli/tokens");
   }
