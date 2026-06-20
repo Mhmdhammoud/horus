@@ -39,18 +39,30 @@ source-file bodies. It carries:
 
 So a push uploads names, type signatures, enum values, prose summaries, and file
 **paths** — not the code itself. Still, these can be sensitive (internal domain
-language, private file structure). Decisions for v1:
+language, private file structure). Controls for v1:
 
 - **Default = upload the full structured snapshot** to the linked project. It is
   metadata, not source, and the team already shares the repo.
-- **Sensitive data is the user's call.** Two redaction controls are specified for
-  the follow-up implementation (not yet built):
-  - `redact.dropProvenancePaths` — strip `provenance.filePath`/`lineRange` before
-    upload (share *what* exists, not *where*).
-  - `redact.summariesOnly` — upload manifest + counts + provenance only, omitting
-    descriptive bodies (`summary`/`details`/field lists).
-  These live in `.horus/config.json` under a `knowledge.redact` block and are
-  applied in `runKnowledgePush` before the snapshot leaves the machine.
+- **Two redaction controls are implemented** and applied in `runKnowledgePush`
+  before the snapshot leaves the machine. Configure them in `.horus/config.json`:
+
+  ```json
+  {
+    "knowledge": {
+      "redact": {
+        "dropProvenancePaths": true,
+        "summariesOnly": false
+      }
+    }
+  }
+  ```
+
+  - `dropProvenancePaths` — strips `provenance.filePath` and `provenance.lineRange`
+    from every item before upload (shares *what* exists, not *where*).
+  - `summariesOnly` — additionally strips descriptive text bodies (`summary`,
+    `details`, `description`, `notes`) and detail lists (`args`, `fields`, `steps`,
+    `auth`, etc.) — only structural names, kinds, and provenance are uploaded.
+
 - **No secrets are ever in a snapshot** — the index is built from code structure,
   never from `.env`/secrets, and CLI auth tokens live in `~/.horus/auth.json`
   (never in the repo or the snapshot).
