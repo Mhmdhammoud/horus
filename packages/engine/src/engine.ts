@@ -68,7 +68,13 @@ import type { BoundedGitChange } from './git-collector.js';
 
 /** Dependencies the engine needs: a code provider and a database handle. */
 export interface EngineDeps {
-  code: CodeProvider;
+  /**
+   * Source-intelligence provider. Optional (HOR-319 layer-2): when null/absent the
+   * engine runs a degraded, RUNTIME-ONLY investigation — no seed resolution, no
+   * structural evidence (context/impact/flows/changes/ownership), confidence capped.
+   * The CLI passes null only after a down code host could not be self-healed.
+   */
+  code?: CodeProvider | null;
   db: HorusDb;
   /** Optional Elasticsearch logs provider — when absent the investigation runs Axon-only. */
   logs?: LogsProvider | null;
@@ -262,6 +268,10 @@ export async function reseedFromLogs(
   deps: EngineDeps,
 ): Promise<LogReseed | null> {
   if (!deps.logs || typeof deps.logs.searchLogs !== 'function') return null;
+  // Back-resolving a log component to a symbol needs source intelligence; in degraded
+  // runtime-only mode (no code provider) there is nothing to reseed against.
+  if (!deps.code) return null;
+  const code = deps.code;
   try {
     const from = logWindowFrom(input.since);
     const records = await deps.logs.searchLogs({
@@ -276,7 +286,7 @@ export async function reseedFromLogs(
     // Components are the most likely class/file names to resolve to a symbol.
     const candidates = [...new Set(records.map((r) => r.component).filter((c): c is string => !!c))];
     for (const name of candidates) {
-      const syms = await deps.code.searchSymbols(name, 5);
+      const syms = await code.searchSymbols(name, 5);
       if (syms.length > 0) {
         const rankedSeeds = rankSeeds(syms, [...new Set(tokenize(name))]);
         const first = records[0];
@@ -365,19 +375,22 @@ export async function investigate(
   // Pass hint tokens so domain-specific symbols (e.g. ShopifyWebhookController)
   // beat generic architectural matches (e.g. BrandService) when the hint names
   // the domain explicitly.
-  const rawSeeds = await code.searchSymbols(hint, 5);
+  // HOR-319 layer-2: with no source-intelligence provider the engine runs RUNTIME-ONLY.
+  // Skip seed resolution entirely — there are no symbols to resolve against.
+  const degradedNoSource = !code;
+  const rawSeeds = code ? await code.searchSymbols(hint, 5) : [];
   const hintTokens = [...new Set(tokenize(hint))];
   const ranked = rankSeeds(rawSeeds, hintTokens);
   let seeds = ranked.map((r) => r.symbol);
   // noUncheckedIndexedAccess: a non-empty array could still index to undefined.
-  let top = seeds[0];
+  let top: Symbol | undefined = seeds[0];
 
   // HOR-216: a raw error string (e.g. "getaddrinfo ENOTFOUND host") matches no
   // source symbol. Before giving up, search the logs for the hint (across message,
   // detail, and context.*), then back-resolve the matching log's component to a
   // source symbol and seed the investigation from there. Best-effort.
   let logReseed: LogReseed | null = null;
-  if (!top) {
+  if (!top && !degradedNoSource) {
     logReseed = await reseedFromLogs(hint, input, deps);
     if (logReseed !== null) {
       seeds = logReseed.seeds;
@@ -385,7 +398,10 @@ export async function investigate(
     }
   }
 
-  if (!top) {
+  // Empty-result only when source intelligence WAS available but resolved nothing.
+  // In degraded runtime-only mode we fall through and build a report from runtime
+  // evidence instead (HOR-319 layer-2).
+  if (!top && !degradedNoSource) {
     const report: InvestigationReport = {
       id: globalThis.crypto.randomUUID(),
       input,
@@ -412,47 +428,10 @@ export async function investigate(
     return report;
   }
 
-  // A "constructor" seed is really its class — surface a friendlier label in the report.
-  const label =
-    top.name === 'constructor'
-      ? `${(top.id.split(':').pop() ?? '').replace(/\.constructor$/, '') || top.name} (constructor)`
-      : top.name;
-
-  // c. GATHER
-  const [ctx, impact, flows] = await Promise.all([
-    code.context(top.id),
-    code.impact(top.id, 2),
-    code.flowsFor(top.id),
-  ]);
-  const edges = await listQueueEdges(db, { project: input.repo });
-
-  const symbolNames = new Set<string>([
-    top.name,
-    ...ctx.callers.map((s) => s.name),
-    ...ctx.callees.map((s) => s.name),
-  ]);
-  const queueHits: QueueEdge[] = edges.filter((e) => {
-    const bySymbol =
-      (e.producerSymbol !== null && symbolNames.has(e.producerSymbol)) ||
-      (e.workerSymbol !== null && symbolNames.has(e.workerSymbol));
-    const byFile =
-      e.producerFile === top.filePath || e.workerFile === top.filePath;
-    return bySymbol || byFile;
-  });
-
-  let changes: ChangeSet | null = null;
-  if (input.since !== undefined && looksDiffable(input.since)) {
-    try {
-      changes = await code.detectChanges({ base: input.since, compare: 'HEAD' });
-    } catch {
-      changes = null;
-    }
-  }
-
-  // HOR-94 / HOR-193 — bounded git change summary for the incident window.
-  // Collected here (before evidence build) so commit evidence can be synthesized
-  // when the source-backend ChangeSet is unavailable (e.g. source down, or --since
-  // is a relative ref like HEAD~5 that detectChanges can't handle).
+  // HOR-94 / HOR-193 — bounded git change summary for the incident window. Collected
+  // FIRST and independent of source intelligence, so commit evidence can be synthesized
+  // even in degraded runtime-only mode, when the source-backend ChangeSet is
+  // unavailable, or when --since is a relative ref (e.g. HEAD~5) detectChanges can't take.
   let recentChanges: BoundedGitChange | undefined;
   if (deps.repoPath && input.since) {
     try {
@@ -462,75 +441,126 @@ export async function investigate(
     }
   }
 
-  // d. BUILD Evidence
-  const seedLoc = formatSymbolLocation(top.filePath, top.startLine, top.endLine);
-  const seedEv = mkEv(
-    'symbol',
-    `Seed symbol ${top.name} (${seedLoc})`,
-    { symbol: top, snippet: ctx.snippet ?? null },
-    top.startLine !== undefined && top.startLine > 0
-      ? { symbolId: top.id, file: top.filePath, line: top.startLine }
-      : { symbolId: top.id, file: top.filePath },
-  );
-
+  // Structural-evidence accumulators. Populated only when a seed resolved (full run);
+  // they stay at these runtime-only defaults in degraded mode (HOR-319 layer-2), where
+  // the report is built from runtime evidence (logs/metrics/state/queues) alone.
+  let label = input.service ?? hint;
+  let seedLoc = '';
+  let ctx: SymbolContext | null = null;
+  let impact: ImpactResult | null = null;
+  let flows: Awaited<ReturnType<CodeProvider['flowsFor']>> = [];
+  let seedEv: Evidence | null = null;
+  let impactEv: Evidence | null = null;
   const flowEvIds: string[] = [];
-  for (const flow of flows) {
-    const ev = mkEv(
-      'flow',
-      `Flow "${flow.name}" (${flow.steps.length} step(s))`,
-      { flowId: flow.id, name: flow.name, steps: flow.steps.map((s) => s.name) },
+  let queueHits: QueueEdge[] = [];
+  const queueEvByName = new Map<string, string[]>();
+  let changes: ChangeSet | null = null;
+  let changeEvId: string | null = null;
+
+  if (top && code) {
+    // A "constructor" seed is really its class — surface a friendlier label in the report.
+    label =
+      top.name === 'constructor'
+        ? `${(top.id.split(':').pop() ?? '').replace(/\.constructor$/, '') || top.name} (constructor)`
+        : top.name;
+
+    // c. GATHER
+    [ctx, impact, flows] = await Promise.all([
+      code.context(top.id),
+      code.impact(top.id, 2),
+      code.flowsFor(top.id),
+    ]);
+    const edges = await listQueueEdges(db, { project: input.repo });
+
+    const symbolNames = new Set<string>([
+      top.name,
+      ...ctx.callers.map((s) => s.name),
+      ...ctx.callees.map((s) => s.name),
+    ]);
+    queueHits = edges.filter((e) => {
+      const bySymbol =
+        (e.producerSymbol !== null && symbolNames.has(e.producerSymbol)) ||
+        (e.workerSymbol !== null && symbolNames.has(e.workerSymbol));
+      const byFile =
+        e.producerFile === top.filePath || e.workerFile === top.filePath;
+      return bySymbol || byFile;
+    });
+
+    if (input.since !== undefined && looksDiffable(input.since)) {
+      try {
+        changes = await code.detectChanges({ base: input.since, compare: 'HEAD' });
+      } catch {
+        changes = null;
+      }
+    }
+
+    // d. BUILD Evidence
+    seedLoc = formatSymbolLocation(top.filePath, top.startLine, top.endLine);
+    seedEv = mkEv(
+      'symbol',
+      `Seed symbol ${top.name} (${seedLoc})`,
+      { symbol: top, snippet: ctx.snippet ?? null },
+      top.startLine !== undefined && top.startLine > 0
+        ? { symbolId: top.id, file: top.filePath, line: top.startLine }
+        : { symbolId: top.id, file: top.filePath },
+    );
+
+    for (const flow of flows) {
+      const ev = mkEv(
+        'flow',
+        `Flow "${flow.name}" (${flow.steps.length} step(s))`,
+        { flowId: flow.id, name: flow.name, steps: flow.steps.map((s) => s.name) },
+        { symbolId: top.id, file: top.filePath },
+      );
+      flowEvIds.push(ev.id);
+    }
+
+    impactEv = mkEv(
+      'impact',
+      `Impact of ${top.name}: ${impact.affected} affected symbol(s)`,
+      { affected: impact.affected },
       { symbolId: top.id, file: top.filePath },
     );
-    flowEvIds.push(ev.id);
-  }
 
-  const impactEv = mkEv(
-    'impact',
-    `Impact of ${top.name}: ${impact.affected} affected symbol(s)`,
-    { affected: impact.affected },
-    { symbolId: top.id, file: top.filePath },
-  );
+    // One queue-edge evidence per hit; track ids per distinct queue for findings/causes.
+    for (const edge of queueHits) {
+      const producer = edge.producerSymbol ?? 'unknown-producer';
+      const worker = edge.workerSymbol ?? 'unknown-worker';
+      const ev = mkEv(
+        'queue-edge',
+        `Queue "${edge.queueName}": ${producer} -> ${worker}`,
+        {
+          queueName: edge.queueName,
+          producerSymbol: edge.producerSymbol,
+          producerFile: edge.producerFile,
+          workerSymbol: edge.workerSymbol,
+          workerFile: edge.workerFile,
+          source: edge.source,
+        },
+        { queueName: edge.queueName },
+      );
+      const list = queueEvByName.get(edge.queueName) ?? [];
+      list.push(ev.id);
+      queueEvByName.set(edge.queueName, list);
+    }
 
-  // One queue-edge evidence per hit; track ids per distinct queue for findings/causes.
-  const queueEvByName = new Map<string, string[]>();
-  for (const edge of queueHits) {
-    const producer = edge.producerSymbol ?? 'unknown-producer';
-    const worker = edge.workerSymbol ?? 'unknown-worker';
-    const ev = mkEv(
-      'queue-edge',
-      `Queue "${edge.queueName}": ${producer} -> ${worker}`,
-      {
-        queueName: edge.queueName,
-        producerSymbol: edge.producerSymbol,
-        producerFile: edge.producerFile,
-        workerSymbol: edge.workerSymbol,
-        workerFile: edge.workerFile,
-        source: edge.source,
-      },
-      { queueName: edge.queueName },
-    );
-    const list = queueEvByName.get(edge.queueName) ?? [];
-    list.push(ev.id);
-    queueEvByName.set(edge.queueName, list);
-  }
-
-  let changeEvId: string | null = null;
-  if (changes) {
-    const addedN = changes.added.length;
-    const removedN = changes.removed.length;
-    const modifiedN = changes.modified.length;
-    const ev = mkEv(
-      'commit',
-      `Change range ${input.since}..HEAD: +${addedN} -${removedN} ~${modifiedN} symbol(s)`,
-      { added: addedN, removed: removedN, modified: modifiedN },
-      {},
-    );
-    changeEvId = ev.id;
+    if (changes) {
+      const addedN = changes.added.length;
+      const removedN = changes.removed.length;
+      const modifiedN = changes.modified.length;
+      const ev = mkEv(
+        'commit',
+        `Change range ${input.since}..HEAD: +${addedN} -${removedN} ~${modifiedN} symbol(s)`,
+        { added: addedN, removed: removedN, modified: modifiedN },
+        {},
+      );
+      changeEvId = ev.id;
+    }
   }
 
   // HOR-193: when the source-backend ChangeSet is unavailable but git history was
-  // collected (e.g. --since HEAD~5 with source backend down), synthesize a commit
-  // evidence entry so hypotheses + gaps receive the change signal.
+  // collected (e.g. --since HEAD~5, source backend down, or degraded runtime-only mode),
+  // synthesize a commit evidence entry so hypotheses + gaps receive the change signal.
   if (changes === null && recentChanges !== undefined && recentChanges.commits.length > 0) {
     const { commits, changedFiles, totalInsertions, totalDeletions } = recentChanges;
     const ev = mkEv(
@@ -579,11 +609,13 @@ export async function investigate(
         logsCollected = true;
 
         // Seed relevance terms: used to classify each signature as 'direct' or
-        // 'ambient' so unrelated high-volume errors don't dominate (HOR-156).
-        const seedBase = top.filePath.split('/').pop() ?? '';
-        const logSeedTerms = [
-          ...new Set([...tokenize(hint), ...tokenize(top.name), ...tokenize(seedBase)]),
-        ];
+        // 'ambient' so unrelated high-volume errors don't dominate (HOR-156). In
+        // degraded runtime-only mode there is no seed symbol, so terms come from the
+        // hint alone (classifyLogRelevance handles an empty seed-term set).
+        const seedBase = top ? top.filePath.split('/').pop() ?? '' : '';
+        const logSeedTerms = top
+          ? [...new Set([...tokenize(hint), ...tokenize(top.name), ...tokenize(seedBase)])]
+          : [...new Set(tokenize(hint))];
 
         for (const s of analysis.signatures.slice(0, 15)) {
           const { relevanceClass, relevanceReason } = classifyLogRelevance(
@@ -929,12 +961,13 @@ export async function investigate(
 
   // e0e. OWNERSHIP (HOR-20 / HOR-40) — estimate likely maintainer from git history.
   // Reuses the already-resolved seed symbol to skip a duplicate Axon search.
-  // Optional; only runs when repoPath is configured. Never breaks on failure.
+  // Optional; needs repoPath AND a resolved seed + source provider — skipped in
+  // degraded runtime-only mode. Never breaks on failure.
   let ownershipEstimate: OwnershipEstimate | null = null;
-  if (deps.repoPath) {
+  if (deps.repoPath && top && code) {
     try {
       ownershipEstimate = await estimateOwnership(top.name, {
-        code: deps.code,
+        code,
         repoPath: deps.repoPath,
         symbol: top,
       });
@@ -981,17 +1014,20 @@ export async function investigate(
   const findings: ReportFinding[] = [];
 
   // The seed is the best-ranked candidate (architectural entry point preferred).
-  findings.push({
-    kind: 'observation',
-    title: `Seed resolves to ${label} at ${seedLoc}`,
-    detail: top.signature ?? undefined,
-    confidence: 1,
-    evidenceIds: [seedEv.id],
-  });
+  // Structural seed findings are present only on a full run (HOR-319 layer-2).
+  if (top && seedEv) {
+    findings.push({
+      kind: 'observation',
+      title: `Seed resolves to ${label} at ${seedLoc}`,
+      detail: top.signature ?? undefined,
+      confidence: 1,
+      evidenceIds: [seedEv.id],
+    });
+  }
 
   // HOR-216: when the seed came from a log match (raw error-string hint), record
   // how it was resolved so the trail from "error string" → symbol is transparent.
-  if (logReseed !== null) {
+  if (logReseed !== null && seedEv) {
     findings.push({
       kind: 'observation',
       title: logReseed.note,
@@ -1002,7 +1038,7 @@ export async function investigate(
   }
 
   // Surface the other ranked candidate areas so a narrow pick is transparent.
-  if (ranked.length > 1) {
+  if (ranked.length > 1 && seedEv) {
     const candidates = ranked
       .slice(0, 4)
       .map((r) => `${r.symbol.name} [${r.role}]`)
@@ -1026,7 +1062,7 @@ export async function investigate(
     });
   }
 
-  if (impact.affected > 0) {
+  if (top && impactEv && impact && impact.affected > 0) {
     findings.push({
       kind: 'observation',
       title: `Changing ${top.name} impacts ${impact.affected} symbol(s) (blast radius)`,
@@ -1226,7 +1262,7 @@ export async function investigate(
 
   // f. SUSPECTED CAUSES — build CauseInput list; scoring + ranking via rankCauses (HOR-15).
   const causeInputs: CauseInput[] = [];
-  const blastRadius = impact.affected;
+  const blastRadius = impact?.affected ?? 0;
 
   // Queue runtime causes: backlog and starvation elevate the queue-path hypothesis.
   if (queueRuntimeState !== null) {
@@ -1261,7 +1297,7 @@ export async function investigate(
       id: `cause:queue-path:${queueName}`,
       title: `The ${queueName} processing path (${producer} -> ${worker}) is implicated`,
       category: 'queue-path',
-      sourceEvidenceIds: [...evIds, impactEv.id],
+      sourceEvidenceIds: [...evIds, ...(impactEv ? [impactEv.id] : [])],
       baseScore: 0.35,
       metadata: { blastRadius },
     });
@@ -1270,24 +1306,28 @@ export async function investigate(
   if (changeEvId) {
     // File-overlap boost: if the seed's file appears among changed files, the
     // deployment-regression hypothesis is more likely — raise base score to 0.45.
+    // In degraded runtime-only mode there is no seed, so the cause is offered
+    // generically off the git-history evidence alone.
     const gitChangedFiles = recentChanges?.changedFiles ?? [];
+    const seedFile = top?.filePath;
     const seedInChanges =
+      seedFile !== undefined &&
       gitChangedFiles.length > 0 &&
-      gitChangedFiles.some(
-        (f) => f === top.filePath || top.filePath.endsWith(f) || f.endsWith(top.filePath),
-      );
+      gitChangedFiles.some((f) => f === seedFile || seedFile.endsWith(f) || f.endsWith(seedFile));
     causeInputs.push({
       id: 'cause:deployment-regression',
-      title: `Recent change to ${top.name} in ${input.since}..HEAD may have introduced the regression`,
+      title: top
+        ? `Recent change to ${top.name} in ${input.since}..HEAD may have introduced the regression`
+        : `Recent changes in ${input.since}..HEAD may have introduced the regression`,
       category: 'deployment-regression',
-      sourceEvidenceIds: [changeEvId, seedEv.id],
+      sourceEvidenceIds: [changeEvId, ...(seedEv ? [seedEv.id] : [])],
       baseScore: clamp01((seedInChanges ? 0.45 : 0.25) + (queueHits.length > 0 ? 0.05 : 0)),
       metadata: { blastRadius },
     });
   }
 
-  // Blast-radius cause: always offered when the symbol has reach.
-  if (impact.affected > 0) {
+  // Blast-radius cause: offered when a resolved symbol has reach (full run only).
+  if (top && impactEv && seedEv && impact && impact.affected > 0) {
     causeInputs.push({
       id: 'cause:blast-radius',
       title: `${top.name} sits on a high-fan-out path (${impact.affected} affected) and may propagate the fault`,
@@ -1368,23 +1408,33 @@ export async function investigate(
     evidence,
     ambientLogEvIds.length > 0 ? new Set(ambientLogEvIds) : undefined,
   );
+  // Without a seed (degraded runtime-only mode) seedResolved is 0, so this formula
+  // already caps confidence at ≤0.5 — runtime evidence can never look as certain as a
+  // full structural run (HOR-319 layer-2).
   const seedResolved = seeds.length > 0 ? 1 : 0;
   const confidence = clamp01(0.5 * evidenceConfidence + 0.5 * seedResolved);
 
   // h. summary
-  const area = ctx.community?.name ?? top.filePath;
+  const area = ctx?.community?.name ?? top?.filePath ?? (input.service ?? 'runtime evidence');
   const topCause = rankedCauses[0];
+  const banner = degradedNoSource ? 'Runtime-only (source intelligence unavailable). ' : '';
+  const scope = top ? `resolved to ${label} (${area})` : `over runtime evidence (${area})`;
   const summary = topCause
-    ? `Investigation of "${hint}" resolved to ${label} (${area}). Top suspected cause: ${topCause.title}.`
-    : `Investigation of "${hint}" resolved to ${label} (${area}). No dominant suspected cause emerged from the available structural evidence.`;
+    ? `${banner}Investigation of "${hint}" ${scope}. Top suspected cause: ${topCause.title}.`
+    : `${banner}Investigation of "${hint}" ${scope}. No dominant suspected cause emerged from the available ${degradedNoSource ? 'runtime' : 'structural'} evidence.`;
 
   // i. nextActions
   const nextActions = buildNextActions(top, ctx, impact, queueHits, changes, input);
+  if (degradedNoSource) {
+    nextActions.unshift(
+      'Source intelligence was unavailable — run `horus index` to enable code-aware analysis, then re-run for a full investigation.',
+    );
+  }
 
   // Prepend owner routing when ownership is known (HOR-40).
   if (ownershipEstimate?.likelyMaintainer) {
     nextActions.unshift(
-      `Route to likely maintainer: ${ownershipEstimate.likelyMaintainer} (${Math.round(ownershipEstimate.maintainerShare * 100)}% of commits to ${ownershipEstimate.file ?? top.filePath})`,
+      `Route to likely maintainer: ${ownershipEstimate.likelyMaintainer} (${Math.round(ownershipEstimate.maintainerShare * 100)}% of commits to ${ownershipEstimate.file ?? top?.filePath ?? 'the implicated file'})`,
     );
   }
 
@@ -1407,6 +1457,9 @@ export async function investigate(
     ownership: ownershipEstimate,
     causeChains: causeChains.length > 0 ? causeChains : undefined,
     ...(recentChanges !== undefined ? { recentChanges } : {}),
+    ...(degradedNoSource
+      ? { degraded: { sourceIntelligence: false, reason: 'source-intelligence host unreachable' } }
+      : {}),
   };
 
   // HOR-19 — compute gap analysis and cap confidence BEFORE persisting so the
@@ -1469,11 +1522,15 @@ export async function investigate(
   return report;
 }
 
-/** Deterministic, name-bearing next-step suggestions. */
+/**
+ * Deterministic, name-bearing next-step suggestions. `top`/`ctx`/`impact` are absent in
+ * degraded runtime-only mode (HOR-319 layer-2), where the suggestions key off the queue
+ * and service scope instead of a resolved symbol.
+ */
 function buildNextActions(
-  top: Symbol,
-  _ctx: SymbolContext,
-  impact: ImpactResult,
+  top: Symbol | undefined,
+  _ctx: SymbolContext | null,
+  impact: ImpactResult | null,
   queueHits: QueueEdge[],
   changes: ChangeSet | null,
   input: InvestigationInput,
@@ -1487,16 +1544,24 @@ function buildNextActions(
     actions.push(`Inspect logs for worker ${worker} on queue ${edge.queueName}`);
     actions.push(`Check depth/failures of queue ${edge.queueName}`);
   }
-  if (impact.affected > 0) {
+  if (top && impact && impact.affected > 0) {
     actions.push(`Review impact set of ${top.name} (${impact.affected} affected symbol(s))`);
   }
-  if (changes && input.since !== undefined) {
-    actions.push(`Diff recent commits touching ${top.filePath} in ${input.since}..HEAD`);
-  } else {
-    actions.push(`Diff recent commits touching ${top.filePath}`);
+  if (top) {
+    if (changes && input.since !== undefined) {
+      actions.push(`Diff recent commits touching ${top.filePath} in ${input.since}..HEAD`);
+    } else {
+      actions.push(`Diff recent commits touching ${top.filePath}`);
+    }
   }
   if (actions.length === 0) {
-    actions.push(`Inspect the source of ${top.name} at ${top.filePath}`);
+    actions.push(
+      top
+        ? `Inspect the source of ${top.name} at ${top.filePath}`
+        : input.service
+          ? `Inspect runtime logs and metrics for service "${input.service}"`
+          : 'Inspect runtime logs and metrics for the affected service',
+    );
   }
   return actions;
 }

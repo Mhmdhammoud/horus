@@ -61,6 +61,29 @@ function levelColor(level: string, text: string): string {
   return pc.dim(text);
 }
 
+export interface ServiceMatch {
+  kind: 'unique' | 'ambiguous' | 'none';
+  /** The resolved label when kind === 'unique'. */
+  matched?: string;
+  /** The competing labels when kind === 'ambiguous'. */
+  candidates?: string[];
+}
+
+/**
+ * Resolve a requested service name against the labels that actually appear in the logs.
+ * Exact match wins; otherwise a case-insensitive substring match. HOR-319 (Bug 3):
+ * `horus logs scheduler` should resolve to `acme-prod-scheduler` rather than silently
+ * widening to all services on an exact-match miss.
+ */
+export function matchServiceLabel(requested: string, candidates: string[]): ServiceMatch {
+  if (candidates.includes(requested)) return { kind: 'unique', matched: requested };
+  const needle = requested.toLowerCase();
+  const subs = candidates.filter((c) => c.toLowerCase().includes(needle));
+  if (subs.length === 1 && subs[0] !== undefined) return { kind: 'unique', matched: subs[0] };
+  if (subs.length > 1) return { kind: 'ambiguous', candidates: subs };
+  return { kind: 'none' };
+}
+
 export async function runLogs(
   service: string | undefined,
   opts: {
@@ -302,9 +325,37 @@ export async function runLogs(
     if (analysis.signatures.length === 0 && resolvedService !== undefined) {
       const broader = await logs.analyzeErrors({ from, text: opts.grep, broadText: opts.grep !== undefined });
       if (broader.signatures.length > 0) {
-        analysis = broader;
-        broadeningNote = `No errors found for service "${resolvedService}" — showing all services`;
-        scopeService = undefined;
+        // HOR-319 (Bug 3): before silently widening to all services, try to resolve the
+        // requested name against the labels that actually carry errors. An exact label
+        // mismatch (e.g. `scheduler` vs `acme-prod-scheduler`) shouldn't drop the scope.
+        // Note: candidates come from the affected-services aggregation, so a service with
+        // zero errors in the window can't be matched — that's fine for error analysis.
+        const match = matchServiceLabel(resolvedService, broader.affectedServices);
+        if (match.kind === 'unique' && match.matched !== undefined && match.matched !== resolvedService) {
+          const scoped = await logs.analyzeErrors({
+            service: match.matched,
+            from,
+            text: opts.grep,
+            broadText: opts.grep !== undefined,
+          });
+          if (scoped.signatures.length > 0) {
+            analysis = scoped;
+            scopeService = match.matched;
+            broadeningNote = `No exact match for service "${resolvedService}" — matched "${match.matched}"`;
+          } else {
+            analysis = broader;
+            scopeService = undefined;
+            broadeningNote = `No errors found for service "${resolvedService}" — showing all services`;
+          }
+        } else if (match.kind === 'ambiguous' && match.candidates !== undefined) {
+          analysis = broader;
+          scopeService = undefined;
+          broadeningNote = `"${resolvedService}" matches multiple services: ${match.candidates.join(', ')} — showing all; re-run with a full label`;
+        } else {
+          analysis = broader;
+          scopeService = undefined;
+          broadeningNote = `No errors found for service "${resolvedService}" — showing all services`;
+        }
       }
     }
 

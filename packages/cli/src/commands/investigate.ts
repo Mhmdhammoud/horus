@@ -17,6 +17,7 @@ import type { Evidence } from '@horus/engine';
 import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
 import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
 import { uploadInvestigationToCloud } from '../lib/cloud/investigation-sync.js';
+import { ensureSourceHost, ensureHostReasonHint } from '../lib/ensure-host.js';
 import { reportCloudError } from './context.js';
 
 function extractEvidenceExcerpt(e: Evidence): string | undefined {
@@ -207,16 +208,34 @@ export async function runInvestigate(
       return 1;
     }
 
-    const health = await code.health();
-    if (!health.ok) {
-      const sourceUrl = renv.repositories[0]?.sourceHostUrl ?? renv.repositories[0]?.axonHostUrl;
+    const sourceUrl = renv.repositories[0]?.sourceHostUrl ?? renv.repositories[0]?.axonHostUrl;
+    let health = await code.health();
+    if (!health.ok && sourceUrl) {
+      // HOR-319 (Bug 2 / layer-1): don't hard-exit just because the host is down. Try to
+      // restart a previously-indexed host at its configured port, then re-check.
       console.error(
-        pc.red(
-          `Source-intelligence host unreachable for ${renv.project}/${renv.env}` +
-            (sourceUrl ? ` (${sourceUrl}) — run: horus index` : ' — run: horus index'),
+        pc.yellow(`Source-intelligence host unreachable (${sourceUrl}) — attempting to start it…`),
+      );
+      const healed = await ensureSourceHost(renv.path, sourceUrl);
+      if (healed.ok) {
+        console.error(pc.green(`Source-intelligence host is up at ${healed.hostUrl}.`));
+        health = await code.health();
+      } else {
+        console.error(pc.dim(`  ${ensureHostReasonHint(healed.reason)}`));
+      }
+    }
+
+    // HOR-319 (layer-2): if self-heal failed, DON'T dead-end. Degrade to a runtime-only
+    // investigation — logs/metrics/state/queues are independent of the source host. The
+    // engine runs without source intelligence and caps confidence accordingly.
+    const runtimeOnly = !health.ok;
+    if (runtimeOnly) {
+      console.error(
+        pc.yellow(
+          `Proceeding in runtime-only mode — no source intelligence. ` +
+            `Run ${pc.bold('horus index')} for a full (code-aware) investigation.`,
         ),
       );
-      return 1;
     }
 
     const logs = logsForEnv(renv);
@@ -233,7 +252,9 @@ export async function runInvestigate(
       const report = await investigate(
         { hint, repo: renv.project, since: opts.since, service },
         {
-          code,
+          // Runtime-only degrade (HOR-319 layer-2): pass no source provider so the engine
+          // skips seed resolution + structural evidence and builds from runtime evidence.
+          code: runtimeOnly ? null : code,
           db,
           logs,
           mongo,
@@ -322,6 +343,12 @@ export async function runInvestigate(
         } catch (err) {
           return reportCloudError(err);
         }
+      }
+
+      // HOR-319 (Bug 1): point the user at the id that `horus ask` accepts. report.id is
+      // the local id printed in the header and now resolves in both local and cloud mode.
+      if (format !== 'json') {
+        console.log(pc.dim(`\nAsk a follow-up:  horus ask ${report.id} "<question>"`));
       }
     } finally {
       await sql.end();

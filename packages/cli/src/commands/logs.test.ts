@@ -5,7 +5,7 @@
  * HOR-213 — AI contract and prompt shape tests for `horus logs --ai`.
  */
 import { describe, it, expect } from 'vitest';
-import { resolveRawLevel, LOGS_AI_CONTRACT } from './logs.js';
+import { resolveRawLevel, LOGS_AI_CONTRACT, matchServiceLabel } from './logs.js';
 import { buildInterpretationPrompt } from '@horus/ai';
 
 describe('resolveRawLevel', () => {
@@ -48,6 +48,50 @@ describe('LOGS_AI_CONTRACT (HOR-213)', () => {
     expect(LOGS_AI_CONTRACT).toContain('What this may indicate');
     expect(LOGS_AI_CONTRACT).toContain('What is not proven');
     expect(LOGS_AI_CONTRACT).toContain('Next checks');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-319 (Bug 3) — fuzzy service-name matching
+// ---------------------------------------------------------------------------
+
+describe('matchServiceLabel (HOR-319)', () => {
+  const labels = ['acme-prod-scheduler', 'acme-prod-api', 'acme-prod-worker'];
+
+  it('resolves a unique substring to the full label (scheduler → acme-prod-scheduler)', () => {
+    expect(matchServiceLabel('scheduler', labels)).toEqual({
+      kind: 'unique',
+      matched: 'acme-prod-scheduler',
+    });
+  });
+
+  it('is case-insensitive', () => {
+    expect(matchServiceLabel('SCHEDULER', labels)).toEqual({
+      kind: 'unique',
+      matched: 'acme-prod-scheduler',
+    });
+  });
+
+  it('returns the exact label when it is present verbatim', () => {
+    expect(matchServiceLabel('acme-prod-api', labels)).toEqual({
+      kind: 'unique',
+      matched: 'acme-prod-api',
+    });
+  });
+
+  it('flags ambiguity when several labels match', () => {
+    expect(matchServiceLabel('prod', labels)).toEqual({
+      kind: 'ambiguous',
+      candidates: labels,
+    });
+  });
+
+  it('returns none when nothing matches', () => {
+    expect(matchServiceLabel('payments', labels)).toEqual({ kind: 'none' });
+  });
+
+  it('returns none against an empty candidate set', () => {
+    expect(matchServiceLabel('scheduler', [])).toEqual({ kind: 'none' });
   });
 });
 

@@ -67,6 +67,13 @@ export interface InvestigationReport {
   graph: InvestigationGraph;
   /** 0–1 overall confidence in the investigation. */
   confidence: number;
+  /**
+   * Set when the investigation ran WITHOUT source intelligence (HOR-319 layer-2): the
+   * code host was unreachable and could not be self-healed, so only runtime evidence
+   * (logs/metrics/state/queues) was available. Confidence is capped and structural
+   * findings (seed, blast-radius, flows, ownership) are absent. Undefined = full run.
+   */
+  degraded?: { sourceIntelligence: boolean; reason: string };
   nextActions: string[];
   /** Ownership estimate for the implicated component (HOR-40). Null when repoPath is not supplied. */
   ownership?: OwnershipEstimate | null;

@@ -14,6 +14,7 @@ import type { InvestigationReport } from '@horus/engine';
 import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
 import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
 import { fetchInvestigationReportFromCloud } from '../lib/cloud/investigation-sync.js';
+import { CloudError } from '../lib/cloud/api.js';
 import { reportCloudError } from './context.js';
 
 /**
@@ -58,6 +59,38 @@ function renderAnswer(
   return 0;
 }
 
+/** Classified result of a local-DB investigation lookup. */
+type LocalLookup =
+  | { kind: 'found'; report: InvestigationReport }
+  | { kind: 'not-found' }
+  | { kind: 'no-report' }
+  | { kind: 'error'; message: string };
+
+/**
+ * Look up a locally-persisted investigation report by id. `engine.investigate()` always
+ * persists the report to the local DB, and the id `investigate` prints as its header
+ * (`# Investigation <id>`) is this local id — so the local store is the right first stop.
+ */
+async function lookupLocalInvestigation(id: string, configPath?: string): Promise<LocalLookup> {
+  const { db, sql } = createDb(await resolveDbUrl(configPath));
+  try {
+    const row = await getInvestigation(db, id);
+    if (!row) return { kind: 'not-found' };
+    if (!row.report) return { kind: 'no-report' };
+    return { kind: 'found', report: migrateReport(row.report) as InvestigationReport };
+  } catch (err) {
+    const code =
+      typeof err === 'object' && err !== null && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : undefined;
+    // 22P02 = invalid uuid text → not a local id; let the caller try cloud / report not-found.
+    if (code === '22P02') return { kind: 'not-found' };
+    return { kind: 'error', message: err instanceof Error ? err.message : String(err) };
+  } finally {
+    await sql.end();
+  }
+}
+
 export async function runAsk(
   id: string,
   directive: string,
@@ -67,6 +100,12 @@ export async function runAsk(
   const cloudCfg = readCloudConfig(repoRoot);
 
   if (isCloudActive(cloudCfg)) {
+    // HOR-319 (Bug 1): the id `investigate` prints as its header is the LOCAL id, while
+    // the cloud API only knows its own investigation id. Resolve LOCAL first so the most
+    // visible id works, then fall back to cloud (covers cloud-only / teammate runs).
+    const local = await lookupLocalInvestigation(id, opts.config);
+    if (local.kind === 'found') return renderAnswer(local.report, directive, opts);
+
     const session = authedClient();
     if (!session) {
       console.error(
@@ -77,50 +116,43 @@ export async function runAsk(
       return 1;
     }
     try {
-      const report = await fetchInvestigationReportFromCloud(
-        session.client,
-        cloudCfg,
-        id,
+      const report = await fetchInvestigationReportFromCloud(session.client, cloudCfg, id);
+      if (report) return renderAnswer(report, directive, opts);
+      console.error(
+        pc.red(
+          `Investigation ${id} has no saved report locally or in Horus Cloud. Run ${pc.bold('horus investigate')} first.`,
+        ),
       );
-      if (!report) {
+      return 1;
+    } catch (err) {
+      // A 404 here just means `id` isn't a cloud id either; since local also missed,
+      // give a clear not-found instead of a raw cloud error.
+      if (err instanceof CloudError && err.status === 404) {
         console.error(
           pc.red(
-            `Cloud investigation ${id} has no saved report. Run this investigation with ${pc.bold('horus investigate')} first.`,
+            `No investigation found for "${id}" locally or in Horus Cloud. Use the id printed at the top of \`horus investigate\` output.`,
           ),
         );
         return 1;
       }
-      return renderAnswer(report, directive, opts);
-    } catch (err) {
       return reportCloudError(err);
     }
   }
 
-  const { db, sql } = createDb(await resolveDbUrl(opts.config));
-  try {
-    const row = await getInvestigation(db, id);
-    if (!row) {
-      console.error(pc.red('No investigation found: ' + id));
-      return 1;
-    }
-    if (!row.report) {
+  // Local mode — resolve against the local DB only.
+  const local = await lookupLocalInvestigation(id, opts.config);
+  switch (local.kind) {
+    case 'found':
+      return renderAnswer(local.report, directive, opts);
+    case 'no-report':
       console.error(pc.red('Investigation ' + id + ' has no stored report.'));
       return 1;
-    }
-    const report = migrateReport(row.report) as InvestigationReport;
-    return renderAnswer(report, directive, opts);
-  } catch (err) {
-    const code =
-      typeof err === 'object' && err !== null && 'code' in err
-        ? String((err as { code: unknown }).code)
-        : undefined;
-    if (code === '22P02') {
+    case 'error':
+      console.error(pc.red(local.message));
+      return 1;
+    case 'not-found':
+    default:
       console.error(pc.red('No investigation found: ' + id));
       return 1;
-    }
-    console.error(pc.red(err instanceof Error ? err.message : String(err)));
-    return 1;
-  } finally {
-    await sql.end();
   }
 }
