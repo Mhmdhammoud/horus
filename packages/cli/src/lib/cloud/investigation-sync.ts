@@ -7,6 +7,7 @@
 import type { CloudClient, EvidenceRecord, InvestigationRecord } from "./api.js";
 import type { CloudConfig } from "./context-store.js";
 import type { InvestigationReport } from "@horus/engine";
+import { HORUS_VERSION } from "@horus/core";
 
 // The cloud evidence schema (HOR-227/HOR-233) requires a valid `type` enum plus
 // title/content/contentFormat. A Horus report snapshot is stored as a `note`
@@ -70,7 +71,7 @@ export async function uploadInvestigationToCloud(
   await client.createAgentRun(projectId, investigation.id, {
     repositoryId: cfg.repository?.id,
     status: "completed",
-    cliVersion: process.env.npm_package_version ?? "0.0.0",
+    cliVersion: HORUS_VERSION,
     summary: report.summary,
     idempotencyKey: idempotencyKey(report.id, "run"),
   });
