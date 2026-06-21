@@ -100,6 +100,7 @@ export async function runTelemetryEnableContent(): Promise<number> {
     pc.green('Content sharing (Tier B) is now ON — redacted inputs/outputs help improve Horus.'),
   );
   console.log(pc.dim('Content is scrubbed of secrets/PII before it ever leaves your machine.'));
+  console.log(pc.dim(`What this means: ${PRIVACY_URL}`));
   warnIfEnvOverrides();
   return 0;
 }

@@ -62,7 +62,10 @@ export function maybeShowFirstRunNotice(argv: string[] = process.argv): void {
     if (state.tierA.noticeShownAt) return; // already disclosed
 
     if (shouldSuppressFor(argv)) return;
-    if (!process.stderr.isTTY) return; // defer to the next interactive run
+    // The TTY check is on stderr — our write target — so a redirected/piped
+    // stdout or a `--json` consumer is never affected. Non-interactive runs
+    // defer the banner to the next interactive run (the file was created above).
+    if (!process.stderr.isTTY) return;
 
     process.stderr.write(banner() + '\n');
     updateTelemetryState((s) => {

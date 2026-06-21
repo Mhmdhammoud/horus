@@ -19,6 +19,7 @@ import {
   mkdirSync,
   chmodSync,
   rmSync,
+  renameSync,
 } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { horusHome } from '../cloud/paths.js';
@@ -106,7 +107,22 @@ export function readTelemetryState(): TelemetryState | null {
 export function writeTelemetryState(state: TelemetryState): void {
   mkdirSync(horusHome(), { recursive: true });
   const p = telemetryPath();
-  writeFileSync(p, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 });
+  // Write to a temp file then rename, so a crash or a concurrent run can never
+  // observe a half-written telemetry.json (readTelemetryState would treat a torn
+  // file as missing and re-init, churning the installId).
+  const tmp = `${p}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 });
+  try {
+    renameSync(tmp, p);
+  } catch (err) {
+    try {
+      rmSync(tmp);
+    } catch {
+      /* ignore cleanup failure */
+    }
+    throw err;
+  }
+  // Tighten perms even if the destination pre-existed with a looser mode.
   try {
     chmodSync(p, 0o600);
   } catch {

@@ -80,13 +80,14 @@ export function resolveConsent(
   opts: { env?: NodeJS.ProcessEnv; state?: TelemetryState | null } = {},
 ): ConsentDecision {
   const env = opts.env ?? process.env;
-  const state = opts.state !== undefined ? opts.state : readTelemetryState();
 
-  // 1. Hard opt-out via env wins over everything.
+  // 1. Hard opt-out via env wins over everything — decided before touching disk.
   if (doNotTrack(env)) return off('env', 'DO_NOT_TRACK is set');
   const envFlag = parseEnvFlag(env.HORUS_TELEMETRY);
   if (envFlag === 'off') return off('env', 'HORUS_TELEMETRY disables telemetry');
 
+  // Only now read saved state (callers may inject `state` to stay hermetic).
+  const state = opts.state !== undefined ? opts.state : readTelemetryState();
   const storedTierA = state?.tierA.enabled ?? true;
   const storedTierB = state?.tierB.enabled ?? false;
 
