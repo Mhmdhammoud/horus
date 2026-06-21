@@ -15,6 +15,7 @@ import {
 } from '../lib/telemetry/store.js';
 import { resolveConsent } from '../lib/telemetry/consent.js';
 import { clearSpool } from '../lib/telemetry/spool.js';
+import { deleteRemoteTelemetry } from '../lib/telemetry/transport.js';
 import { telemetryPath } from '../lib/telemetry/paths.js';
 import { PRIVACY_URL } from '../lib/telemetry/notice.js';
 
@@ -125,12 +126,15 @@ export async function runTelemetryResetId(): Promise<number> {
 }
 
 export async function runTelemetryDelete(): Promise<number> {
+  // Read the install id before deleting, then ask the server to purge its rows.
+  const installId = readTelemetryState()?.installId;
+  if (installId) await deleteRemoteTelemetry(installId);
   deleteTelemetryState();
   clearSpool();
-  console.log(pc.green('Local telemetry state deleted (install ID + saved preferences).'));
+  console.log(pc.green('Telemetry deleted — local state cleared and a server purge requested.'));
   console.log(
     pc.dim(
-      'Next run will treat this as a fresh install and re-show the notice. Server-side deletion of already-uploaded data lands with the cloud sink (HOR-327).',
+      'Next run will treat this as a fresh install and re-show the notice. If the purge could not reach the server (offline), re-run this command when back online.',
     ),
   );
   return 0;

@@ -52,6 +52,8 @@ export interface ErrorRaisedEvent extends BaseEvent {
 /** Shape signal for an investigation — counts and flags, never report bodies. */
 export interface InvestigationCompletedEvent extends BaseEvent {
   type: 'investigation.completed';
+  /** Local investigation id — lets feedback be joined back for calibration. */
+  investigationId: string;
   confidence: number | null;
   evidenceCount: number;
   findingCount: number;

@@ -63,3 +63,32 @@ export async function flushTelemetry(opts: { timeoutMs?: number } = {}): Promise
     /* offline / timeout / error — keep the spool for the next run */
   }
 }
+
+/**
+ * Best-effort server-side deletion of all events for an install (HOR-327).
+ * Runs regardless of consent — a deletion request is always honored. Never
+ * throws; if offline, local state is still cleared and the purge can be retried.
+ */
+export async function deleteRemoteTelemetry(
+  installId: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<void> {
+  try {
+    if (!installId) return;
+    const url = `${telemetryBaseUrl().replace(/\/$/, '')}/v1/telemetry/delete`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    try {
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ installId }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    /* offline / error — local deletion still happened; server purge is retryable */
+  }
+}

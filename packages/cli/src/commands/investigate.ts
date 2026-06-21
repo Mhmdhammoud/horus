@@ -343,6 +343,7 @@ export async function runInvestigate(
       // Tier-A usage signal: shape + confidence + gaps only, no report bodies (HOR-324).
       track({
         type: 'investigation.completed',
+        investigationId: report.id,
         confidence: typeof report.confidence === 'number' ? report.confidence : null,
         evidenceCount: report.evidence?.length ?? 0,
         findingCount: report.findings?.length ?? 0,

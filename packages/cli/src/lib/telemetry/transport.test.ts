@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { flushTelemetry } from './transport.js';
+import { flushTelemetry, deleteRemoteTelemetry } from './transport.js';
 import { spoolEvent, readSpooledEvents } from './spool.js';
 import { loadOrInitTelemetryState, updateTelemetryState } from './store.js';
 import type { TelemetryEvent } from './events.js';
@@ -120,5 +120,23 @@ describe('flushTelemetry', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch');
     await flushTelemetry();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('deleteRemoteTelemetry', () => {
+  it('POSTs the installId to /v1/telemetry/delete (regardless of consent)', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true } as Response);
+    await deleteRemoteTelemetry('install-123');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:9999/v1/telemetry/delete');
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ installId: 'install-123' });
+  });
+
+  it('no-ops on an empty installId and never throws when offline', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'));
+    await deleteRemoteTelemetry('');
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(deleteRemoteTelemetry('install-123')).resolves.toBeUndefined();
   });
 });
