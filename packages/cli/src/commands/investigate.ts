@@ -19,6 +19,7 @@ import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
 import { uploadInvestigationToCloud } from '../lib/cloud/investigation-sync.js';
 import { track } from '../lib/telemetry/client.js';
 import { isContentSharingEnabled } from '../lib/telemetry/consent.js';
+import { maybePromptFeedback } from '../lib/telemetry/feedback.js';
 import { ensureSourceHost, ensureHostReasonHint } from '../lib/ensure-host.js';
 import { reportCloudError } from './context.js';
 
@@ -173,6 +174,7 @@ export async function runInvestigate(
     _aiProvider?: NarrativeProvider;
   },
 ): Promise<number> {
+  const startedAtMs = Date.now();
   try {
     const config = await loadConfig(opts.config, { name: opts.name });
 
@@ -385,6 +387,11 @@ export async function runInvestigate(
       // the local id printed in the header and now resolves in both local and cloud mode.
       if (format !== 'json') {
         console.log(pc.dim(`\nAsk a follow-up:  horus ask ${report.id} "<question>"`));
+        // Sampled, skippable impact prompt — never on non-TTY/--json (HOR-326).
+        await maybePromptFeedback({
+          investigationId: report.id,
+          horusSeconds: (Date.now() - startedAtMs) / 1000,
+        });
       }
     } finally {
       await sql.end();

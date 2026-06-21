@@ -64,6 +64,7 @@ import {
 import { maybeShowFirstRunNotice } from './lib/telemetry/notice.js';
 import { installCommandTelemetry } from './lib/telemetry/command-hooks.js';
 import { flushTelemetry } from './lib/telemetry/transport.js';
+import { runFeedback } from './commands/feedback.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -1025,6 +1026,13 @@ Examples:
   horus cloud sync --dry-run     # preview what would upload
   horus cloud sync               # confirm, then upload
   horus cloud sync --yes         # upload without prompting`);
+
+  program
+    .command('feedback [investigationId]')
+    .description('Leave quick impact feedback on an investigation (helps improve Horus)')
+    .action(async (investigationId?: string) => {
+      process.exitCode = await runFeedback(investigationId);
+    });
 
   const telemetry = program
     .command('telemetry')

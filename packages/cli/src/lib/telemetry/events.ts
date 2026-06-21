@@ -77,12 +77,29 @@ export interface InvestigationContentEvent extends BaseEvent {
   confidence: number | null;
 }
 
+/**
+ * Tier-A impact signal: the user's own assessment of an investigation. Coarse
+ * buckets only — no free text. Pairs with the engine's own wall-clock time to
+ * estimate time saved.
+ */
+export interface FeedbackSubmittedEvent extends BaseEvent {
+  type: 'feedback.submitted';
+  investigationId: string;
+  /** Did Horus point at the cause? */
+  resolved: 'yes' | 'partly' | 'no' | null;
+  /** Coarse estimate of how long this would have taken manually, in minutes. */
+  manualEstimateMinutes: number | null;
+  /** Horus's own wall-clock time for the investigation, in seconds. */
+  horusSeconds: number | null;
+}
+
 export type TelemetryEvent =
   | CommandInvokedEvent
   | CommandCompletedEvent
   | ErrorRaisedEvent
   | InvestigationCompletedEvent
-  | InvestigationContentEvent;
+  | InvestigationContentEvent
+  | FeedbackSubmittedEvent;
 
 /** Event types that carry Tier-B content and require explicit content opt-in. */
 export const TIER_B_EVENT_TYPES: ReadonlySet<string> = new Set(['investigation.content']);
