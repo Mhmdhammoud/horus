@@ -14,6 +14,7 @@ import {
   deleteTelemetryState,
 } from '../lib/telemetry/store.js';
 import { resolveConsent } from '../lib/telemetry/consent.js';
+import { clearSpool } from '../lib/telemetry/spool.js';
 import { telemetryPath } from '../lib/telemetry/paths.js';
 import { PRIVACY_URL } from '../lib/telemetry/notice.js';
 
@@ -125,6 +126,7 @@ export async function runTelemetryResetId(): Promise<number> {
 
 export async function runTelemetryDelete(): Promise<number> {
   deleteTelemetryState();
+  clearSpool();
   console.log(pc.green('Local telemetry state deleted (install ID + saved preferences).'));
   console.log(
     pc.dim(

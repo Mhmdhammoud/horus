@@ -63,6 +63,7 @@ import {
 } from './commands/telemetry.js';
 import { maybeShowFirstRunNotice } from './lib/telemetry/notice.js';
 import { installCommandTelemetry } from './lib/telemetry/command-hooks.js';
+import { flushTelemetry } from './lib/telemetry/transport.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -1093,4 +1094,6 @@ export async function run(argv: string[] = process.argv): Promise<void> {
   // consent, spooled locally. Never affects command behavior.
   installCommandTelemetry(program);
   await program.parseAsync(argv);
+  // Best-effort, time-boxed drain of spooled events to the cloud. Never throws.
+  await flushTelemetry();
 }
