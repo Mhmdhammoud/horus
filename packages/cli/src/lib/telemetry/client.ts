@@ -15,6 +15,7 @@ import { readTelemetryState } from './store.js';
 import { spoolEvent } from './spool.js';
 import {
   TELEMETRY_EVENT_SCHEMA_VERSION,
+  tierForEventType,
   type TelemetryEvent,
   type TelemetryEventInput,
 } from './events.js';
@@ -28,19 +29,24 @@ function getSessionId(): string {
 }
 
 /**
- * Record a Tier-A usage event. No-ops silently when telemetry is disabled, when
- * no install identity exists yet, or on any error.
+ * Record a usage event. The event's type determines its consent tier (Tier B for
+ * content-bearing types, Tier A otherwise) and the matching consent is enforced.
+ * No-ops silently when that tier is disabled, when no install identity exists
+ * yet, or on any error.
  */
 export function track(input: TelemetryEventInput): void {
   try {
     const state = readTelemetryState();
-    // Gate on the resolved decision (honors DO_NOT_TRACK / HORUS_TELEMETRY / CI).
-    if (!resolveConsent({ state }).tierA) return;
     if (!state) return; // identity is bootstrapped by the first-run notice
+
+    const tier = tierForEventType(input.type);
+    // Gate on the resolved decision (honors DO_NOT_TRACK / HORUS_TELEMETRY / CI).
+    const decision = resolveConsent({ state });
+    if (tier === 'A' ? !decision.tierA : !decision.tierB) return;
 
     const event = {
       schemaVersion: TELEMETRY_EVENT_SCHEMA_VERSION,
-      tier: 'A' as const,
+      tier,
       ts: new Date().toISOString(),
       installId: state.installId,
       sessionId: getSessionId(),

@@ -63,11 +63,34 @@ export interface InvestigationCompletedEvent extends BaseEvent {
   hasAi: boolean;
 }
 
+/**
+ * Tier-B: redacted investigation inputs/outputs. Only emitted with explicit
+ * content opt-in; every string field is scrubbed before it reaches here.
+ */
+export interface InvestigationContentEvent extends BaseEvent {
+  type: 'investigation.content';
+  investigationId: string;
+  hint: string;
+  summary: string;
+  findingTitles: string[];
+  suspectedCauseTitles: string[];
+  confidence: number | null;
+}
+
 export type TelemetryEvent =
   | CommandInvokedEvent
   | CommandCompletedEvent
   | ErrorRaisedEvent
-  | InvestigationCompletedEvent;
+  | InvestigationCompletedEvent
+  | InvestigationContentEvent;
+
+/** Event types that carry Tier-B content and require explicit content opt-in. */
+export const TIER_B_EVENT_TYPES: ReadonlySet<string> = new Set(['investigation.content']);
+
+/** The consent tier an event type belongs to. */
+export function tierForEventType(type: string): TelemetryTier {
+  return TIER_B_EVENT_TYPES.has(type) ? 'B' : 'A';
+}
 
 /** Distributive omit so the discriminated union is preserved. */
 type WithoutBase<T> = T extends unknown ? Omit<T, keyof BaseEvent> : never;

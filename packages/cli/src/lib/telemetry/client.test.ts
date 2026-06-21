@@ -79,6 +79,42 @@ describe('track', () => {
     expect(readSpooledEvents()).toEqual([]);
   });
 
+  it('does not spool a Tier-B content event when only Tier A is enabled', () => {
+    loadOrInitTelemetryState(); // Tier A on, Tier B off (default)
+    track({
+      type: 'investigation.content',
+      investigationId: 'inv-1',
+      hint: 'redacted hint',
+      summary: 'redacted summary',
+      findingTitles: [],
+      suspectedCauseTitles: [],
+      confidence: 0.5,
+    });
+    expect(readSpooledEvents()).toEqual([]);
+  });
+
+  it('spools a Tier-B content event (tier "B") when content sharing is enabled', () => {
+    updateTelemetryState((s) => {
+      s.tierA.enabled = true;
+      s.tierB.enabled = true;
+    });
+    track({
+      type: 'investigation.content',
+      investigationId: 'inv-1',
+      hint: 'redacted hint',
+      summary: 'redacted summary',
+      findingTitles: ['f1'],
+      suspectedCauseTitles: ['c1'],
+      confidence: 0.5,
+    });
+    const events = readSpooledEvents();
+    expect(events).toHaveLength(1);
+    const e = events[0] as unknown as Record<string, unknown>;
+    expect(e.type).toBe('investigation.content');
+    expect(e.tier).toBe('B');
+    expect(e.investigationId).toBe('inv-1');
+  });
+
   it('never throws', () => {
     expect(() => track({ type: 'command.invoked', command: 'x', flags: [] })).not.toThrow();
   });

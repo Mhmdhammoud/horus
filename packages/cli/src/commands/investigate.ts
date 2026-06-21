@@ -1,5 +1,5 @@
 import pc from 'picocolors';
-import { loadConfig, resolveEnvironment, resolveAiSettings } from '@horus/core';
+import { loadConfig, resolveEnvironment, resolveAiSettings, redactContent, redactOrDrop } from '@horus/core';
 import {
   codeForEnv,
   logsForEnv,
@@ -18,6 +18,7 @@ import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
 import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
 import { uploadInvestigationToCloud } from '../lib/cloud/investigation-sync.js';
 import { track } from '../lib/telemetry/client.js';
+import { isContentSharingEnabled } from '../lib/telemetry/consent.js';
 import { ensureSourceHost, ensureHostReasonHint } from '../lib/ensure-host.js';
 import { reportCloudError } from './context.js';
 
@@ -348,6 +349,28 @@ export async function runInvestigate(
         gapCount: report.gapAnalysis?.gaps?.length ?? 0,
         hasAi: Boolean(report.aiJudgment),
       });
+
+      // Tier-B (explicit content opt-in): redacted inputs/outputs to improve the
+      // engine + future ML (HOR-325). Every field is scrubbed; the hint is
+      // fail-closed (dropped if a secret survives), in which case we send nothing.
+      if (isContentSharingEnabled()) {
+        const hint = redactOrDrop(report.input.hint ?? '');
+        if (!hint.dropped) {
+          track({
+            type: 'investigation.content',
+            investigationId: report.id,
+            hint: hint.value ?? '',
+            summary: redactContent(report.summary ?? ''),
+            findingTitles: (report.findings ?? [])
+              .slice(0, 20)
+              .map((f) => redactContent(f.title ?? '')),
+            suspectedCauseTitles: (report.suspectedCauses ?? [])
+              .slice(0, 20)
+              .map((c) => redactContent(c.title ?? '')),
+            confidence: typeof report.confidence === 'number' ? report.confidence : null,
+          });
+        }
+      }
 
       if (cloudActive && cloudSession && cloudCfg) {
         try {
