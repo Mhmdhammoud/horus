@@ -17,6 +17,7 @@ import type { Evidence } from '@horus/engine';
 import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
 import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
 import { uploadInvestigationToCloud } from '../lib/cloud/investigation-sync.js';
+import { track } from '../lib/telemetry/client.js';
 import { ensureSourceHost, ensureHostReasonHint } from '../lib/ensure-host.js';
 import { reportCloudError } from './context.js';
 
@@ -335,6 +336,18 @@ export async function runInvestigate(
           console.error(pc.yellow(`[ai] fallback to deterministic — ${reason}`));
         }
       }
+
+      // Tier-A usage signal: shape + confidence + gaps only, no report bodies (HOR-324).
+      track({
+        type: 'investigation.completed',
+        confidence: typeof report.confidence === 'number' ? report.confidence : null,
+        evidenceCount: report.evidence?.length ?? 0,
+        findingCount: report.findings?.length ?? 0,
+        suspectedCauseCount: report.suspectedCauses?.length ?? 0,
+        degraded: Boolean(report.degraded),
+        gapCount: report.gapAnalysis?.gaps?.length ?? 0,
+        hasAi: Boolean(report.aiJudgment),
+      });
 
       if (cloudActive && cloudSession && cloudCfg) {
         try {

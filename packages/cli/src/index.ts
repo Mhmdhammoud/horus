@@ -62,6 +62,7 @@ import {
   runTelemetryDelete,
 } from './commands/telemetry.js';
 import { maybeShowFirstRunNotice } from './lib/telemetry/notice.js';
+import { installCommandTelemetry } from './lib/telemetry/command-hooks.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -1088,5 +1089,8 @@ export async function run(argv: string[] = process.argv): Promise<void> {
   // One-time disclosure + install-identity bootstrap. Never throws/blocks.
   maybeShowFirstRunNotice(argv);
   const program = buildProgram();
+  // Tier-A usage events (command.invoked/completed) — fire-and-forget, gated on
+  // consent, spooled locally. Never affects command behavior.
+  installCommandTelemetry(program);
   await program.parseAsync(argv);
 }
