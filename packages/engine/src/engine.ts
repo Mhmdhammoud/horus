@@ -414,9 +414,19 @@ export function looksExplanatory(hint: string): boolean {
 export function formatRegressionCitation(
   recentChanges: BoundedGitChange | undefined,
   changes: ChangeSet | null,
+  seedFile?: string,
 ): { commitClause: string; symbolClause: string } {
-  // Commits are newest-first (git log default) — cite up to the 2 most recent.
-  const commits = (recentChanges?.commits ?? []).slice(0, 2);
+  const matchesSeed = (f: string): boolean =>
+    seedFile === undefined || f === seedFile || seedFile.endsWith(f) || f.endsWith(seedFile);
+
+  // #3 (dogfood): attribute to the commit(s) that ACTUALLY touched the seed's file — NOT the two
+  // newest commits in the --since window. The old behaviour blamed unrelated recent commits and
+  // tripped the off-by-one release-tag trap (the touching commit is an ancestor of the tag). When
+  // no in-window commit touched the seed, cite nothing — the caller frames that honestly rather
+  // than fabricating a culprit.
+  const all = recentChanges?.commits ?? [];
+  const seedCommits = seedFile ? all.filter((c) => c.files.some(matchesSeed)) : all;
+  const commits = seedCommits.slice(0, 2);
   const commitParts = commits.map((c) => {
     const sha = c.shortSha || c.sha.slice(0, 7);
     const subject = (c.subject ?? '').replace(/\s+/g, ' ').trim();
@@ -424,8 +434,11 @@ export function formatRegressionCitation(
   });
   const commitClause = commitParts.length > 0 ? ` (${commitParts.join(', ')})` : '';
 
-  // Changed symbol names from the source-backend diff — prefer the post-change name.
-  const modified = changes?.modified ?? [];
+  // Changed symbol names — restricted to the seed's file so cross-service symbols from the same
+  // window aren't narrated onto this seed (prefer the post-change name).
+  const modified = (changes?.modified ?? []).filter((m) =>
+    matchesSeed(((m.after ?? m.before) as { filePath?: string }).filePath ?? ''),
+  );
   const symbolNames: string[] = [];
   for (const m of modified) {
     const name = m.after?.name ?? m.before?.name;
@@ -1667,15 +1680,23 @@ export async function investigate(
     // HOR-333: cite the actual culprit — the most-recent commit(s) (short SHA + subject)
     // and the changed symbol name(s) — so the cause names what to look at, not just the
     // seed + range. Bounded to 1-2 commits and a few symbols to stay scannable.
-    const citation = formatRegressionCitation(recentChanges, changes);
+    const citation = formatRegressionCitation(recentChanges, changes, seedFile);
+    // #3: only attribute the regression to the seed when an in-window commit actually touched the
+    // seed's file. Otherwise be honest — changes shipped, but none to the seed — instead of
+    // pinning it on the newest unrelated commit.
+    const regressionTitle =
+      top && seedInChanges
+        ? `Recent change${citation.commitClause} to ${top.name}${citation.symbolClause} in ${input.since}..HEAD may have introduced the regression`
+        : top
+          ? `Changes shipped in ${input.since}..HEAD but none touched ${top.name} — a regression here is unlikely to be a code change to the seed itself (check upstream deps, data, or config)`
+          : `Recent change${citation.commitClause}${citation.symbolClause} in ${input.since}..HEAD may have introduced the regression`;
     causeInputs.push({
       id: 'cause:deployment-regression',
-      title: top
-        ? `Recent change${citation.commitClause} to ${top.name}${citation.symbolClause} in ${input.since}..HEAD may have introduced the regression`
-        : `Recent change${citation.commitClause}${citation.symbolClause} in ${input.since}..HEAD may have introduced the regression`,
+      title: regressionTitle,
       category: 'deployment-regression',
       sourceEvidenceIds: [changeEvId, ...(seedEv ? [seedEv.id] : [])],
-      baseScore: clamp01((seedInChanges ? 0.45 : 0.25) + (queueHits.length > 0 ? 0.05 : 0)),
+      // A regression NOT backed by a seed-touching commit must not score like one that is.
+      baseScore: clamp01((seedInChanges ? 0.45 : 0.18) + (queueHits.length > 0 ? 0.05 : 0)),
       metadata: { blastRadius },
     });
   }
