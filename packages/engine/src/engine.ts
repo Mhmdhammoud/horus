@@ -1501,7 +1501,18 @@ export async function investigate(
   const INFRA_RE =
     /\b(ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ECONNRESET|getaddrinfo|socket hang up|connection (?:refused|reset|timed out)|network (?:error|timeout)|DNS)\b/i;
   const infraSig = directSignatures.find((d) => INFRA_RE.test(d.message));
-  const infraQueue = queueFailureSignals.find((q) => INFRA_RE.test(q.reason));
+  // Only headline a queue failure that is RELEVANT to this investigation — otherwise a single
+  // stale failing queue (e.g. one GAIA DNS error days old) gets narrated onto every unrelated
+  // hint (round-3 over-fire). Relevant = the queue is a static hit for this investigation, or
+  // its name overlaps the hint tokens (so "gaia stock sync" matches GAIA_STOCK_SYNC, but an
+  // Emoda/HMAC/fulfillment hint does not).
+  const queueHitNames = new Set(queueHits.map((e) => e.queueName.toLowerCase()));
+  const infraQueue = queueFailureSignals.find((q) => {
+    if (!INFRA_RE.test(q.reason)) return false;
+    if (queueHitNames.has(q.queueName.toLowerCase())) return true;
+    const qTokens = new Set(tokenize(q.queueName));
+    return hintTokens.some((t) => t.length >= 3 && qTokens.has(t));
+  });
   if (infraSig) {
     causeInputs.push({
       id: 'cause:dependency-failure',
