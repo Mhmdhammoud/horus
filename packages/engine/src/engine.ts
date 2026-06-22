@@ -1453,10 +1453,13 @@ export async function investigate(
     const example = collections[0];
     causeInputs.push({
       id: 'cause:data-state-anomaly',
-      title: `Data-state anomaly: ${collections.length} collection(s) hold records in a failed/stale state${example ? ` (e.g. ${example})` : ''} — likely a data-quality root cause`,
+      // Co-occurring, NOT asserted as the root cause: the stale collection is selected by
+      // hint relevance, not proven reachable from the seed's call graph, so claiming it is
+      // the cause mislead on e.g. a Shopify-fulfillment error citing unrelated gaia sync logs.
+      title: `Data-state anomaly (co-occurring): ${collections.length} collection(s) hold records in a failed/stale state${example ? ` (e.g. ${example})` : ''} — verify whether it relates to this failure`,
       category: 'data-state-anomaly',
       sourceEvidenceIds: dataAnomalyEvIds.slice(0, 3),
-      baseScore: 0.30,
+      baseScore: 0.22,
       metadata: { blastRadius },
     });
   }
@@ -1522,6 +1525,10 @@ export async function investigate(
   // h. summary
   const area = ctx?.community?.name ?? top?.filePath ?? (input.service ?? 'runtime evidence');
   const topCause = rankedCauses[0];
+  // HOR-340/336: a sub-threshold cause (e.g. a weak "wide code reach" blast-radius scoring
+  // ~0.09) must not headline as "Top suspected cause" — that reads as a confident diagnosis.
+  // Below the meaningful bar it stays in the listed causes but the summary says "no dominant".
+  const headlineCause = topCause && topCause.finalScore >= 0.2 ? topCause : undefined;
   const banner = degradedNoSource ? 'Runtime-only (source intelligence unavailable). ' : '';
   const scope = top ? `resolved to ${label} (${area})` : `over runtime evidence (${area})`;
   // HOR-335: lead with an honest disclaimer when the seed is only a semantic guess.
@@ -1529,8 +1536,8 @@ export async function investigate(
     seedIsLowConfidence && top
       ? `⚠ No symbol closely matched "${hint}" — "${top.name}" is a low-confidence closest match (semantic). Refine with an exact symbol or error code to target precisely. `
       : '';
-  const summary = topCause
-    ? `${seedDisclaimer}${banner}Investigation of "${hint}" ${scope}. Top suspected cause: ${topCause.title}.`
+  const summary = headlineCause
+    ? `${seedDisclaimer}${banner}Investigation of "${hint}" ${scope}. Top suspected cause: ${headlineCause.title}.`
     : `${seedDisclaimer}${banner}Investigation of "${hint}" ${scope}. No dominant suspected cause emerged from the available ${degradedNoSource ? 'runtime' : 'structural'} evidence.`;
 
   // i. nextActions

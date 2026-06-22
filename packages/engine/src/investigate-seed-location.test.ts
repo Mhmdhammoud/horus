@@ -197,5 +197,7 @@ describe('investigate() — confidence reflects diagnosis strength (HOR-336)', (
     );
     expect(report.suspectedCauses[0]?.finalScore ?? 0).toBeLessThan(0.2);
     expect(report.confidence).toBeLessThanOrEqual(0.6);
+    // A sub-threshold cause must not headline as "Top suspected cause".
+    expect(report.summary).toContain('No dominant suspected cause');
   });
 });
