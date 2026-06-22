@@ -811,6 +811,10 @@ export async function investigate(
   let stateAnalysis: StateAnalysis | null = null;
   const stateEvIds: string[] = [];
   const stateCollections = new Set<string>();
+  // HOR-332: anomaly state signals (records stuck in a failed/stale state) are a data
+  // CAUSE class, not just a finding — many prod incidents are data, not code.
+  const dataAnomalyEvIds: string[] = [];
+  const dataAnomalyCollections: string[] = [];
 
   if (deps.mongo) {
     try {
@@ -823,6 +827,10 @@ export async function investigate(
         const ev = mkEv('state', s.title, s.payload, {}, s.timestamp, s.relevance);
         stateEvIds.push(ev.id);
         stateCollections.add(s.collection);
+        if (s.kind === 'anomaly') {
+          dataAnomalyEvIds.push(ev.id);
+          dataAnomalyCollections.push(s.collection);
+        }
       }
     } catch {
       stateAnalysis = null;
@@ -1432,6 +1440,22 @@ export async function investigate(
       title: `Runtime errors (${directTotal}${directTop ? `, top ${directTop.key}` : ''}) directly linked to the implicated queue path ${queueLabel}`,
       category: 'error-correlation',
       sourceEvidenceIds: directLogEvIds.slice(0, 3),
+      baseScore: 0.30,
+      metadata: { blastRadius },
+    });
+  }
+
+  // HOR-332: data-state anomaly cause — records stuck in a failed/stale state are a
+  // data-quality root-cause class, not just a finding. Many prod incidents are data
+  // (stale/orphaned records), not code, and Horus otherwise anchors only on code.
+  if (dataAnomalyEvIds.length > 0) {
+    const collections = [...new Set(dataAnomalyCollections)];
+    const example = collections[0];
+    causeInputs.push({
+      id: 'cause:data-state-anomaly',
+      title: `Data-state anomaly: ${collections.length} collection(s) hold records in a failed/stale state${example ? ` (e.g. ${example})` : ''} — likely a data-quality root cause`,
+      category: 'data-state-anomaly',
+      sourceEvidenceIds: dataAnomalyEvIds.slice(0, 3),
       baseScore: 0.30,
       metadata: { blastRadius },
     });
