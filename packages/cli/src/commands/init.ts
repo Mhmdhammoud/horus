@@ -2,7 +2,7 @@
  * `horus init` — write a local `.horus/config.json` for the repo and register it
  * (HOR-37, phase A). Code lives in the project's repositories; runtime connectors
  * are added to the environment afterwards. `horus index` does the same plus the
- * Axon analyze/host lifecycle.
+ * source-intelligence analyze/host lifecycle.
  */
 
 import pc from 'picocolors';

@@ -146,7 +146,7 @@ fi
 printf '\n  %s\n\n' "$(bold 'Source-intelligence host')"
 
 SOURCE_OK=0
-if command -v horus-source &>/dev/null || command -v axon &>/dev/null; then
+if command -v horus-source &>/dev/null; then
   pass "source-intelligence backend found"
   # Check if a source-intelligence host is reachable on the default port
   if curl -sf http://127.0.0.1:8420/health >/dev/null 2>&1; then

@@ -3,7 +3,6 @@ import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { horusConfigSchema, resolveEnvironment, listEnvironments, loadConfig } from './config.js';
-import { PINNED_SOURCE_VERSION } from './version.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures — source-intelligence (code index) belongs to the project's
@@ -18,7 +17,7 @@ const SINGLE_PROJECT_CONFIG = horusConfigSchema.parse({
     {
       name: 'my-api',
       repositories: [
-        { name: 'my-api', path: '/repos/my-api', axon: { hostUrl: 'http://127.0.0.1:8420' } },
+        { name: 'my-api', path: '/repos/my-api', source: { hostUrl: 'http://127.0.0.1:8420' } },
       ],
       environments: [
         {
@@ -39,14 +38,14 @@ const TWO_PROJECT_CONFIG = horusConfigSchema.parse({
     {
       name: 'api-a',
       repositories: [
-        { name: 'api-a', path: '/repos/api-a', axon: { hostUrl: 'http://127.0.0.1:8420' } },
+        { name: 'api-a', path: '/repos/api-a', source: { hostUrl: 'http://127.0.0.1:8420' } },
       ],
       environments: [{ name: 'production', connectors: {} }],
     },
     {
       name: 'api-b',
       repositories: [
-        { name: 'api-b', path: '/repos/api-b', axon: { hostUrl: 'http://127.0.0.1:8421' } },
+        { name: 'api-b', path: '/repos/api-b', source: { hostUrl: 'http://127.0.0.1:8421' } },
       ],
       environments: [{ name: 'production', connectors: {} }],
     },
@@ -59,7 +58,7 @@ const MULTI_ENV_CONFIG = horusConfigSchema.parse({
     {
       name: 'my-svc',
       repositories: [
-        { name: 'my-svc', path: '/repos/my-svc', axon: { hostUrl: 'http://127.0.0.1:8420' } },
+        { name: 'my-svc', path: '/repos/my-svc', source: { hostUrl: 'http://127.0.0.1:8420' } },
       ],
       environments: [
         { name: 'staging', connectors: {} },
@@ -76,7 +75,6 @@ const MULTI_ENV_CONFIG = horusConfigSchema.parse({
 describe('horusConfigSchema', () => {
   it('applies defaults and requires a database url', () => {
     const parsed = horusConfigSchema.parse({ database: DB });
-    expect(parsed.axon.pinnedVersion).toBe(PINNED_SOURCE_VERSION);
     expect(parsed.models.reasoning).toBe('claude-opus-4-8');
     expect(parsed.projects).toEqual([]);
   });
@@ -85,14 +83,14 @@ describe('horusConfigSchema', () => {
     expect(() => horusConfigSchema.parse({})).toThrow();
   });
 
-  it('rejects a repository with a non-url axon hostUrl', () => {
+  it('rejects a repository with a non-url source hostUrl', () => {
     expect(() =>
       horusConfigSchema.parse({
         database: DB,
         projects: [
           {
             name: 'x',
-            repositories: [{ name: 'x', path: '/x', axon: { hostUrl: 'not-a-url' } }],
+            repositories: [{ name: 'x', path: '/x', source: { hostUrl: 'not-a-url' } }],
             environments: [{ name: 'prod', connectors: {} }],
           },
         ],
@@ -170,14 +168,14 @@ describe('resolveEnvironment', () => {
     expect(renv.readOnly).toBe(true);
   });
 
-  it('resolves the project repositories with their Axon hosts (compat)', () => {
+  it('resolves the project repositories with their source-intelligence hosts', () => {
     const renv = resolveEnvironment(SINGLE_PROJECT_CONFIG);
     expect(renv.repositories).toHaveLength(1);
     expect(renv.repositories[0]?.name).toBe('my-api');
-    expect(renv.repositories[0]?.axonHostUrl).toBe('http://127.0.0.1:8420');
+    expect(renv.repositories[0]?.sourceHostUrl).toBe('http://127.0.0.1:8420');
   });
 
-  // HOR-137: source.hostUrl migration shim
+  // HOR-137: source.hostUrl is the canonical config key
   it('accepts source.hostUrl as the canonical config key (HOR-137)', () => {
     const cfg = horusConfigSchema.parse({
       database: DB,
@@ -193,36 +191,6 @@ describe('resolveEnvironment', () => {
     });
     const renv = resolveEnvironment(cfg);
     expect(renv.repositories[0]?.sourceHostUrl).toBe('http://127.0.0.1:8420');
-    expect(renv.repositories[0]?.axonHostUrl).toBe('http://127.0.0.1:8420');
-  });
-
-  it('promotes axon.hostUrl to sourceHostUrl for backwards compatibility (HOR-137)', () => {
-    const renv = resolveEnvironment(SINGLE_PROJECT_CONFIG);
-    // axon.hostUrl (legacy) sets both sourceHostUrl and axonHostUrl.
-    expect(renv.repositories[0]?.sourceHostUrl).toBe('http://127.0.0.1:8420');
-    expect(renv.repositories[0]?.axonHostUrl).toBe('http://127.0.0.1:8420');
-  });
-
-  it('source.hostUrl takes priority over axon.hostUrl when both are present (HOR-137)', () => {
-    const cfg = horusConfigSchema.parse({
-      database: DB,
-      projects: [
-        {
-          name: 'my-api',
-          repositories: [
-            {
-              name: 'my-api',
-              path: '/repos/my-api',
-              source: { hostUrl: 'http://127.0.0.1:9000' },
-              axon: { hostUrl: 'http://127.0.0.1:8420' },
-            },
-          ],
-          environments: [{ name: 'production', connectors: {} }],
-        },
-      ],
-    });
-    const renv = resolveEnvironment(cfg);
-    expect(renv.repositories[0]?.sourceHostUrl).toBe('http://127.0.0.1:9000');
   });
 
   it('throws when project is unknown', () => {
@@ -240,7 +208,7 @@ describe('resolveEnvironment', () => {
   it('selects the named project when --project is given', () => {
     const renv = resolveEnvironment(TWO_PROJECT_CONFIG, { project: 'api-b' });
     expect(renv.project).toBe('api-b');
-    expect(renv.repositories[0]?.axonHostUrl).toBe('http://127.0.0.1:8421');
+    expect(renv.repositories[0]?.sourceHostUrl).toBe('http://127.0.0.1:8421');
   });
 
   it('infers the project from the cwd repository when multiple projects + no --project', () => {
@@ -261,13 +229,13 @@ describe('resolveEnvironment', () => {
     expect(renv.env).toBe('production');
   });
 
-  it('keeps the same project-scoped Axon across environments', () => {
-    // Code belongs to the project, so the repository's Axon is the same in any env.
+  it('keeps the same project-scoped source-intelligence host across environments', () => {
+    // Code belongs to the project, so the repository's source host is the same in any env.
     const staging = resolveEnvironment(MULTI_ENV_CONFIG, { env: 'staging' });
     const prod = resolveEnvironment(MULTI_ENV_CONFIG, { env: 'production' });
     expect(staging.env).toBe('staging');
-    expect(staging.repositories[0]?.axonHostUrl).toBe('http://127.0.0.1:8420');
-    expect(prod.repositories[0]?.axonHostUrl).toBe('http://127.0.0.1:8420');
+    expect(staging.repositories[0]?.sourceHostUrl).toBe('http://127.0.0.1:8420');
+    expect(prod.repositories[0]?.sourceHostUrl).toBe('http://127.0.0.1:8420');
   });
 
   it('throws when env is unknown', () => {
@@ -329,7 +297,7 @@ describe('horusConfigSchema — elasticsearch preset + fields (HOR-47)', () => {
       projects: [
         {
           name: 'x',
-          repositories: [{ name: 'x', path: '/x', axon: { hostUrl: 'http://localhost' } }],
+          repositories: [{ name: 'x', path: '/x', source: { hostUrl: 'http://localhost' } }],
           environments: [
             {
               name: 'production',
@@ -348,7 +316,7 @@ describe('horusConfigSchema — elasticsearch preset + fields (HOR-47)', () => {
       projects: [
         {
           name: 'x',
-          repositories: [{ name: 'x', path: '/x', axon: { hostUrl: 'http://localhost' } }],
+          repositories: [{ name: 'x', path: '/x', source: { hostUrl: 'http://localhost' } }],
           environments: [
             {
               name: 'production',
@@ -370,7 +338,7 @@ describe('horusConfigSchema — elasticsearch preset + fields (HOR-47)', () => {
         projects: [
           {
             name: 'x',
-            repositories: [{ name: 'x', path: '/x', axon: { hostUrl: 'http://localhost' } }],
+            repositories: [{ name: 'x', path: '/x', source: { hostUrl: 'http://localhost' } }],
             environments: [
               {
                 name: 'production',
@@ -391,7 +359,7 @@ describe('horusConfigSchema — elasticsearch preset + fields (HOR-47)', () => {
       projects: [
         {
           name: 'x',
-          repositories: [{ name: 'x', path: '/x', axon: { hostUrl: 'http://localhost' } }],
+          repositories: [{ name: 'x', path: '/x', source: { hostUrl: 'http://localhost' } }],
           environments: [
             {
               name: 'production',
@@ -419,7 +387,7 @@ describe('horusConfigSchema — elasticsearch preset + fields (HOR-47)', () => {
       projects: [
         {
           name: 'x',
-          repositories: [{ name: 'x', path: '/x', axon: { hostUrl: 'http://localhost' } }],
+          repositories: [{ name: 'x', path: '/x', source: { hostUrl: 'http://localhost' } }],
           environments: [
             {
               name: 'production',
@@ -462,7 +430,7 @@ describe('resolveEnvironment — elasticsearch fields forwarded (HOR-47)', () =>
       projects: [
         {
           name: 'x',
-          repositories: [{ name: 'x', path: '/x', axon: { hostUrl: 'http://localhost' } }],
+          repositories: [{ name: 'x', path: '/x', source: { hostUrl: 'http://localhost' } }],
           environments: [
             {
               name: 'production',
@@ -491,7 +459,7 @@ describe('resolveEnvironment — elasticsearch fields forwarded (HOR-47)', () =>
       projects: [
         {
           name: 'x',
-          repositories: [{ name: 'x', path: '/x', axon: { hostUrl: 'http://localhost' } }],
+          repositories: [{ name: 'x', path: '/x', source: { hostUrl: 'http://localhost' } }],
           environments: [
             {
               name: 'production',
@@ -625,13 +593,13 @@ describe('parseConfig — actionable validation errors (HOR-102)', () => {
     }
   });
 
-  it('invalid axon hostUrl shows example URL with port hint', async () => {
+  it('invalid source hostUrl shows example URL with port hint', async () => {
     const configPath = join(tmpdir(), `horus-valtest-${Math.random().toString(36).slice(2)}.js`);
     writeFileSync(configPath, `export default {
   database: { url: "postgresql://horus:horus@localhost:5433/horus" },
   projects: [{
     name: "x",
-    repositories: [{ name: "x", path: "/x", axon: { hostUrl: "not-a-url" } }],
+    repositories: [{ name: "x", path: "/x", source: { hostUrl: "not-a-url" } }],
     environments: [{ name: "prod", connectors: {} }],
   }],
 };\n`);

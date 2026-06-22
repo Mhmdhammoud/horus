@@ -48,7 +48,7 @@ function looksLikeFilePath(query: string): boolean {
  * Estimate who likely owns a component by searching for the closest symbol and
  * examining its file's git commit history.
  *
- * Pass `deps.symbol` to reuse an already-resolved seed and skip the Axon search.
+ * Pass `deps.symbol` to reuse an already-resolved seed and skip the source-intelligence search.
  */
 export async function estimateOwnership(
   query: string,

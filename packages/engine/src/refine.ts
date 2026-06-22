@@ -296,7 +296,7 @@ function applyTextFilter(
 
 /**
  * Apply a follow-up directive to a persisted investigation report and return
- * a filtered view. Never re-queries Axon or any connector — only the data
+ * a filtered view. Never re-queries source intelligence or any connector — only the data
  * already in `r` is used.
  */
 export function refineInvestigation(

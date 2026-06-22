@@ -1,145 +1,31 @@
 #!/usr/bin/env bash
-# Branding regression check (HOR-119, extended HOR-144)
+# Branding regression check (HOR-119, extended HOR-144, finalized HOR-139)
 #
-# Checks user-visible CLI output strings, Commander help text, and user-facing
-# docs for disallowed "Axon" branding. Run this before any release to catch
-# accidental regressions.
+# The legacy upstream name (the one this guard searches for) has been fully
+# removed; the canonical name is "source" / "Source" / "SOURCE". This guard
+# fails if ANY case-insensitive trace of the old name reappears anywhere in the
+# tracked source tree. Run it before a release to catch accidental regressions.
 #
-# Exit 0 = clean
+# Exit 0 = clean (no legacy-name trace anywhere)
 # Exit 1 = violations found (list printed to stdout)
-#
-# Full categorized allowlist: docs/axon-allowlist.md
-#
-# Short allowlist (intentional references — never flag these):
-#   - "axon host <...>"      the external CLI binary command users must run
-#   - "axon analyze <...>"   the external CLI binary command for repo indexing
-#   - "axon serve"           the external CLI binary command for MCP mode
-#   - "'axon' not found"     binary availability check error message
-#   - "`axon` not found"     same, backtick variant
-#   - ".axon/"               on-disk directory created by the axon binary
-#   - "--axon"               the --axon <url> CLI flag (config key cannot be renamed yet)
-#   - "axon --version"       binary version probe
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
 
-# Surfaces to check: user-visible output strings and Commander API calls.
-# We target specific patterns rather than whole files to avoid flagging
-# code comments, type names, and test describe blocks.
-CLI_COMMANDS="$REPO_ROOT/packages/cli/src/commands"
-CLI_INDEX="$REPO_ROOT/packages/cli/src/index.ts"
+# Build the legacy term from fragments so the literal string never appears in
+# this file (otherwise this guard would flag itself).
+LEGACY_TERM="a$(printf 'x')on"
 
-# Patterns that constitute user-visible output or help text in TypeScript source.
-USER_VISIBLE_PATTERN='(console\.(log|error|warn)|pc\.|\.description\(|\.option\(|\.addHelpText\(|\.argument\()'
-
-violations=0
-violation_lines=()
-
-# Search user-visible lines for capital-A Axon used as a brand noun.
-# We look for "Axon" followed by a space or word boundary that indicates it is
-# being used as a product label (e.g. "Axon host unreachable", "an Axon host").
-while IFS= read -r match; do
-  file="${match%%:*}"
-  rest="${match#*:}"
-  linenum="${rest%%:*}"
-  text="${rest#*:}"
-
-  # Skip lines where Axon appears only as an allowlisted reference.
-  # (These checks use grep -qE on the text to match known-safe patterns.)
-
-  # CLI binary invocations: "axon host", "axon analyze", "axon serve", "axon --version"
-  if echo "$text" | grep -qiE '(axon host|axon analyze|axon serve|axon --version)'; then
-    continue
-  fi
-
-  # Binary availability check: "'axon' not found" or "`axon` not found"
-  if echo "$text" | grep -qiE "(['\`]axon['\`]) (not found|is)"; then
-    continue
-  fi
-
-  # CLI flag reference: --axon
-  if echo "$text" | grep -qiE '(--axon|pass --axon)'; then
-    continue
-  fi
-
-  # On-disk directory or file created by the axon binary (.axon/ .axon present, etc.)
-  if echo "$text" | grep -qiE '\.axon\b'; then
-    continue
-  fi
-
-  # Config property access: repo.axon.hostUrl — the value is a URL, not "Axon" branding
-  if echo "$text" | grep -qiE '\baxon\.(hostUrl|version|port)\b|\brepo\.axon\b'; then
-    continue
-  fi
-
-  violations=$((violations + 1))
-  violation_lines+=("  $file:$linenum: $text")
-done < <(
-  grep -rn --include="*.ts" -E "$USER_VISIBLE_PATTERN" "$CLI_COMMANDS" "$CLI_INDEX" 2>/dev/null \
-  | grep -iE '\bAxon\b'
-)
-
-# ── user-facing docs surface check ───────────────────────────────────────────
-# Scan the canonical user-facing docs for capital-A "Axon" as a product brand.
-# Internal developer docs (architecture.md, source-intelligence-boundary.md,
-# source-compat-checklist.md, v0.1-readiness-gate.md, cli-exit-codes.md) are
-# intentionally excluded — they document the compatibility boundary itself.
-# See docs/axon-allowlist.md §8 for the full list of excluded internal docs.
-DOCS_USER_FACING=(
-  "$REPO_ROOT/README.md"
-  "$REPO_ROOT/docs/install.md"
-  "$REPO_ROOT/docs/connector-setup.md"
-  "$REPO_ROOT/docs/demo.md"
-  "$REPO_ROOT/docs/troubleshooting.md"
-  "$REPO_ROOT/docs/provider-setup.md"
-)
-
-while IFS= read -r match; do
-  file="${match%%:*}"
-  rest="${match#*:}"
-  linenum="${rest%%:*}"
-  text="${rest#*:}"
-
-  # CLI binary invocations: "axon host", "axon analyze", "axon serve", "axon --version"
-  if echo "$text" | grep -qiE '(axon host|axon analyze|axon serve|axon --version)'; then
-    continue
-  fi
-  # CLI flag reference: --axon
-  if echo "$text" | grep -qiE '(--axon|pass --axon)'; then
-    continue
-  fi
-  # On-disk directory or file created by the axon binary
-  if echo "$text" | grep -qiE '\.axon\b'; then
-    continue
-  fi
-  # Config property access: axon.hostUrl, axon.pinnedVersion, repo.axon
-  if echo "$text" | grep -qiE '\baxon\.(hostUrl|version|port|pinnedVersion)\b|\brepo\.axon\b'; then
-    continue
-  fi
-  violations=$((violations + 1))
-  violation_lines+=("  $file:$linenum: $text")
-done < <(
-  # Case-sensitive: only flag capital-A "Axon" brand usage; lowercase "axon" in
-  # code blocks (binary name) is intentional and should never be flagged in docs.
-  grep -n -E '\bAxon\b' "${DOCS_USER_FACING[@]}" 2>/dev/null
-)
-
-if [[ $violations -eq 0 ]]; then
-  echo "✓ No disallowed Axon branding in user-visible CLI and doc surfaces"
-  exit 0
+# Search the whole repo, excluding build artifacts and vendored deps.
+if matches="$(rg -i --line-number "${LEGACY_TERM}" \
+  -g '!node_modules' -g '!dist' -g '!build' -g '!*.lock' . 2>/dev/null)"; then
+  echo "✗ Disallowed legacy branding found — the name is 'source', not the old upstream:"
+  echo ""
+  echo "$matches"
+  exit 1
 fi
 
-echo "✗ Disallowed Axon branding found ($violations occurrence(s)):"
-echo ""
-for v in "${violation_lines[@]}"; do
-  echo "$v"
-done
-echo ""
-echo "Full allowlist: docs/axon-allowlist.md"
-echo "Short allowlist (always safe to use):"
-echo "  axon host / axon analyze / axon serve  — CLI binary commands"
-echo "  'axon' / \`axon\` not found              — binary name in error messages"
-echo "  --axon <url>                            — config flag (cannot rename yet)"
-echo "  .axon/ directory                        — on-disk artifact of the axon binary"
-exit 1
+echo "✓ No legacy branding traces remain"
+exit 0

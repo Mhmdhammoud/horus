@@ -2,7 +2,7 @@
  * Git history provider for @horus/connectors (HOR-22).
  * Shells out to `git` via node:child_process execFile — this is intentional and
  * expected for the history connector (the "no CLI shell-out" rule only applies
- * to Axon queries). See architecture.md §2.2.
+ * to source-intelligence queries). See architecture.md §2.2.
  */
 
 import { execFile } from 'node:child_process';

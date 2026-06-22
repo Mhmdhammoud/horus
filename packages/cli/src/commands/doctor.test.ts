@@ -60,7 +60,7 @@ describe('runDoctor', () => {
         project: {
           name: 'test-project',
           repositories: [
-            { name: 'test-project', path: root, axon: { hostUrl: 'http://127.0.0.1:8420' } },
+            { name: 'test-project', path: root, source: { hostUrl: 'http://127.0.0.1:8420' } },
           ],
           environments: [{ name: 'production', readOnly: true, connectors: {} }],
         },
@@ -95,7 +95,7 @@ describe('runDoctor', () => {
         version: 1,
         project: {
           name: 'test-project',
-          repositories: [{ name: 'test-project', path: root }], // no axon
+          repositories: [{ name: 'test-project', path: root }], // no source
           environments: [{ name: 'production', readOnly: true, connectors: {} }],
         },
       }),
@@ -389,7 +389,7 @@ describe('runDoctor — fix hints (HOR-100)', () => {
         version: 1,
         project: {
           name: 'test-project',
-          repositories: [{ name: 'test-project', path: root }], // no axon
+          repositories: [{ name: 'test-project', path: root }], // no source
           environments: [{ name: 'production', readOnly: true, connectors: {} }],
         },
       }),

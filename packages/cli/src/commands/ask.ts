@@ -27,8 +27,8 @@ import { reportCloudError } from './context.js';
  *   - Topic filter (fallback): "queue", "retry", "ignore deployment" → a refined
  *     view scoped to that topic.
  *
- * Either way it reuses the persisted report's evidence — never re-queries Axon or
- * any production connector.
+ * Either way it reuses the persisted report's evidence — never re-queries source
+ * intelligence or any production connector.
  */
 function renderAnswer(
   report: InvestigationReport,

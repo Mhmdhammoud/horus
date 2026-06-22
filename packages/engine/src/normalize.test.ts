@@ -113,7 +113,7 @@ describe('normalizeEvidence — database (MongoDB) provider', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Code (Axon) — source: 'code', kinds: symbol, flow, impact
+// Code (source intelligence) — source: 'code', kinds: symbol, flow, impact
 // ---------------------------------------------------------------------------
 
 describe('normalizeEvidence — code provider', () => {

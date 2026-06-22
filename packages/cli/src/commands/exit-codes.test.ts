@@ -6,7 +6,7 @@
  *   0 — success
  *   1 — known failure (not found, already exists, config error, write error)
  *
- * Tests are offline — no live Postgres, no API calls, no Axon host.
+ * Tests are offline — no live Postgres, no API calls, no source-intelligence host.
  *
  * Pattern: heavy infrastructure (loadConfig, createDb, getInvestigation) is
  * mocked at the module level. File-system calls in `runInit` are real, using
@@ -111,7 +111,7 @@ describe('runInit exit codes', () => {
 
   it('exits 0 regardless of missing source-intelligence host (optional — not a failure)', async () => {
     const dir = makeTempDir();
-    const code = await runInit({ name: 'exit-test-no-axon', path: dir });
+    const code = await runInit({ name: 'exit-test-no-source', path: dir });
     expect(code).toBe(0);
   });
 

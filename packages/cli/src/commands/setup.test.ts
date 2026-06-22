@@ -30,7 +30,7 @@ vi.mock('@horus/core', async (importOriginal) => {
   return {
     ...actual,
     loadConfig: vi.fn(),
-    PINNED_SOURCE_VERSION: '1.1.1',
+    PINNED_SOURCE_VERSION: '1.0.1',
   };
 });
 
@@ -52,16 +52,15 @@ const MockSourceHttpClient = vi.mocked(SourceHttpClient as unknown as new (...ar
 
 const PASSING_DB = { reachable: true, schemaReady: true, schemaDetail: '8 tables' } as Awaited<ReturnType<typeof checkDatabase>>;
 
-const REPO_AXON_CONFIG = {
+const REPO_SOURCE_CONFIG = {
   name: 'my-repo',
   path: '/repos/my-repo',
   source: { hostUrl: 'http://127.0.0.1:8420' },
 };
 
 const MINIMAL_CONFIG = {
-  projects: [{ name: 'proj', repositories: [REPO_AXON_CONFIG], environments: [] }],
+  projects: [{ name: 'proj', repositories: [REPO_SOURCE_CONFIG], environments: [] }],
   database: { url: 'postgresql://horus:horus@localhost:5433/horus' },
-  axon: { pinnedVersion: '1.1.1' },
   models: { reasoning: 'claude-opus-4-8', extraction: 'claude-haiku-4-5' },
 } as unknown as Awaited<ReturnType<typeof loadConfig>>;
 
@@ -75,7 +74,7 @@ function makeSourceClient(health: { ok: boolean }, nodeCount = 42) {
 beforeEach(() => {
   vi.clearAllMocks();
   // Default happy-path mocks
-  mockGetSourceVersion.mockResolvedValue('1.1.1');
+  mockGetSourceVersion.mockResolvedValue('1.0.1');
   mockCheckDatabase.mockResolvedValue(PASSING_DB);
   mockLoadConfig.mockResolvedValue(MINIMAL_CONFIG);
   MockSourceHttpClient.mockImplementation(
@@ -112,10 +111,10 @@ describe('runSetup — all prerequisites met', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Axon binary missing
+// source-intelligence binary missing
 // ---------------------------------------------------------------------------
 
-describe('runSetup — Axon binary not found', () => {
+describe('runSetup — source-intelligence binary not found', () => {
   beforeEach(() => {
     mockGetSourceVersion.mockResolvedValue(null);
   });
@@ -133,10 +132,10 @@ describe('runSetup — Axon binary not found', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Axon binary version mismatch
+// source-intelligence binary version mismatch
 // ---------------------------------------------------------------------------
 
-describe('runSetup — Axon binary version mismatch', () => {
+describe('runSetup — source-intelligence binary version mismatch', () => {
   beforeEach(() => {
     mockGetSourceVersion.mockResolvedValue('0.9.0');
   });
@@ -203,10 +202,10 @@ describe('runSetup — Postgres reachable but schema missing', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Axon host unreachable (running host, not binary)
+// source-intelligence host unreachable (running host, not binary)
 // ---------------------------------------------------------------------------
 
-describe('runSetup — Axon host unreachable', () => {
+describe('runSetup — source-intelligence host unreachable', () => {
   beforeEach(() => {
     MockSourceHttpClient.mockImplementation(
       () => makeSourceClient({ ok: false }, 0) as ReturnType<typeof makeSourceClient>,
@@ -233,10 +232,10 @@ describe('runSetup — Axon host unreachable', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Axon host running but repo not indexed
+// source-intelligence host running but repo not indexed
 // ---------------------------------------------------------------------------
 
-describe('runSetup — Axon host running but repo not indexed', () => {
+describe('runSetup — source-intelligence host running but repo not indexed', () => {
   beforeEach(() => {
     MockSourceHttpClient.mockImplementation(
       () => makeSourceClient({ ok: true }, 0) as ReturnType<typeof makeSourceClient>,
@@ -257,7 +256,7 @@ describe('runSetup — Axon host running but repo not indexed', () => {
 });
 
 // ---------------------------------------------------------------------------
-// No config — axon host checks are skipped gracefully
+// No config — source-intelligence host checks are skipped gracefully
 // ---------------------------------------------------------------------------
 
 describe('runSetup — no config available', () => {
@@ -269,7 +268,7 @@ describe('runSetup — no config available', () => {
     await expect(captureOutput((write) => runSetup({ write }))).resolves.not.toThrow();
   });
 
-  it('still performs Axon binary and Postgres checks', async () => {
+  it('still performs source-intelligence binary and Postgres checks', async () => {
     const { lines } = await captureOutput((write) => runSetup({ write }));
     const output = lines.join('\n');
     expect(output).toContain('source-intelligence backend');
@@ -278,22 +277,22 @@ describe('runSetup — no config available', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Repo without axon config — skipped silently
+// Repo without source config — skipped silently
 // ---------------------------------------------------------------------------
 
-describe('runSetup — repo without axon config', () => {
+describe('runSetup — repo without source config', () => {
   beforeEach(() => {
     mockLoadConfig.mockResolvedValue({
       ...MINIMAL_CONFIG,
       projects: [{
         name: 'proj',
-        repositories: [{ name: 'no-axon', path: '/repos/no-axon' }],
+        repositories: [{ name: 'no-source', path: '/repos/no-source' }],
         environments: [],
       }],
     } as unknown as Awaited<ReturnType<typeof loadConfig>>);
   });
 
-  it('exits 0 (no axon checks to fail)', async () => {
+  it('exits 0 (no source checks to fail)', async () => {
     const { code } = await captureOutput((write) => runSetup({ write }));
     expect(code).toBe(0);
   });

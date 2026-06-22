@@ -49,24 +49,24 @@ async function checkEnv(
 
   let allOk = true;
 
-  // Axon — code intelligence, belongs to the project's repositories.
+  // Source intelligence — code intelligence, belongs to the project's repositories.
   if (renv.repositories.length === 0) {
     console.log(
       `    ${mark('pending')} ${pc.bold('Source')}          ${pc.dim('no repositories configured')}`,
     );
   }
   for (const repo of renv.repositories) {
-    const axonHostUrl = repo.sourceHostUrl ?? repo.axonHostUrl;
-    if (!axonHostUrl) {
+    const sourceHostUrl = repo.sourceHostUrl;
+    if (!sourceHostUrl) {
       console.log(
         `    ${mark('pending')} ${pc.bold('Source')}          ${pc.dim(`${repo.name}: not configured`)}`,
       );
       continue;
     }
-    const axon = new SourceHttpClient({ baseUrl: axonHostUrl });
+    const source = new SourceHttpClient({ baseUrl: sourceHostUrl });
     const [health, compat] = await Promise.all([
-      axon.health(),
-      checkSourceCompatibility(axon),
+      source.health(),
+      checkSourceCompatibility(source),
     ]);
 
     let versionPart: string;
@@ -78,11 +78,11 @@ async function checkEnv(
       versionPart = `v${compat.version} (pinned ${compat.pinned} — MISMATCH)`;
     }
 
-    const axonDetail = health.ok
-      ? `${repo.name} · responded ${health.status} · ${versionPart} at ${axonHostUrl}`
-      : `${repo.name} · unreachable at ${axonHostUrl}`;
+    const sourceDetail = health.ok
+      ? `${repo.name} · responded ${health.status} · ${versionPart} at ${sourceHostUrl}`
+      : `${repo.name} · unreachable at ${sourceHostUrl}`;
     console.log(
-      `    ${mark(health.ok)} ${pc.bold('Source')}          ${pc.dim(axonDetail)}`,
+      `    ${mark(health.ok)} ${pc.bold('Source')}          ${pc.dim(sourceDetail)}`,
     );
     if (!health.ok) allOk = false;
   }

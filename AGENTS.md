@@ -105,23 +105,19 @@ packages/engine
 
 ---
 
-## HOR-AXON
+## HOR-SOURCE
 
 Owns:
 
 - repository indexing
 - source intelligence
 - queue stitching
-- Axon integration
-- MCP integration
-- host lifecycle
 
 Packages:
 
 ```text
 packages/stitcher
 packages/core
-Axon integration layer
 ```
 
 ---

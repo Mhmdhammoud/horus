@@ -3,11 +3,11 @@
  * HOR-212 — AI contract and prompt shape tests.
  *
  * Three canonical states:
- *   1. ready       — DB pass, Axon at pinned version, ES configured → exit 0, "Ready"
- *   2. partial     — DB pass, Axon missing, no global config → exit 0, warns about optional
+ *   1. ready       — DB pass, source intelligence at pinned version, ES configured → exit 0, "Ready"
+ *   2. partial     — DB pass, source intelligence missing, no global config → exit 0, warns about optional
  *   3. blocking    — DB unreachable → exit 1, "Not ready"
  *
- * All checks are injected; no live DB, Axon, or connector probes.
+ * All checks are injected; no live DB, source intelligence, or connector probes.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -35,7 +35,7 @@ const DB_NOT_REACHABLE: DbHealth = { reachable: false, reachableDetail: 'unreach
 const DB_SCHEMA_MISSING: DbHealth = { reachable: true, reachableDetail: 'connected', schemaReady: false, schemaDetail: 'connected, no schema' };
 
 function makeConfig(opts: {
-  axonUrl?: string;
+  sourceUrl?: string;
   elasticsearch?: boolean;
   grafana?: boolean;
   mongodb?: boolean;
@@ -56,7 +56,7 @@ function makeConfig(opts: {
           {
             name: 'test-repo',
             path: '/tmp/test-repo',
-            ...(opts.axonUrl ? { axon: { hostUrl: opts.axonUrl } } : {}),
+            ...(opts.sourceUrl ? { source: { hostUrl: opts.sourceUrl } } : {}),
           },
         ],
         environments: [
@@ -77,13 +77,13 @@ function makeConfig(opts: {
 // ---------------------------------------------------------------------------
 
 describe('horus readiness — fully ready', () => {
-  it('exits 0 when DB passes and Axon is at pinned version', async () => {
+  it('exits 0 when DB passes and source intelligence is at pinned version', async () => {
     const { out, write } = capture();
     const code = await runReadiness({
       write,
       _dbCheck: async () => DB_PASS,
       _sourceVersion: async () => PINNED_SOURCE_VERSION,
-      _loadConfig: async () => makeConfig({ axonUrl: 'http://localhost:8420', elasticsearch: true }),
+      _loadConfig: async () => makeConfig({ sourceUrl: 'http://localhost:8420', elasticsearch: true }),
     });
     expect(code).toBe(0);
     expect(lines(out)).toContain('Ready');
@@ -113,7 +113,7 @@ describe('horus readiness — fully ready', () => {
     expect(output).toContain('v7 (7 tables)');
   });
 
-  it('marks Axon backend as pass when version matches pinned', async () => {
+  it('marks source-intelligence backend as pass when version matches pinned', async () => {
     const { out, write } = capture();
     await runReadiness({
       write,
@@ -168,7 +168,7 @@ describe('horus readiness — partial (DB pass, optional items missing)', () => 
     expect(lines(out)).toContain('optional item');
   });
 
-  it('shows Axon version mismatch as warn', async () => {
+  it('shows source-intelligence version mismatch as warn', async () => {
     const { out, write } = capture();
     await runReadiness({
       write,
@@ -181,7 +181,7 @@ describe('horus readiness — partial (DB pass, optional items missing)', () => 
     expect(output).toContain(PINNED_SOURCE_VERSION);
   });
 
-  it('Axon not installed — shows install hint', async () => {
+  it('source intelligence not installed — shows install hint', async () => {
     const { out, write } = capture();
     await runReadiness({
       write,
@@ -203,7 +203,7 @@ describe('horus readiness — partial (DB pass, optional items missing)', () => 
     expect(lines(out)).toContain('generate-config');
   });
 
-  it('no Axon host URL in config — shows warn for Repo / Axon host', async () => {
+  it('no source host URL in config — shows warn for Repo / Source host', async () => {
     const { out, write } = capture();
     await runReadiness({
       write,

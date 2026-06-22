@@ -6,7 +6,7 @@
 
 /** Which kind of system produced a piece of evidence. */
 export type ProviderKind =
-  | 'code' // Axon
+  | 'code' // source intelligence
   | 'logs' // Elasticsearch
   | 'metrics' // Prometheus
   | 'state' // Redis / MongoDB
@@ -31,7 +31,7 @@ export type EvidenceCategory =
   | 'database'   // MongoDB state anomalies
   | 'cache'      // Redis, Memcached — in-memory key/value state
   | 'logs'       // Elasticsearch error patterns
-  | 'code'       // Axon symbols, flows, impact blast-radius
+  | 'code'       // source-intelligence symbols, flows, impact blast-radius
   | 'deployment' // Git commits
   | 'metrics'    // Grafana time-series
   | 'other';

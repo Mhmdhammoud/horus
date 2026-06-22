@@ -24,10 +24,10 @@
 #
 # Expected output (all lines should show ✓):
 #   ✓ curl install exited 0                        (--install only)
-#   ✓ installer output does not identify product as Axon  (--install only)
+#   ✓ installer output identifies the product as "horus"  (--install only)
 #   ✓ horus is on PATH
 #   ✓ --version exits 0
-#   ✓ --version shows "horus" (not Axon)
+#   ✓ --version shows "horus"
 #   ✓ --version shows semver
 #   ✓ --version shows expected version (if HORUS_EXPECTED_VERSION is set)
 #   ✓ --help exits 0
@@ -124,15 +124,12 @@ if [ "${INSTALL_MODE}" -eq 1 ]; then
     fail_check "curl install failed (non-zero exit)"
   fi
 
-  # Installer must not identify Axon as the product being installed.
-  # axoniq (the optional source-intelligence backend PyPI package) is expected and allowed.
-  # Use word-boundary match so "axoniq" is not caught (\baxon\b requires a non-word char
-  # or string boundary after "axon"; the "i" in "axoniq" provides no such boundary).
-  if grep -qiE '\baxon\b' "${INSTALL_OUTPUT}"; then
-    fail_check "installer output identifies product as 'Axon' — branding leak"
-    warn "  Found: $(grep -iE '\baxon\b' "${INSTALL_OUTPUT}" | head -3)"
+  # Installer must identify the product being installed as "horus".
+  if grep -qiE '\bhorus\b' "${INSTALL_OUTPUT}"; then
+    ok "installer output identifies the product as 'horus'"
   else
-    ok "installer output does not identify product as Axon"
+    fail_check "installer output does not identify the product as 'horus' — branding leak"
+    warn "  Output head: $(head -3 "${INSTALL_OUTPUT}")"
   fi
 
   rm -f "${INSTALL_OUTPUT}"
@@ -206,8 +203,6 @@ check_not_contains() {
 check_exit0       "--version exits 0"                            --version
 check_contains    "--version shows 'horus'"        "horus"       --version
 check_contains    "--version shows semver"          "0."          --version
-# The CLI must not identify itself as Axon in version output.
-check_not_contains "--version does not show 'Axon'" "Axon"       --version
 # Optional: verify an exact version string (useful in CI after a release).
 if [ -n "${HORUS_EXPECTED_VERSION:-}" ]; then
   check_contains "--version shows expected version (${HORUS_EXPECTED_VERSION})" \
@@ -222,7 +217,6 @@ check_contains    "--help lists setup"        "setup"            --help
 check_contains    "--help lists index"        "index"            --help
 check_contains    "--help lists connect"      "connect"          --help
 # The usage line must name the installed CLI as "horus".
-# Backend references such as "Stop the Axon host" are not product branding.
 check_contains "--help usage line names product 'horus'" "Usage: horus" --help
 
 # ── 5. sub-command help ──────────────────────────────────────────────────────
@@ -285,7 +279,7 @@ check_contains "setup prints header" "Horus setup"              setup
 #
 # Run `horus init` in a fresh temp directory with no pre-existing .horus config.
 # Verifies the command creates a config and exits non-zero only on genuine errors,
-# not on normal "no Axon host" state. We pass --path so the command doesn't
+# not on normal "no source-intelligence host" state. We pass --path so the command doesn't
 # scan up to the real monorepo root.
 
 _init_tmpdir="$(mktemp -d)"

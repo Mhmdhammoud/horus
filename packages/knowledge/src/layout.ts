@@ -1,7 +1,7 @@
 /**
  * On-disk layout for the local knowledge index (HOR-291).
  *
- * Lives under the repo's `.horus/` directory, alongside `source/` (Axon) and
+ * Lives under the repo's `.horus/` directory, alongside `source/` and
  * `config.json`:
  *
  *   .horus/index/
@@ -11,7 +11,7 @@
  *     domain-concepts.json  # derived view: domainConcepts
  *     data-flows.json       # derived view: dataFlows
  *     runtime-map.json      # derived view: runtimeComponents + externalIntegrations
- *     source-index.json     # optional pointer/summary into Axon source intelligence
+ *     source-index.json     # optional pointer/summary into source intelligence
  *     index.db              # OPTIONAL (v2) SQLite for fast/semantic lookup
  *
  * The split view files are human-readable, git-diffable projections for

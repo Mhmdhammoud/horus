@@ -93,7 +93,7 @@ export const hypotheses = pgTable(
 );
 
 /**
- * The queue-boundary graph the stitcher synthesizes — the one thing Axon can't do.
+ * The queue-boundary graph the stitcher synthesizes — the one thing source intelligence can't do.
  * Denormalized on purpose: one row pairs a producer with the worker that consumes the
  * same queue, so "which worker consumes this queue?" is a single lookup. Either side
  * may be null when only one end is discovered. Normalize later if needed.
@@ -119,7 +119,7 @@ export const queueEdges = pgTable(
 );
 
 /**
- * Response cache for expensive provider calls (Axon, Elasticsearch, Prometheus, Git).
+ * Response cache for expensive provider calls (source intelligence, Elasticsearch, Prometheus, Git).
  * Keyed by (provider, cache_key); `expires_at` drives TTL eviction.
  */
 export const providerCache = pgTable(

@@ -5,7 +5,7 @@
  * HOR-34: The primary API is now environment-scoped (`codeForEnv`, `logsForEnv`,
  * `metricsForEnv`). The old global helpers (`codeForRepo`, `logsProviderFromConfig`,
  * `metricsProviderFromConfig`, `repoProviders`, `createConnectors`,
- * `axonHostUrlForRepo`) are kept as thin compat wrappers so existing commands compile
+ * `sourceHostUrlForRepo`) are kept as thin compat wrappers so existing commands compile
  * unchanged.
  */
 
@@ -17,7 +17,7 @@ import type {
   RedisRole,
 } from '@horus/core';
 import { resolveEnvironment, redisUrlForDb, REDIS_QUEUE_ROLES } from '@horus/core';
-import { SourceHttpClient, SourceCodeProvider } from './axon/source-boundary.js';
+import { SourceHttpClient, SourceCodeProvider } from './source/index.js';
 import type { CodeProvider } from './contract.js';
 import { ElasticsearchClient } from './elasticsearch/client.js';
 import { ElasticsearchLogsProvider } from './elasticsearch/provider.js';
@@ -48,7 +48,7 @@ import { RedisStateRuntimeProvider } from './redis/state-provider.js';
  */
 export function codeForEnv(renv: ResolvedEnvironment): CodeProvider | null {
   const repo = renv.repositories[0];
-  const hostUrl = repo?.sourceHostUrl ?? repo?.axonHostUrl;
+  const hostUrl = repo?.sourceHostUrl;
   if (!hostUrl) return null;
   return new SourceCodeProvider(new SourceHttpClient({ baseUrl: hostUrl }));
 }
@@ -194,11 +194,11 @@ export interface Connectors {
 // ---------------------------------------------------------------------------
 
 /**
- * Return a `CodeProvider` wired to the Axon host for a specific project (or the
- * default/single project when `repoName` is omitted). `repoName` maps 1:1 to a
+ * Return a `CodeProvider` wired to the source-intelligence host for a specific project
+ * (or the default/single project when `repoName` is omitted). `repoName` maps 1:1 to a
  * project name via `resolveEnvironment`.
  *
- * Throws when no Axon connector is configured for the resolved environment.
+ * Throws when no source connector is configured for the resolved environment.
  */
 export function codeForRepo(config: HorusConfig, repoName?: string): CodeProvider {
   const renv = resolveEnvironment(config, { project: repoName });
@@ -212,23 +212,18 @@ export function codeForRepo(config: HorusConfig, repoName?: string): CodeProvide
 }
 
 /**
- * Resolve the Axon host URL for a named project (compat: was axonHostUrlForRepo).
- * Falls back to empty string when no Axon connector is configured.
+ * Resolve the source-intelligence host URL for a named project.
+ * Falls back to empty string when no source connector is configured.
  */
-export function axonHostUrlForRepo(config: HorusConfig, repoName?: string): string {
+export function sourceHostUrlForRepo(config: HorusConfig, repoName?: string): string {
   const renv = resolveEnvironment(config, { project: repoName });
   const repo = renv.repositories[0];
-  return repo?.sourceHostUrl ?? repo?.axonHostUrl ?? '';
-}
-
-/** Horus-facing delegate for axonHostUrlForRepo (HOR-136). */
-export function sourceHostUrlForRepo(config: HorusConfig, repoName?: string): string {
-  return axonHostUrlForRepo(config, repoName);
+  return repo?.sourceHostUrl ?? '';
 }
 
 /**
  * Build and return a Connectors bundle for the default (or single) project/env.
- * Throws when no Axon connector is present.
+ * Throws when no source connector is present.
  */
 export function createConnectors(config: HorusConfig): Connectors {
   return { code: codeForRepo(config) };
@@ -244,19 +239,19 @@ export interface RepoProvider {
 
 /**
  * Build a `RepoProvider` for every project in the config. Each provider is pointed
- * at the project's resolved Axon host.
+ * at the project's resolved source-intelligence host.
  */
 export function repoProviders(config: HorusConfig): RepoProvider[] {
   const out: RepoProvider[] = [];
   for (const p of config.projects) {
     const renv = resolveEnvironment(config, { project: p.name });
     for (const r of renv.repositories) {
-      const hostUrl = r.axonHostUrl ?? '';
+      const hostUrl = r.sourceHostUrl ?? '';
       out.push({
         name: r.name,
         path: r.path,
         hostUrl,
-        // A missing Axon host yields a stub that reports unreachable on health().
+        // A missing source host yields a stub that reports unreachable on health().
         code: new SourceCodeProvider(new SourceHttpClient({ baseUrl: hostUrl })),
       });
     }
