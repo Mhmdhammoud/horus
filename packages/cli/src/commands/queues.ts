@@ -65,11 +65,16 @@ export async function runQueues(
       }
       const rows = await listQueueEdges(db, { project, queueName: name });
 
-      // JSON: structured static topology (+ live state when --live).
+      // HOR-343: a named queue with no static topology is likely dynamically registered
+      // (e.g. `new Worker(enumValue)`), not unindexed — show its live state instead of
+      // dead-ending at "run horus index".
+      const showLive = opts.live || (name !== undefined && rows.length === 0);
+
+      // JSON: structured static topology (+ live state when requested or auto-enabled).
       if (opts.json) {
         const topology = topologyToJson(buildQueueMap(rows));
         const out: Record<string, unknown> = { project: project ?? null, topology };
-        if (opts.live) out['live'] = await gatherLiveState(config, rows, name);
+        if (showLive) out['live'] = await gatherLiveState(config, rows, name);
         console.log(JSON.stringify(out, null, 2));
         return 0;
       }
@@ -82,7 +87,11 @@ export async function runQueues(
       console.log('');
 
       if (rows.length === 0) {
-        console.log(pc.dim('  No queue edges indexed. Run: horus index'));
+        console.log(
+          name !== undefined
+            ? pc.dim(`  No static topology for "${name}" — it may be dynamically registered; showing live state below.`)
+            : pc.dim('  No queue edges indexed. Run: horus index'),
+        );
       } else {
         const byQueue = buildQueueMap(rows);
         printTopology(byQueue);
@@ -91,7 +100,7 @@ export async function runQueues(
       // ── Live queue state ─────────────────────────────────────────────────────
       console.log('');
 
-      if (opts.live) {
+      if (showLive) {
         await runLiveMode(config, rows, name, opts.ai ? {
           config: opts.config,
           aiModel: opts.aiModel,
