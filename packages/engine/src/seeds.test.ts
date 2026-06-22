@@ -52,6 +52,24 @@ describe('rankSeeds', () => {
     expect(executableBaseName('syncProduct')).toBeNull(); // already executable
   });
 
+  it('demotes a thin getter below the real method (HOR-337)', () => {
+    const getter: Symbol = {
+      id: 'x:getter',
+      name: 'shopifyClientId',
+      filePath: 'src/resolvers/brand.resolver.ts',
+      startLine: 267,
+      endLine: 270, // 4-line field-resolver
+    };
+    const service: Symbol = {
+      id: 'x:svc',
+      name: 'exchangeToken',
+      filePath: 'src/services/shopify-token-manager.service.ts',
+      startLine: 410,
+      endLine: 508,
+    };
+    expect(scoreSeed(service, 1)).toBeGreaterThan(scoreSeed(getter, 0));
+  });
+
   it('scores a resolver above a util', () => {
     expect(scoreSeed(SEEDS[1]!, 1)).toBeGreaterThan(scoreSeed(SEEDS[0]!, 0));
   });

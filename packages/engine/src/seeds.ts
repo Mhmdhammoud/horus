@@ -65,6 +65,12 @@ export function scoreSeed(s: Symbol, index: number, hintTokens?: string[]): numb
   // Demote type/DTO/interface-named symbols so an executable method wins a same-name
   // collision (HOR-337). Methods are verbs (syncProduct); types are nouns (…Result).
   if (isTypeLikeName(s.name)) score -= 4;
+  // Demote thin getters/passthroughs (a few lines): the fault lives in the substantive
+  // method they delegate to, not a 4-line field-resolver/getter that merely string-matches
+  // the hint (HOR-337 follow-up — a getter must not outrank the real service).
+  if (s.startLine !== undefined && s.endLine !== undefined && s.endLine - s.startLine <= 3) {
+    score -= 3;
+  }
   // Strong file-suffix signals.
   if (/\.(resolver|controller|service)\.[jt]sx?$/i.test(s.filePath)) score += 2;
   // Scripts/migrations are rarely the incident surface.
