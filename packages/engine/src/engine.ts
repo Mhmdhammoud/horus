@@ -639,7 +639,7 @@ export async function investigate(
   // error-correlation cause cites the errors actually linked to the seed/path — not
   // the global top error, which co-occurrence would otherwise cross-wire onto an
   // unrelated path (e.g. a scheduler error narrated onto a webhook worker).
-  const directSignatures: { key: string; count: number }[] = [];
+  const directSignatures: { key: string; count: number; message: string }[] = [];
   // HOR-215: distinct-failing-entity evidence (e.g. "16 brand_id, 50 order_id").
   const entityEvIds: string[] = [];
   const entitySummaries: string[] = [];
@@ -742,7 +742,7 @@ export async function investigate(
           logEvIds.push(ev.id);
           if (relevanceClass === 'direct') {
             directLogEvIds.push(ev.id);
-            directSignatures.push({ key: s.key, count: s.count });
+            directSignatures.push({ key: s.key, count: s.count, message: s.sampleMessage ?? '' });
           } else ambientLogEvIds.push(ev.id);
         }
 
@@ -985,8 +985,17 @@ export async function investigate(
           const matchesService =
             serviceFilter.length > 0 &&
             (panelLower.includes(serviceFilter) || labelVals.some((v) => v.includes(serviceFilter)));
+          // Only promote on a hint match when the hint is actually PERFORMANCE-flavored —
+          // else a latency panel named after a domain noun (e.g. "GetProduct p95") gets
+          // lifted into the cause for any "product …" hint and metric-anomaly headlines
+          // everything (round-2 over-fire).
+          const hintIsPerf =
+            /\b(latenc|slow|spike|perf|throughput|duration|p9[5-9]|timeout|response\s*time|degrad)/i.test(
+              hint,
+            );
           const matchesHint =
             serviceFilter.length === 0 &&
+            hintIsPerf &&
             hintTokens.some(
               (t) => t.length >= 4 && (panelLower.includes(t) || labelVals.some((v) => v.includes(t))),
             );
@@ -1449,6 +1458,25 @@ export async function investigate(
       category: 'error-correlation',
       sourceEvidenceIds: directLogEvIds.slice(0, 3),
       baseScore: 0.30,
+      metadata: { blastRadius },
+    });
+  }
+
+  // HOR-328 round-2: synthesize a network/dependency cause from the dominant DIRECT error
+  // MESSAGE. The real cause (a DNS/connection failure like "getaddrinfo ENOTFOUND host") is
+  // often verbatim in the message yet never promoted, so the headline defaulted to a
+  // co-occurring metric/stale signal instead of the actual outage. This is a strong,
+  // evidence-backed cause that should lead.
+  const INFRA_RE =
+    /\b(ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ECONNRESET|getaddrinfo|socket hang up|connection (?:refused|reset|timed out)|network (?:error|timeout)|DNS)\b/i;
+  const infraSig = directSignatures.find((d) => INFRA_RE.test(d.message));
+  if (infraSig) {
+    causeInputs.push({
+      id: 'cause:dependency-failure',
+      title: `Dependency/network failure: ${infraSig.count}x ${infraSig.key} — "${infraSig.message.replace(/\s+/g, ' ').trim().slice(0, 100)}"`,
+      category: 'infrastructure',
+      sourceEvidenceIds: directLogEvIds.slice(0, 3),
+      baseScore: 0.5,
       metadata: { blastRadius },
     });
   }
