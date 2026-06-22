@@ -2,7 +2,7 @@
  * Provider contracts for @horus/connectors.
  *
  * `Provider` is the base interface shared by every data-source adapter.
- * `CodeProvider` extends it with all code-graph operations backed by Axon.
+ * `CodeProvider` extends it with all code-graph operations backed by source intelligence.
  */
 
 import type {
@@ -23,7 +23,7 @@ export interface Provider {
   health(): Promise<HealthStatus>;
 }
 
-/** Full contract for a code-graph provider (Axon). */
+/** Full contract for a code-graph provider (source intelligence). */
 export interface CodeProvider extends Provider {
   searchSymbols(query: string, limit?: number): Promise<Symbol[]>;
   context(symbolId: string): Promise<SymbolContext>;

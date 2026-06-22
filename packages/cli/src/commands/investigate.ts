@@ -215,7 +215,7 @@ export async function runInvestigate(
       return 1;
     }
 
-    const sourceUrl = renv.repositories[0]?.sourceHostUrl ?? renv.repositories[0]?.axonHostUrl;
+    const sourceUrl = renv.repositories[0]?.sourceHostUrl;
     let health = await code.health();
     if (!health.ok && sourceUrl) {
       // HOR-319 (Bug 2 / layer-1): don't hard-exit just because the host is down. Try to

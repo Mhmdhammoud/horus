@@ -5,7 +5,7 @@
  * to restart a previously-indexed host at its configured port before giving up, so a
  * transient host outage degrades into a brief auto-start rather than a dead end.
  *
- * This composes the canonical host-lifecycle primitives owned by HOR-AXON
+ * This composes the canonical host-lifecycle primitives owned by HOR-SOURCE
  * (@horus/connectors) — it does NOT reimplement host management, and it never performs
  * first-time analysis (that remains the job of `horus index`).
  */

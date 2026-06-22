@@ -4,8 +4,8 @@ import { defineConfig } from '@horus/core';
  * Horus configuration. See `horusConfigSchema` in @horus/core for the full shape.
  *
  * Project/environment scoped. The model separates code from runtime:
- *   - CODE belongs to the PROJECT: `repositories[]`, each served by Axon (the
- *     default source-intelligence backend).
+ *   - CODE belongs to the PROJECT: `repositories[]`, each served by the
+ *     source-intelligence backend.
  *   - RUNTIME belongs to the ENVIRONMENT: `environments[].connectors` (Elasticsearch,
  *     MongoDB, Grafana, Redis/BullMQ).
  *
@@ -15,20 +15,21 @@ import { defineConfig } from '@horus/core';
  *   GRAFANA_URL / GRAFANA_USER / GRAFANA_PASSWORD
  *   MONGODB_URL
  *
- * Transport note: Horus talks to Axon over HTTP/MCP only. Start a host with
- *   `axon host --port <N>`  (run inside, or pointed at, each indexed repo)
- * and set the repository's `axon.hostUrl` to it. No CLI shell-outs for queries.
+ * Transport note: Horus talks to the source-intelligence backend over HTTP/MCP only.
+ * Start a host with
+ *   `horus-source host --port <N>`  (run inside, or pointed at, each indexed repo)
+ * and set the repository's `source.hostUrl` to it. No CLI shell-outs for queries.
  */
 export default defineConfig({
   projects: [
     {
       name: 'leadcall-api',
-      // Code belongs to the project — Axon serves each repository.
+      // Code belongs to the project — the source-intelligence backend serves each repository.
       repositories: [
         {
           name: 'leadcall-api',
           path: '/Users/mhmdh/Documents/projects/meritt-dev/leadcall-api',
-          axon: { hostUrl: 'http://127.0.0.1:8420' },
+          source: { hostUrl: 'http://127.0.0.1:8420' },
         },
       ],
       // Runtime belongs to the environment.
@@ -59,7 +60,7 @@ export default defineConfig({
         {
           name: 'maison-safqa',
           path: '/Users/mhmdh/Documents/projects/meritt-dev/maison-safqa',
-          axon: { hostUrl: 'http://127.0.0.1:8421' },
+          source: { hostUrl: 'http://127.0.0.1:8421' },
         },
       ],
       environments: [
@@ -94,11 +95,6 @@ export default defineConfig({
       ],
     },
   ],
-
-  // Global version pin only (not a host) — Axon hosts live per repository.
-  axon: {
-    pinnedVersion: '1.1.1',
-  },
 
   // Plain Postgres (docker-compose maps it to localhost:5433). No pgvector in v0.
   database: {

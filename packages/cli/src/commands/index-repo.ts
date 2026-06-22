@@ -23,6 +23,7 @@ import {
   getHeadSha,
   getCurrentBranch,
   collectLocalChanges,
+  PINNED_SOURCE_VERSION,
   type HorusConfig,
   type LocalConfigFile,
 } from '@horus/core';
@@ -48,10 +49,10 @@ import { createDb } from '@horus/db';
 import { stitch } from '@horus/stitcher';
 
 async function stitchQueueMap(hostUrl: string, dbUrl: string, label: string): Promise<void> {
-  const axon = new SourceHttpClient({ baseUrl: hostUrl });
+  const source = new SourceHttpClient({ baseUrl: hostUrl });
   const { db, sql } = createDb(dbUrl);
   try {
-    const summary = await stitch(axon, db, { project: label });
+    const summary = await stitch(source, db, { project: label });
     console.log(
       pc.dim(`[${label}]  `) +
         `Stitched ${summary.edges} queue edge(s) across ${summary.queues} queue(s) — ` +
@@ -71,7 +72,7 @@ function findConfiguredRepo(
   for (const p of config.projects) {
     for (const r of p.repositories) {
       if (resolve(r.path) === target) {
-        const hostUrl = r.source?.hostUrl ?? r.axon?.hostUrl;
+        const hostUrl = r.source?.hostUrl;
         return { project: p.name, ...(hostUrl ? { hostUrl } : {}) };
       }
     }
@@ -142,7 +143,7 @@ function buildKnowledgeIndex(
       generator: { tool: 'horus-cli' },
       git: { sha: gitSha, branch },
       repositories: repos.map((r) => ({ name: r.name, path: r.path, headSha: gitSha })),
-      sourceIntelligence: config ? { tool: 'axon', version: config.axon.pinnedVersion } : undefined,
+      sourceIntelligence: config ? { tool: 'source', version: PINNED_SOURCE_VERSION } : undefined,
     });
     console.log(
       pc.dim(`  project knowledge: ${snapshot.repositories.length} repo profile(s) → .horus/index/`),
@@ -179,7 +180,7 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
         try {
           const renv = resolveEnvironment(config, { project: opts.project, env: opts.env });
           configuredProject = renv.project;
-          configuredHost = renv.repositories[0]?.sourceHostUrl ?? renv.repositories[0]?.axonHostUrl;
+          configuredHost = renv.repositories[0]?.sourceHostUrl;
         } catch {
           /* fall through to path match */
         }

@@ -180,7 +180,7 @@ describe('createJsonKnowledgeStore', () => {
     const manifest = store.write(snap, {
       generator: { tool: 'maison-safqa-import', version: '0.1.0' },
       repositories: [{ name: 'maison-safqa', headSha: 'deadbeef' }],
-      sourceIntelligence: { tool: 'axon', version: '1.1.1' },
+      sourceIntelligence: { tool: 'source', version: '1.0.7' },
     });
 
     expect(store.exists()).toBe(true);
@@ -195,7 +195,7 @@ describe('createJsonKnowledgeStore', () => {
     const read = store.readSnapshot();
     expect(read?.enums[0]?.name).toBe('Role');
     const readManifest = store.readManifest();
-    expect(readManifest?.sourceIntelligence?.tool).toBe('axon');
+    expect(readManifest?.sourceIntelligence?.tool).toBe('source');
     expect(KnowledgeManifestSchema.parse(readManifest)).toBeTruthy();
   });
 

@@ -1,7 +1,7 @@
 /**
- * The stitcher orchestration: pull producer Class nodes and worker File nodes from Axon
+ * The stitcher orchestration: pull producer Class nodes and worker File nodes from source intelligence
  * over read-only Cypher, run the pure extractor, and replace the stitcher-owned rows in
- * `queue_edges`. This is the one source-intelligence layer Axon's static graph can't give.
+ * `queue_edges`. This is the one source-intelligence layer the static graph can't give.
  */
 import { SourceHttpClient } from '@horus/connectors';
 import { replaceQueueEdges, type HorusDb, type NewQueueEdge } from '@horus/db';

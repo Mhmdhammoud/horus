@@ -5,7 +5,7 @@
  * `symbol (src/file.ts:0)` because searchSymbols returned symbols without line
  * ranges and the engine formatted them as `:0`.
  *
- * The fix (HOR-211/214) added `hydrateLines` to the Axon provider and
+ * The fix (HOR-211/214) added `hydrateLines` to the source-intelligence provider and
  * `formatSymbolLocation` to the engine. This test confirms the full investigate()
  * pipeline carries startLine/endLine through to seed evidence and findings.
  */

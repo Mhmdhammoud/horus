@@ -1,7 +1,7 @@
 /**
  * Unit tests for project-scoped stitch() (HOR-38).
  *
- * Mocks both the AxonHttpClient and the DB so no network or database is needed.
+ * Mocks both the SourceHttpClient and the DB so no network or database is needed.
  * Verifies that edges carry the project label and that replaceQueueEdges is
  * called with the matching project scope.
  */
@@ -14,7 +14,7 @@ import type { SourceHttpClient } from '@horus/connectors';
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeAxon(producerContent: string, workerContent: string): SourceHttpClient {
+function makeSourceClient(producerContent: string, workerContent: string): SourceHttpClient {
   return {
     cypher: vi.fn(async (query: string) => {
       if (query.includes('@InjectQueue(') || query.includes('new Queue(')) {
@@ -51,7 +51,7 @@ describe('stitch — project scoping (HOR-38)', () => {
   });
 
   it('passes the project to replaceQueueEdges', async () => {
-    const client = makeAxon(PRODUCER_CONTENT, WORKER_CONTENT);
+    const client = makeSourceClient(PRODUCER_CONTENT, WORKER_CONTENT);
     await stitch(client, fakeDb, { project: 'leadcall-api' });
     expect(replaceSpy).toHaveBeenCalledOnce();
     const [, , opts] = replaceSpy.mock.calls[0] as [unknown, unknown, { project?: string }];
@@ -59,7 +59,7 @@ describe('stitch — project scoping (HOR-38)', () => {
   });
 
   it('sets project on every inserted edge', async () => {
-    const client = makeAxon(PRODUCER_CONTENT, WORKER_CONTENT);
+    const client = makeSourceClient(PRODUCER_CONTENT, WORKER_CONTENT);
     await stitch(client, fakeDb, { project: 'maison-safqa' });
     const [, edges] = replaceSpy.mock.calls[0] as [unknown, Array<{ project: string | null }>];
     expect(edges.length).toBeGreaterThan(0);
@@ -69,7 +69,7 @@ describe('stitch — project scoping (HOR-38)', () => {
   });
 
   it('uses null project when no project is given (back-compat)', async () => {
-    const client = makeAxon(PRODUCER_CONTENT, WORKER_CONTENT);
+    const client = makeSourceClient(PRODUCER_CONTENT, WORKER_CONTENT);
     await stitch(client, fakeDb);
     const [, edges, opts] = replaceSpy.mock.calls[0] as [
       unknown,
@@ -83,8 +83,8 @@ describe('stitch — project scoping (HOR-38)', () => {
   });
 
   it('indexing A then B calls replaceQueueEdges twice with distinct projects', async () => {
-    const clientA = makeAxon(PRODUCER_CONTENT, WORKER_CONTENT);
-    const clientB = makeAxon(
+    const clientA = makeSourceClient(PRODUCER_CONTENT, WORKER_CONTENT);
+    const clientB = makeSourceClient(
       "constructor(@InjectQueue('reports') private q: Queue) {}",
       "@Processor('reports')\nexport class ReportProcessor {}",
     );

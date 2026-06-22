@@ -5,8 +5,7 @@
  * explicitly allowed (like the git connector). The "no CLI shell-out" rule applies
  * to QUERIES — those still go over HTTP/MCP via SourceHttpClient.
  *
- * The binary is named `horus-source` (PyPI package `horus-source`); Horus exposes
- * lifecycle wrappers through source-boundary.ts (HOR-136, HOR-145).
+ * The binary is named `horus-source` (PyPI package `horus-source`).
  */
 
 import { execFile, spawn } from 'node:child_process';
@@ -30,15 +29,20 @@ export async function resolveSourceBin(): Promise<string | null> {
 }
 
 /** Is the `horus-source` binary on PATH? */
-export async function axonAvailable(): Promise<boolean> {
+export async function sourceAvailable(): Promise<boolean> {
   return (await resolveSourceBin()) !== null;
+}
+
+/** Resolve the active source-intelligence binary name, or null if not installed. */
+export function getActiveSourceBin(): Promise<string | null> {
+  return resolveSourceBin();
 }
 
 /**
  * Return the installed `horus-source` version string (e.g. "1.0.1"),
  * or null if the binary is not on PATH or the version cannot be parsed.
  */
-export async function getAxonVersion(): Promise<string | null> {
+export async function getSourceVersion(): Promise<string | null> {
   try {
     const { stdout } = await exec(SOURCE_BINARY, ['--version'], { timeout: 5000 });
     const match = stdout.trim().match(/(\d+\.\d+\.\d+)/);
@@ -48,9 +52,9 @@ export async function getAxonVersion(): Promise<string | null> {
   }
 }
 
-/** Has the repo been analyzed? Checks `.horus/source/` first, falls back to legacy `.axon/`. */
+/** Has the repo been analyzed? Checks `.horus/source/`. */
 export function isAnalyzed(root: string): boolean {
-  return existsSync(join(root, '.horus', 'source')) || existsSync(join(root, '.axon'));
+  return existsSync(join(root, '.horus', 'source'));
 }
 
 /** Run `horus-source analyze .` in the repo. Throws on failure. */
@@ -65,15 +69,14 @@ export async function analyzeRepo(root: string): Promise<void> {
 }
 
 /**
- * Read the host URL the source-intelligence backend records for a repo
- * (`<root>/.axon/host.json`), if any. The backend runs at most ONE host per repo
- * (single-writer Kùzu lock), so this is the source of truth for "is this repo
- * already being hosted, and where". Different repos get different hosts/ports and
- * run concurrently. See also `readSourceHostUrl` (source-boundary.ts) for the
- * Horus-canonical 2-step lookup that prefers `.horus/source/host.json`.
+ * Return the host URL for the source-intelligence backend serving `root`, or null.
+ * Reads from `.horus/source/host.json` — the canonical path written by horus-source.
+ * The backend runs at most ONE host per repo (single-writer Kùzu lock), so this is
+ * the source of truth for "is this repo already being hosted, and where". Different
+ * repos get different hosts/ports and run concurrently.
  */
-export function readAxonHostUrl(root: string): string | null {
-  const p = join(root, '.axon', 'host.json');
+export function readSourceHostUrl(root: string): string | null {
+  const p = join(root, '.horus', 'source', 'host.json');
   if (!existsSync(p)) return null;
   try {
     const j = JSON.parse(readFileSync(p, 'utf8')) as { host_url?: unknown };

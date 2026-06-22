@@ -12,8 +12,8 @@
  *   GRAFANA_URL / GRAFANA_USER / GRAFANA_PASSWORD
  *   MONGODB_URL  (or a per-project urlEnv)
  *
- * Start an Axon source-intelligence host per repo:
- *   axon host --port <N>   (run inside, or pointed at, the indexed repo)
+ * Start a source-intelligence host per repo:
+ *   horus-source host --port <N>   (run inside, or pointed at, the indexed repo)
  */
 export default {
   projects: [
@@ -23,7 +23,7 @@ export default {
         {
           name: 'leadcall-api',
           path: '/Users/mhmdh/Documents/projects/meritt-dev/leadcall-api',
-          axon: { hostUrl: 'http://127.0.0.1:8420' },
+          source: { hostUrl: 'http://127.0.0.1:8420' },
         },
       ],
       environments: [
@@ -51,7 +51,7 @@ export default {
         {
           name: 'maison-safqa',
           path: '/Users/mhmdh/Documents/projects/meritt-dev/maison-safqa',
-          axon: { hostUrl: 'http://127.0.0.1:8421' },
+          source: { hostUrl: 'http://127.0.0.1:8421' },
         },
       ],
       environments: [
@@ -85,10 +85,6 @@ export default {
       ],
     },
   ],
-
-  axon: {
-    pinnedVersion: '1.1.1',
-  },
 
   database: {
     url: process.env['DATABASE_URL'] ?? 'postgresql://horus:horus@localhost:5433/horus',

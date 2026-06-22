@@ -5,7 +5,7 @@
  * `horus index`, `horus knowledge`, and Horus MCP build against. This is the
  * PROJECT-KNOWLEDGE layer — distinct from:
  *
- *   - SOURCE INTELLIGENCE (Axon): the raw code graph in `.horus/source/` (Kùzu),
+ *   - SOURCE INTELLIGENCE: the raw code graph in `.horus/source/` (Kùzu),
  *     queried over HTTP. Project knowledge *references* it (file/line/symbol) but
  *     never duplicates the graph.
  *   - RUNTIME EVIDENCE: investigation observations in the CLI's local Postgres

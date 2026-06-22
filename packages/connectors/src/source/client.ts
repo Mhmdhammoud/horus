@@ -1,37 +1,37 @@
 import type {
-  AxonCypherResult,
-  AxonDiffResult,
-  AxonHealth,
-  AxonHostInfo,
-  AxonImpactResult,
-  AxonOverview,
-  AxonSearchResult,
+  SourceCypherResult,
+  SourceDiffResult,
+  SourceHealth,
+  SourceHostInfo,
+  SourceImpactResult,
+  SourceOverview,
+  SourceSearchResult,
 } from './types.js';
 
-export class AxonHttpError extends Error {
+export class SourceHttpError extends Error {
   public status: number;
   public body: string;
 
   constructor(message: string, status: number, body: string) {
     super(message);
-    this.name = 'AxonHttpError';
+    this.name = 'SourceHttpError';
     this.status = status;
     this.body = body;
   }
 }
 
-export interface AxonClientOptions {
+export interface SourceClientOptions {
   baseUrl: string;
   timeoutMs?: number;
   maxRetries?: number;
 }
 
-export class AxonHttpClient {
+export class SourceHttpClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
 
-  constructor(opts: AxonClientOptions) {
+  constructor(opts: SourceClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
     this.timeoutMs = opts.timeoutMs ?? 15000;
     this.maxRetries = opts.maxRetries ?? 2;
@@ -70,8 +70,8 @@ export class AxonHttpClient {
             await this.sleep(150 * 2 ** attempt);
             continue;
           }
-          throw new AxonHttpError(
-            `Axon request failed: ${method} ${path} -> HTTP ${res.status}`,
+          throw new SourceHttpError(
+            `Source request failed: ${method} ${path} -> HTTP ${res.status}`,
             res.status,
             text,
           );
@@ -80,8 +80,8 @@ export class AxonHttpClient {
         if (!res.ok) {
           // 4xx — never retry
           const text = await res.text();
-          throw new AxonHttpError(
-            `Axon request failed: ${method} ${path} -> HTTP ${res.status}`,
+          throw new SourceHttpError(
+            `Source request failed: ${method} ${path} -> HTTP ${res.status}`,
             res.status,
             text,
           );
@@ -89,7 +89,7 @@ export class AxonHttpClient {
 
         return (await res.json()) as T;
       } catch (err) {
-        if (err instanceof AxonHttpError) {
+        if (err instanceof SourceHttpError) {
           throw err;
         }
         // Distinguish AbortError (timeout/cancel) from network errors
@@ -127,7 +127,7 @@ export class AxonHttpClient {
     }
   }
 
-  async health(): Promise<AxonHealth> {
+  async health(): Promise<SourceHealth> {
     const url = `${this.baseUrl}/api/health`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -142,35 +142,35 @@ export class AxonHttpClient {
     }
   }
 
-  hostInfo(): Promise<AxonHostInfo> {
-    return this.request<AxonHostInfo>('GET', '/api/host');
+  hostInfo(): Promise<SourceHostInfo> {
+    return this.request<SourceHostInfo>('GET', '/api/host');
   }
 
-  overview(): Promise<AxonOverview> {
-    return this.request<AxonOverview>('GET', '/api/overview');
+  overview(): Promise<SourceOverview> {
+    return this.request<SourceOverview>('GET', '/api/overview');
   }
 
-  cypher(query: string): Promise<AxonCypherResult> {
-    return this.request<AxonCypherResult>('POST', '/api/cypher', { query });
+  cypher(query: string): Promise<SourceCypherResult> {
+    return this.request<SourceCypherResult>('POST', '/api/cypher', { query });
   }
 
-  async search(query: string, limit = 20): Promise<AxonSearchResult[]> {
-    const res = await this.request<{ results: AxonSearchResult[] }>('POST', '/api/search', {
+  async search(query: string, limit = 20): Promise<SourceSearchResult[]> {
+    const res = await this.request<{ results: SourceSearchResult[] }>('POST', '/api/search', {
       query,
       limit,
     });
     return res.results;
   }
 
-  impact(nodeId: string, depth = 3): Promise<AxonImpactResult> {
-    return this.request<AxonImpactResult>(
+  impact(nodeId: string, depth = 3): Promise<SourceImpactResult> {
+    return this.request<SourceImpactResult>(
       'GET',
       `/api/impact/${encodeURI(nodeId)}?depth=${depth}`,
     );
   }
 
-  diff(base: string, compare: string): Promise<AxonDiffResult> {
-    return this.request<AxonDiffResult>('POST', '/api/diff', { base, compare });
+  diff(base: string, compare: string): Promise<SourceDiffResult> {
+    return this.request<SourceDiffResult>('POST', '/api/diff', { base, compare });
   }
 
   async nodeCount(): Promise<number> {

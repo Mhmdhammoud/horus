@@ -1,7 +1,7 @@
 /**
  * Multi-repository helpers (HOR-28).
  *
- * These utilities fan-out queries to every configured Axon host so the caller
+ * These utilities fan-out queries to every configured source-intelligence host so the caller
  * never needs to know which repository holds the answer. Each per-provider call
  * is performed concurrently; failures are captured as `reachable: false` rather
  * than rejected outright, so one unreachable host does not abort the whole fan-out.
@@ -26,7 +26,7 @@ export interface RepoHealth {
 }
 
 /**
- * Check the Axon host health for every configured repository concurrently.
+ * Check the source-intelligence host health for every configured repository concurrently.
  * A provider that throws is recorded as unreachable with the error message as
  * `detail`.
  */

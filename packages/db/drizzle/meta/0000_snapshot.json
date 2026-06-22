@@ -437,8 +437,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "axon_status": {
-          "name": "axon_status",
+        "source_status": {
+          "name": "source_status",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false

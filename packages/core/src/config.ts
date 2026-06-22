@@ -36,11 +36,6 @@ const repositorySchema = z.object({
    * stitching degrade — runtime evidence still works.
    */
   source: z.object({ hostUrl: z.string().url() }).optional(),
-  /**
-   * @deprecated Use `source.hostUrl` instead (HOR-137 migration shim).
-   * Accepted for backwards compatibility; silently promoted to `source.hostUrl`.
-   */
-  axon: z.object({ hostUrl: z.string().url() }).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -266,12 +261,6 @@ const aiSchema = z
 
 export const horusConfigSchema = z.object({
   projects: z.array(projectSchema).default([]),
-  axon: z
-    .object({
-      /** Fail fast if the running Axon is not this version. */
-      pinnedVersion: z.string().default('1.1.1'),
-    })
-    .default({}),
   database: databaseSchema,
   models: modelsSchema.default({}),
   ai: aiSchema,
@@ -313,8 +302,6 @@ export interface ResolvedRepository {
   path: string;
   /** Canonical Horus-owned source-intelligence host URL (HOR-137). */
   sourceHostUrl?: string;
-  /** @deprecated Use sourceHostUrl. Preserved for backwards compatibility (HOR-137). */
-  axonHostUrl?: string;
 }
 
 export interface ResolvedElasticsearchFields {
@@ -476,13 +463,13 @@ export function resolveEnvironment(
   }
 
   // --- resolve repositories ---
-  // `source.hostUrl` is canonical; `axon.hostUrl` is the compat alias (HOR-137).
+  // `source.hostUrl` is the canonical source-intelligence host (HOR-137).
   const repositories: ResolvedRepository[] = project.repositories.map((r) => {
-    const hostUrl = r.source?.hostUrl ?? r.axon?.hostUrl;
+    const hostUrl = r.source?.hostUrl;
     return {
       name: r.name,
       path: r.path,
-      ...(hostUrl ? { sourceHostUrl: hostUrl, axonHostUrl: hostUrl } : {}),
+      ...(hostUrl ? { sourceHostUrl: hostUrl } : {}),
     };
   });
   const primary = repositories[0];
@@ -594,8 +581,6 @@ const CONFIG_EXAMPLES: Record<string, string> = {
   'projects.*.repositories.*.path': 'e.g. path: "/absolute/path/to/repo"',
   'projects.*.repositories.*.source.hostUrl':
     'e.g. "http://127.0.0.1:8420"  (start one with: horus index)',
-  'projects.*.repositories.*.axon.hostUrl':
-    'e.g. "http://127.0.0.1:8420"  (deprecated: use source.hostUrl instead)',
   'projects.*.environments': 'e.g. [{ name: "production", connectors: {} }]',
   'projects.*.environments.*.name': 'e.g. name: "production"',
   'projects.*.environments.*.connectors.elasticsearch.indexPattern':

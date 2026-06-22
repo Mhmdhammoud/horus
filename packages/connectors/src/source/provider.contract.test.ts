@@ -5,15 +5,15 @@
  * reachable (CI without the backend), every test skips cleanly so the suite
  * stays green.
  *
- * Set HORUS_SOURCE_HOST_URL (or the legacy AXON_HOST_URL) to point at a
+ * Set HORUS_SOURCE_HOST_URL to point at a
  * non-default host, e.g.:
  *   HORUS_SOURCE_HOST_URL=http://source.internal:8420 pnpm test provider.contract
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { SourceHttpClient, SourceHttpError, SourceCodeProvider } from './source-boundary.js';
+import { SourceHttpClient, SourceHttpError, SourceCodeProvider } from './index.js';
 
-const baseUrl = process.env['HORUS_SOURCE_HOST_URL'] ?? process.env['AXON_HOST_URL'] ?? 'http://127.0.0.1:8420';
+const baseUrl = process.env['HORUS_SOURCE_HOST_URL'] ?? 'http://127.0.0.1:8420';
 const client = new SourceHttpClient({ baseUrl });
 const provider = new SourceCodeProvider(client);
 

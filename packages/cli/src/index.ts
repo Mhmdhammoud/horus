@@ -1,4 +1,4 @@
-import { Command, Option } from 'commander';
+import { Command } from 'commander';
 import { HORUS_VERSION } from '@horus/core';
 import { runStatus } from './commands/status.js';
 import { runExplain } from './commands/explain.js';
@@ -119,14 +119,13 @@ Examples:
     .option('--name <name>', 'project name (default: repo directory name)')
     .option('--env <name>', 'environment name (default: production)')
     .option('--source <url>', 'source-intelligence host URL for this repo (e.g. http://127.0.0.1:8420)')
-    .addOption(new Option('--axon <url>', 'deprecated alias for --source').hideHelp())
     .option('--path <dir>', 'repository root (default: nearest git root, else cwd)')
     .action(
-      async (opts: { name?: string; env?: string; source?: string; axon?: string; path?: string }) => {
+      async (opts: { name?: string; env?: string; source?: string; path?: string }) => {
         process.exitCode = await runInit({
           name: opts.name,
           env: opts.env,
-          source: opts.source ?? opts.axon,
+          source: opts.source,
           path: opts.path,
         });
       },

@@ -11,3 +11,4 @@ coverage/
 .homebrew-archives/
 apps/horus/README.md
 tmp/
+.claude/

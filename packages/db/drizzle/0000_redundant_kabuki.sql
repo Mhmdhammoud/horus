@@ -59,7 +59,7 @@ CREATE TABLE "repositories" (
 	"name" text NOT NULL,
 	"path" text NOT NULL,
 	"last_indexed_at" timestamp with time zone,
-	"axon_status" jsonb,
+	"source_status" jsonb,
 	"stale" boolean DEFAULT true NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,

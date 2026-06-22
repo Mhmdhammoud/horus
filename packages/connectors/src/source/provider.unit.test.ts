@@ -1,5 +1,5 @@
 /**
- * HOR-208 — AxonCodeProvider.searchSymbols must resolve an exact symbol-name match
+ * HOR-208 — SourceCodeProvider.searchSymbols must resolve an exact symbol-name match
  * (e.g. `GaiaController`) ahead of fuzzy/semantic matches (e.g. `SchedulerController`).
  *
  * Root cause regression: the Phase-1 exact-match Cypher used `NOT n:File`, which Kùzu
@@ -8,10 +8,10 @@
  * revert breaks these tests.
  */
 import { describe, it, expect } from 'vitest';
-import { AxonCodeProvider } from './provider.js';
-import type { AxonHttpClient } from './client.js';
+import { SourceCodeProvider } from './provider.js';
+import type { SourceHttpClient } from './client.js';
 
-function fakeClient(): AxonHttpClient {
+function fakeClient(): SourceHttpClient {
   return {
     async cypher(query: string) {
       // Simulate Kùzu rejecting the old label-negation predicate.
@@ -51,12 +51,12 @@ function fakeClient(): AxonHttpClient {
         },
       ];
     },
-  } as unknown as AxonHttpClient;
+  } as unknown as SourceHttpClient;
 }
 
-describe('AxonCodeProvider.searchSymbols — exact-name wins (HOR-208)', () => {
+describe('SourceCodeProvider.searchSymbols — exact-name wins (HOR-208)', () => {
   it('returns the exact declaration first, not the fuzzy match', async () => {
-    const provider = new AxonCodeProvider(fakeClient());
+    const provider = new SourceCodeProvider(fakeClient());
     const results = await provider.searchSymbols('GaiaController', 5);
     expect(results[0]?.name).toBe('GaiaController');
     expect(results[0]?.filePath).toBe('src/controllers/gaia.controller.ts');
@@ -65,13 +65,13 @@ describe('AxonCodeProvider.searchSymbols — exact-name wins (HOR-208)', () => {
   });
 
   it('is case-insensitive on the exact match', async () => {
-    const provider = new AxonCodeProvider(fakeClient());
+    const provider = new SourceCodeProvider(fakeClient());
     const results = await provider.searchSymbols('gaiacontroller', 5);
     expect(results[0]?.name).toBe('GaiaController');
   });
 
   it('hydrates start/end line ranges so seeds never render as :0 (HOR-211)', async () => {
-    const provider = new AxonCodeProvider(fakeClient());
+    const provider = new SourceCodeProvider(fakeClient());
     const results = await provider.searchSymbols('GaiaController', 5);
     expect(results[0]?.startLine).toBe(15);
     expect(results[0]?.endLine).toBe(387);

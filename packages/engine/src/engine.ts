@@ -76,7 +76,7 @@ export interface EngineDeps {
    */
   code?: CodeProvider | null;
   db: HorusDb;
-  /** Optional Elasticsearch logs provider — when absent the investigation runs Axon-only. */
+  /** Optional Elasticsearch logs provider — when absent the investigation runs source-intelligence-only. */
   logs?: LogsProvider | null;
   /** Optional MongoDB state provider — folds application-state anomalies as evidence. */
   mongo?: StateProvider | null;
@@ -1173,7 +1173,7 @@ export async function investigate(
   }
 
   // e0e. OWNERSHIP (HOR-20 / HOR-40) — estimate likely maintainer from git history.
-  // Reuses the already-resolved seed symbol to skip a duplicate Axon search.
+  // Reuses the already-resolved seed symbol to skip a duplicate source-intelligence search.
   // Optional; needs repoPath AND a resolved seed + source provider — skipped in
   // degraded runtime-only mode. Never breaks on failure.
   let ownershipEstimate: OwnershipEstimate | null = null;

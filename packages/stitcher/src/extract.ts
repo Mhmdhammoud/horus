@@ -1,6 +1,6 @@
 /**
  * Pure queue-graph extraction — no IO. Parses BullMQ/NestJS queue-name literals out of
- * Axon symbol "content" and joins producers to workers on the queue-name string.
+ * Source-intelligence symbol "content" and joins producers to workers on the queue-name string.
  *
  * Idioms supported, generically (no project-specific names):
  *  - NestJS @nestjs/bull(mq): `@InjectQueue('<name>')` producers, class-level

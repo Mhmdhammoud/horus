@@ -36,7 +36,7 @@ export interface WriteOptions {
   generator?: { tool: string; version?: string };
   /** Repos + their indexed HEAD commit. */
   repositories?: { name: string; path?: string; headSha?: string }[];
-  /** Source-intelligence backend this snapshot references (e.g. Axon). */
+  /** Source-intelligence backend this snapshot references (e.g. source intelligence). */
   sourceIntelligence?: { tool: string; version?: string };
   /** Git state the snapshot was built at (HOR-293). */
   git?: { sha?: string; branch?: string };

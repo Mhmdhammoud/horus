@@ -1,8 +1,8 @@
 /**
- * AxonCodeProvider — the code-graph `CodeProvider` backed by a running `axon host`.
+ * SourceCodeProvider — the code-graph `CodeProvider` backed by a running `horus-source host`.
  *
- * All traversals go through the Axon HTTP `/api/cypher` surface (or the typed
- * `/api/impact` and `/api/diff` endpoints). Cypher has NO parameter binding, so node
+ * All traversals go through the source-intelligence HTTP `/api/cypher` surface (or the
+ * typed `/api/impact` and `/api/diff` endpoints). Cypher has NO parameter binding, so node
  * ids are escaped and inlined into each query string. Rows come back as positional
  * arrays aligned to the RETURN columns, so every indexed access is guarded.
  */
@@ -18,15 +18,15 @@ import type {
   Flow,
   HealthStatus,
 } from '@horus/core';
-import type { AxonHttpClient } from './client.js';
-import type { AxonNode } from './types.js';
+import type { SourceHttpClient } from './client.js';
+import type { SourceNode } from './types.js';
 import type { CodeProvider } from '../contract.js';
 
-export class AxonCodeProvider implements CodeProvider {
-  readonly id = 'axon';
+export class SourceCodeProvider implements CodeProvider {
+  readonly id = 'source';
   readonly kind = 'code' as const;
 
-  constructor(private readonly client: AxonHttpClient) {}
+  constructor(private readonly client: SourceHttpClient) {}
 
   // --- helpers -------------------------------------------------------------
 
@@ -38,7 +38,7 @@ export class AxonCodeProvider implements CodeProvider {
     return id.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   }
 
-  private nodeToSymbol(n: AxonNode): Symbol {
+  private nodeToSymbol(n: SourceNode): Symbol {
     return {
       id: n.id,
       name: n.name,

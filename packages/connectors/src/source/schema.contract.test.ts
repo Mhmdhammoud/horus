@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { SourceHttpClient, SourceHttpError } from './source-boundary.js';
+import { SourceHttpClient, SourceHttpError } from './index.js';
 import { PINNED_SOURCE_VERSION } from '@horus/core';
 
-const baseUrl = process.env['HORUS_SOURCE_HOST_URL'] ?? process.env['AXON_HOST_URL'] ?? 'http://127.0.0.1:8420';
+const baseUrl = process.env['HORUS_SOURCE_HOST_URL'] ?? 'http://127.0.0.1:8420';
 const client = new SourceHttpClient({ baseUrl });
 let hostUp = false;
 

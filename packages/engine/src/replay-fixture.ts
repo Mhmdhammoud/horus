@@ -115,7 +115,7 @@ export const INCIDENT_001_FIXTURE: InvestigationReport = {
         symbolId: 'sym-001',
       },
       provenance: {
-        query: 'axon:BullMQWorkerConfig',
+        query: 'source:BullMQWorkerConfig',
         collectedAt: '2026-06-15T10:00:00.000Z',
       },
     },

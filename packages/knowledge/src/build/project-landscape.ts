@@ -3,7 +3,7 @@
  *
  * The first-version `horus index` knowledge pass: derive a `RepositoryProfile`
  * for each repo from its `package.json` (frameworks, languages, state management,
- * auth, data sources, integrations, scripts) — local-first, no Axon or network
+ * auth, data sources, integrations, scripts) — local-first, no source-intelligence or network
  * required. This is the "project landscape / repo roles" scope bullet; deeper
  * extraction (GraphQL/REST contracts, types, data flows) layers on top later and
  * fills the other snapshot categories.

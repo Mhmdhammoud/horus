@@ -73,8 +73,7 @@ export async function runDoctor(opts?: {
       const repos = project['repositories'] as Array<Record<string, unknown>> | undefined;
       const hostUrl = repos?.map(
         (r) =>
-          ((r['source'] as Record<string, unknown> | undefined)?.['hostUrl'] ??
-            (r['axon'] as Record<string, unknown> | undefined)?.['hostUrl']) as string | undefined,
+          (r['source'] as Record<string, unknown> | undefined)?.['hostUrl'] as string | undefined,
       ).find(Boolean);
       if (hostUrl) {
         checks.push({ label: 'Source-intelligence host', status: 'pass', detail: hostUrl });

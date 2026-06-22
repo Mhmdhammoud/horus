@@ -10,7 +10,7 @@
  * - Metric evidence IDs are UUIDs, not sequential ev_metric_N strings.
  * - Metric provenance reflects the investigation hint, not 'grafana.analyze'.
  * - Provider-reliability map uses Evidence.source keys (not provider .id).
- * - Ownership symbol reuse path (no duplicate Axon search).
+ * - Ownership symbol reuse path (no duplicate source-intelligence search).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';

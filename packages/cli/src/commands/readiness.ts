@@ -196,7 +196,7 @@ export async function runReadiness(opts?: {
 
     for (const project of globalConfig.projects) {
       for (const repo of project.repositories) {
-        if (repo.source?.hostUrl ?? repo.axon?.hostUrl) anyRepoConfigured = true;
+        if (repo.source?.hostUrl) anyRepoConfigured = true;
       }
       for (const env of project.environments) {
         const c = env.connectors;

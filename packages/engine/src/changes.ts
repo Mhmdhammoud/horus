@@ -35,7 +35,7 @@ export async function changeImpact(
     ...changes.modified.map((m) => m.after),
   ];
 
-  // Cap at 25 to bound Axon calls; skip file-label ids for flow mapping
+  // Cap at 25 to bound source-intelligence calls; skip file-label ids for flow mapping
   const capped = presentSymbols
     .filter((s) => !s.id.startsWith('file:'))
     .slice(0, 25);

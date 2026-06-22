@@ -91,7 +91,7 @@ export async function runSetup(opts: {
   if (config && config.projects.length > 0) {
     for (const project of config.projects) {
       for (const repo of project.repositories) {
-        const repoHostUrl = repo.source?.hostUrl ?? repo.axon?.hostUrl;
+        const repoHostUrl = repo.source?.hostUrl;
         if (!repoHostUrl) {
           continue;
         }

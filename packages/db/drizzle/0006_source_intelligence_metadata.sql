@@ -1,1 +1,2 @@
-ALTER TABLE "repositories" RENAME COLUMN "axon_status" TO "source_status";
+-- No-op: the source-intelligence metadata column is created as "source_status"
+-- in the initial migration (0000), so there is nothing to rename here.
