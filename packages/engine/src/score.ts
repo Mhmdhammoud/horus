@@ -38,12 +38,12 @@ export function scoreInvestigation(r: InvestigationReport): QualityScore {
   const resolved = r.hypotheses.filter((h) => h.verdict !== 'unconfirmed').length;
   const discriminationValue = total > 0 ? resolved / total : 0;
 
-  // 3. Root-cause confidence
-  const supported = r.hypotheses.filter((h) => h.verdict === 'supported');
-  const rootCauseValue =
-    supported.length > 0
-      ? Math.max(...supported.map((h) => h.confidence))
-      : 0;
+  // 3. Diagnostic calibration (dogfood #5). Use the report's CALIBRATED confidence — which is
+  // capped when the headline cause isn't structurally linked to the seed (#1/#2) — NOT the raw
+  // max supported-hypothesis confidence. The old metric REWARDED a confident-but-wrong headline
+  // (65%) and PUNISHED an honest "no dominant cause" run (a valid, competent outcome) with a 0,
+  // i.e. it paid for manufacturing a headline. Calibrated confidence fixes both halves.
+  const rootCauseValue = r.confidence;
 
   // 4. Evidence completeness
   const completenessValue = 1 - Math.min(1, r.gapAnalysis.gaps.length / 6);
@@ -65,10 +65,10 @@ export function scoreInvestigation(r: InvestigationReport): QualityScore {
       note: 'fraction of hypotheses ruled in or out (vs left unconfirmed)',
     },
     {
-      dimension: 'root-cause confidence',
+      dimension: 'diagnostic calibration',
       value: rootCauseValue,
       weight: 0.25,
-      note: 'confidence in a supported root-cause candidate',
+      note: 'calibrated confidence in the diagnosis — a seed-linked cause scores high; honest uncertainty is not punished',
     },
     {
       dimension: 'evidence completeness',

@@ -177,4 +177,31 @@ describe('scoreInvestigation', () => {
     expect(result.score).toBeLessThanOrEqual(100);
     expect(result.components).toHaveLength(5);
   });
+
+  it('#5: diagnostic calibration tracks the calibrated report confidence, not raw hypothesis confidence', () => {
+    // Identical hypotheses (a 0.9 supported), but different CALIBRATED confidence — e.g. an unlinked
+    // headline capped to 0.55 by #1/#2. The calibration dimension must follow r.confidence, so a
+    // confident-but-wrong headline can't inflate the score off the raw 0.9.
+    const hyps = [makeHypothesis('h1', 'supported', 0.9)];
+    const high = scoreInvestigation(makeReport({ evidence: makeEvidence(8), hypotheses: hyps, confidence: 0.85 }));
+    const capped = scoreInvestigation(makeReport({ evidence: makeEvidence(8), hypotheses: hyps, confidence: 0.55 }));
+    const dimOf = (r: ReturnType<typeof scoreInvestigation>) =>
+      r.components.find((c) => c.dimension === 'diagnostic calibration')?.value;
+    expect(dimOf(high)).toBe(0.85);
+    expect(dimOf(capped)).toBe(0.55);
+    expect(capped.score).toBeLessThan(high.score);
+  });
+
+  it('#5: an honest "no supported cause" run is not zeroed on calibration (honesty not punished)', () => {
+    // A competent run that ruled a hypothesis OUT and honestly found no dominant cause, with a
+    // calibrated moderate confidence. The old metric zeroed root-cause confidence here; it must now
+    // reflect r.confidence instead of grading honesty to the floor.
+    const honest = makeReport({
+      evidence: makeEvidence(6),
+      hypotheses: [makeHypothesis('h1', 'eliminated', 0.05)],
+      confidence: 0.6,
+    });
+    const dim = scoreInvestigation(honest).components.find((c) => c.dimension === 'diagnostic calibration');
+    expect(dim?.value).toBe(0.6);
+  });
 });
