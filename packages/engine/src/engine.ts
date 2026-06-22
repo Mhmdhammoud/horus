@@ -868,6 +868,16 @@ export async function investigate(
   const queueRuntimeEvIdsByQueue = new Map<string, string[]>();
   const queueBacklogEvIdsByQueue = new Map<string, string[]>();
   const queueStarvationEvIdsByQueue = new Map<string, string[]>();
+  // HOR-328 round-2: dominant queue failed-job reasons (e.g. "getaddrinfo ENOTFOUND"),
+  // captured so a network/dependency failure that only surfaces in queue forensics — not
+  // the live error-log stream — can still be promoted to a cause (the GAIA DNS case).
+  const queueFailureSignals: {
+    reason: string;
+    queueName: string;
+    evId: string;
+    count: number;
+    stale: boolean;
+  }[] = [];
 
   if (deps.queue) {
     try {
@@ -898,6 +908,18 @@ export async function investigate(
           const st = queueStarvationEvIdsByQueue.get(s.queueName) ?? [];
           st.push(ev.id);
           queueStarvationEvIdsByQueue.set(s.queueName, st);
+        }
+        if (s.kind === 'failed-breakdown') {
+          const p = s.payload as { topReason?: unknown; topCount?: unknown; topStale?: unknown };
+          if (typeof p.topReason === 'string') {
+            queueFailureSignals.push({
+              reason: p.topReason,
+              queueName: s.queueName,
+              evId: ev.id,
+              count: typeof p.topCount === 'number' ? p.topCount : 0,
+              stale: p.topStale === true,
+            });
+          }
         }
       }
     } catch {
@@ -1470,6 +1492,7 @@ export async function investigate(
   const INFRA_RE =
     /\b(ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ECONNRESET|getaddrinfo|socket hang up|connection (?:refused|reset|timed out)|network (?:error|timeout)|DNS)\b/i;
   const infraSig = directSignatures.find((d) => INFRA_RE.test(d.message));
+  const infraQueue = queueFailureSignals.find((q) => INFRA_RE.test(q.reason));
   if (infraSig) {
     causeInputs.push({
       id: 'cause:dependency-failure',
@@ -1477,6 +1500,20 @@ export async function investigate(
       category: 'infrastructure',
       sourceEvidenceIds: directLogEvIds.slice(0, 3),
       baseScore: 0.5,
+      metadata: { blastRadius },
+    });
+  } else if (infraQueue) {
+    // The DNS/connection failure can surface ONLY in queue forensics, never the live error
+    // stream (the GAIA case: the real cause was an ENOTFOUND in the queue's failed jobs).
+    // Promote it so the headline is the actual outage, not a co-occurring stale-collection.
+    causeInputs.push({
+      id: 'cause:dependency-failure',
+      title: `Dependency/network failure on queue ${infraQueue.queueName}: ${infraQueue.count} failed job(s) — "${infraQueue.reason.replace(/\s+/g, ' ').trim().slice(0, 100)}"${infraQueue.stale ? ' (stale — reflects a past run)' : ''}`,
+      category: 'infrastructure',
+      sourceEvidenceIds: [infraQueue.evId],
+      // A stale-only queue failure is weaker than a live error, but still the best
+      // explanation — and far better than a co-occurring stale-collection guess.
+      baseScore: infraQueue.stale ? 0.34 : 0.5,
       metadata: { blastRadius },
     });
   }
