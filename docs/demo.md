@@ -116,7 +116,7 @@ Expected output (with Postgres running and source-intelligence backend installed
 ```
 Horus setup
 
-  ✓ Horus source-intelligence backend (1.0.1)
+  ✓ Horus source-intelligence backend (1.1.1)
   ✓ Postgres reachable (9 tables present)
   ~ my-api — host not reachable at http://127.0.0.1:8420
     → start it with: horus index (in /path/to/my-api)
@@ -128,9 +128,9 @@ If the source-intelligence backend is not installed:
 
 ```bash
 # Install via pip (or uv):
-pip install axoniq==1.0.1
+pip install horus-source==1.1.1
 # OR:
-uv pip install axoniq==1.0.1
+uv pip install horus-source==1.1.1
 ```
 
 ---

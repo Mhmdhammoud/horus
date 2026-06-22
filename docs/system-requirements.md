@@ -139,7 +139,7 @@ Docker is not required by Horus itself. It is the **recommended way to run the P
 
 ### horus-source Python package (source intelligence backend)
 
-**Source:** `packages/connectors/src/axon/lifecycle.ts:10` → `const SOURCE_BINARY = 'horus-source'`. `packages/cli/src/commands/setup.ts:33` → `pip install horus-source`. `packages/core/src/version.ts:14` → `PINNED_SOURCE_VERSION = '1.0.7'`.
+**Source:** `packages/connectors/src/axon/lifecycle.ts:10` → `const SOURCE_BINARY = 'horus-source'`. `packages/cli/src/commands/setup.ts:33` → `pip install horus-source`. `packages/core/src/version.ts:14` → `PINNED_SOURCE_VERSION = '1.1.1'`.
 
 The `horus-source` binary is a Python-based service that:
 1. Analyzes a repository into a code graph (`horus-source analyze .`)
@@ -171,7 +171,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 **Ports:** The host picks a free port in range **8420–8520** (`lifecycle.ts:99`). Each repository gets its own host instance. The port is recorded in `<repo>/.horus/spawned-host.json`.
 
-**Pinned version:** `1.0.7`. `horus setup` rejects a mismatched version with a warning.
+**Pinned version:** `1.1.1`. `horus setup` rejects a mismatched version with a warning.
 
 **State files written:**
 - `<repo>/.horus/source/` — analyzed graph data
@@ -219,7 +219,7 @@ None are required. The `--ai` flag on investigation commands works with a cloud 
 | **PyPI package** | `horus-source` |
 | **Python runtime** | 3.11+ |
 | **Install** | `pip install horus-source` or `uv pip install horus-source` |
-| **Pinned version** | `1.0.7` (from `PINNED_SOURCE_VERSION` in `packages/core/src/version.ts`) |
+| **Pinned version** | `1.1.1` (from `PINNED_SOURCE_VERSION` in `packages/core/src/version.ts`) |
 | **Ports** | Free port in 8420–8520; one instance per repo |
 | **Communication** | HTTP (the CLI uses `AxonHttpClient` / `SourceHttpClient` via `fetch`) |
 | **Shell-outs** | Lifecycle only: `analyze`, `host --port`, `--version` |
@@ -549,7 +549,7 @@ pnpm install
 pnpm db migrate
 
 # 4. Install source intelligence backend
-pip install horus-source==1.0.7
+pip install horus-source==1.1.1
 
 # 5. Build the CLI
 pnpm --filter ./apps/horus build
@@ -604,7 +604,7 @@ node apps/horus/dist/index.cjs setup
 | `horus setup` reports "Postgres unreachable" | Postgres not running or wrong port | `docker run -d --name horus-db -e POSTGRES_USER=horus -e POSTGRES_PASSWORD=horus -e POSTGRES_DB=horus -p 5433:5432 postgres:16` |
 | `horus setup` reports schema not applied | Migrations not run | `pnpm db migrate` from the Horus repo |
 | `horus setup` reports "source intelligence backend not found" | `horus-source` not on PATH | `pip install horus-source` then `export PATH="$HOME/.local/bin:$PATH"` |
-| `horus setup` reports "version mismatch" | `horus-source` version doesn't match `1.0.7` | `pip install --upgrade horus-source==1.0.7` |
+| `horus setup` reports "version mismatch" | `horus-source` version doesn't match `1.1.1` | `pip install --upgrade horus-source==1.1.1` |
 | `horus investigate --ai` produces no narrative | `ANTHROPIC_API_KEY` not set, no AI provider configured | `horus connect ai` or `export ANTHROPIC_API_KEY=sk-ant-...` |
 | `horus onboard` fails with "source-intelligence host unreachable" | `horus index` not run for this repo, or host stopped | `cd <repo> && horus index` |
 | ES connector shows "failed" in investigation | Wrong field preset, timestamp field, or index pattern | See `docs/elasticsearch-field-mapping.md` |

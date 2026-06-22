@@ -180,7 +180,7 @@ describe('createJsonKnowledgeStore', () => {
     const manifest = store.write(snap, {
       generator: { tool: 'maison-safqa-import', version: '0.1.0' },
       repositories: [{ name: 'maison-safqa', headSha: 'deadbeef' }],
-      sourceIntelligence: { tool: 'axon', version: '1.0.7' },
+      sourceIntelligence: { tool: 'axon', version: '1.1.1' },
     });
 
     expect(store.exists()).toBe(true);
