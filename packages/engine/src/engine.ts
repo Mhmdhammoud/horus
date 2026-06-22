@@ -695,11 +695,17 @@ export async function investigate(
           }
           const svc = s.services.length > 0 ? ` · ${s.services.slice(0, 3).join(', ')}` : '';
           const tagStr = tags.length > 0 ? ` [${tags.join(', ')}]` : '';
+          // HOR-330: surface a representative message so the error means something beyond a
+          // bare count — e.g. "Error checking brand order fulfillment" points straight at the
+          // (data) cause that the signature key + count alone never reveal.
+          const msgStr = s.sampleMessage
+            ? ` — "${s.sampleMessage.replace(/\s+/g, ' ').trim().slice(0, 90)}"`
+            : '';
           const ev = mkEv(
             'log',
-            `Error ${s.key}: ${s.count}x (first ${shortTs(s.firstSeen)}, last ${shortTs(s.lastSeen)})${svc}${tagStr}`.slice(
+            `Error ${s.key}: ${s.count}x (first ${shortTs(s.firstSeen)}, last ${shortTs(s.lastSeen)})${svc}${tagStr}${msgStr}`.slice(
               0,
-              180,
+              220,
             ),
             {
               signature: s.key,

@@ -224,6 +224,17 @@ describe('investigate() WITH logs provider (HOR-13)', () => {
     expect(logEvidence.length).toBeGreaterThan(0);
   });
 
+  it('surfaces the error sample message in the evidence title (HOR-330)', async () => {
+    const report = await investigate(
+      { hint: 'zoho', service: 'leadcall-api-prod' },
+      { code: fakeCode, db: fakeDb, logs: fakeLogs },
+    );
+    const withMsg = report.evidence.find(
+      (e) => e.kind === 'log' && e.title.includes('Zoho API returned 503 Service Unavailable'),
+    );
+    expect(withMsg).toBeDefined();
+  });
+
   it('a NEW error signature yields evidence with relevance 0.95', async () => {
     const report = await investigate(
       { hint: 'zoho', service: 'leadcall-api-prod' },
