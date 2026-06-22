@@ -182,6 +182,39 @@ describe('investigate() — regression cause cites commit + changed functions (H
     expect(symbolClause).not.toContain('d,');
     expect(symbolClause).toContain('…');
   });
+
+  it('#3: attributes only to commits/symbols touching the seed file, not the newest in-window', () => {
+    const seedFile = 'src/services/sale.service.ts';
+    const recent = {
+      // newest-first; the newest commit touched an UNRELATED file, the older one the seed file.
+      commits: [
+        makeCommit('newaaaa', 'newest, unrelated file', ['src/other/x.ts']),
+        makeCommit('touchbb', 'the real change to the seed', [seedFile]),
+      ],
+      fileStats: [],
+      changedFiles: [seedFile, 'src/other/x.ts'],
+      totalInsertions: 0,
+      totalDeletions: 0,
+      window: { since: 'x', until: undefined },
+      truncated: false,
+    } as BoundedGitChange;
+    const unrelated: Symbol = { id: 's:x', name: 'unrelatedFn', filePath: 'src/other/x.ts', startLine: 1, endLine: 2 };
+    const changes: ChangeSet = {
+      added: [],
+      removed: [],
+      modified: [
+        { before: unrelated, after: unrelated },
+        { before: makeChangedSymbol('manageSales'), after: makeChangedSymbol('manageSales') },
+      ],
+    };
+    const { commitClause, symbolClause } = formatRegressionCitation(recent, changes, seedFile);
+    // Blame the seed-touching commit, NOT the newest unrelated-file commit.
+    expect(commitClause).toContain('touchbb');
+    expect(commitClause).not.toContain('newaaaa');
+    // Changed symbols restricted to the seed file.
+    expect(symbolClause).toContain('manageSales');
+    expect(symbolClause).not.toContain('unrelatedFn');
+  });
 });
 
 // ---------------------------------------------------------------------------
