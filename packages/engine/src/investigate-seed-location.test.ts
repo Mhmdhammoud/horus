@@ -125,3 +125,79 @@ describe('investigate() — seed evidence uses real line ranges (HOR-206)', () =
     expect(seedEv?.title).not.toMatch(/:\d/); // no colon-number at all
   });
 });
+
+// ---------------------------------------------------------------------------
+// HOR-340: a trivial blast radius must not become a tautological top cause
+// ("sits on a high-fan-out path (1 affected)"). Require genuine fan-out (>=3).
+// ---------------------------------------------------------------------------
+
+describe('investigate() — blast-radius cause requires genuine fan-out (HOR-340)', () => {
+  const codeWithAffected = (affected: number): CodeProvider => ({
+    ...fakeCode,
+    async impact(): Promise<ImpactResult> {
+      return { target: SEED_SYMBOL, affected, byDepth: [] };
+    },
+  });
+
+  it('offers NO blast-radius cause when fan-out is trivial (1 affected)', async () => {
+    const report = await investigate(
+      { hint: 'getSaleWithLink' },
+      { code: codeWithAffected(1), db: fakeDb },
+    );
+    expect(report.suspectedCauses.some((c) => /fan-out|code reach/i.test(c.title))).toBe(false);
+  });
+
+  it('offers a wide-reach cause when fan-out is genuine (>=3 affected)', async () => {
+    const report = await investigate(
+      { hint: 'getSaleWithLink' },
+      { code: codeWithAffected(8), db: fakeDb },
+    );
+    expect(report.suspectedCauses.some((c) => /code reach/i.test(c.title))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-335: a fuzzy/zero-support seed must be DISCLOSED and damped, not presented
+// as a confident result (investigate used to silently seed garbage at 0.75).
+// ---------------------------------------------------------------------------
+
+describe('investigate() — fuzzy seed disclosed + confidence damped (HOR-335)', () => {
+  it('discloses + caps confidence when no meaningful hint token matches the seed', async () => {
+    // none of these tokens appear in getSaleWithLink / sales.resolver.ts
+    const report = await investigate(
+      { hint: 'WidgetFactory exploded catastrophically' },
+      { code: fakeCode, db: fakeDb },
+    );
+    expect(report.summary).toContain('low-confidence closest match');
+    expect(report.confidence).toBeLessThanOrEqual(0.45);
+  });
+
+  it('does NOT flag when a hint token matches the seed name', async () => {
+    const report = await investigate(
+      { hint: 'getSaleWithLink is failing' }, // "sale"/"link" match the seed
+      { code: fakeCode, db: fakeDb },
+    );
+    expect(report.summary).not.toContain('low-confidence closest match');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-336: headline confidence reflects DIAGNOSIS strength — a well-localized run
+// with no meaningful root cause is "localized, cause unknown", not a confident
+// diagnosis, so it cannot read high.
+// ---------------------------------------------------------------------------
+
+describe('investigate() — confidence reflects diagnosis strength (HOR-336)', () => {
+  it('caps the headline when no meaningful cause emerges', async () => {
+    // seed matches the hint (not fuzzy), but fakeCode has impact.affected=0 and no
+    // runtime evidence => no meaningful suspected cause.
+    const report = await investigate(
+      { hint: 'getSaleWithLink' },
+      { code: fakeCode, db: fakeDb },
+    );
+    expect(report.suspectedCauses[0]?.finalScore ?? 0).toBeLessThan(0.2);
+    expect(report.confidence).toBeLessThanOrEqual(0.6);
+    // A sub-threshold cause must not headline as "Top suspected cause".
+    expect(report.summary).toContain('No dominant suspected cause');
+  });
+});

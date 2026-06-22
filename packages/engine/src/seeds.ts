@@ -17,6 +17,30 @@ const PREFER =
   /resolver|controller|\bservice\b|route|router|handler|gateway|processor|worker|consumer|repository|usecase|use-case|endpoint/i;
 const DEMOTE =
   /\butil|helper|\bscript|backfill|legacy|migration|seeder|fixture|\bmock\b|\btest\b|\bspec\b/i;
+// Type/DTO/interface declarations are not where a fault ORIGINATES — the fault lives
+// in the method that throws, not the result/input type it returns or the interface it
+// implements. Detect type-declaration naming conventions so a same-named method
+// outranks a `…Result`/`…Input`/interface, and so the engine can re-search for the
+// executable counterpart (HOR-337). (A full kind-based version via Symbol.kind from
+// the graph label is the more complete follow-up; this name heuristic covers the
+// common DTO/result-type collisions seen in practice.)
+const TYPE_SUFFIX = /(Result|Input|Response|Payload|Args|Dto|Props|Edge|Connection)$/;
+const INTERFACE_PREFIX = /^I(?=[A-Z][a-z])/;
+const TYPE_LIKE_NAME = new RegExp(`(?:${TYPE_SUFFIX.source})|(?:${INTERFACE_PREFIX.source})`);
+
+/** True when a symbol NAME follows type/DTO/interface declaration conventions. */
+export function isTypeLikeName(name: string): boolean {
+  return TYPE_LIKE_NAME.test(name);
+}
+
+/**
+ * Derive the executable counterpart name for a type-like name, or null.
+ * e.g. "SyncBrandFulfillmentsResult" -> "SyncBrandFulfillments"; "IOrderService" -> "OrderService".
+ */
+export function executableBaseName(name: string): string | null {
+  const stripped = name.replace(TYPE_SUFFIX, '').replace(INTERFACE_PREFIX, '');
+  return stripped !== name && stripped.length >= 4 ? stripped : null;
+}
 
 /** A coarse architectural role for display. */
 export function seedRole(s: Symbol): string {
@@ -33,11 +57,29 @@ export function seedRole(s: Symbol): string {
 }
 
 /** Score a seed; higher = a more likely investigation entry point. */
-export function scoreSeed(s: Symbol, index: number, hintTokens?: string[]): number {
+export function scoreSeed(
+  s: Symbol,
+  index: number,
+  hintTokens?: string[],
+  changedFiles?: Set<string>,
+): number {
   const hay = `${s.name} ${s.filePath}`.toLowerCase();
   let score = 0;
   if (PREFER.test(hay)) score += 3;
   if (DEMOTE.test(hay)) score -= 3;
+  // Demote type/DTO/interface-named symbols so an executable method wins a same-name
+  // collision (HOR-337). Methods are verbs (syncProduct); types are nouns (…Result).
+  if (isTypeLikeName(s.name)) score -= 4;
+  // Demote thin getters/passthroughs (a few lines): the fault lives in the substantive
+  // method they delegate to, not a 4-line field-resolver/getter that merely string-matches
+  // the hint (HOR-337 follow-up — a getter must not outrank the real service).
+  if (s.startLine !== undefined && s.endLine !== undefined && s.endLine - s.startLine <= 3) {
+    score -= 3;
+  }
+  // Regression investigations (--since): a candidate that lives in a file changed in the
+  // window is far more likely to be the culprit. Strong boost so the seed follows the diff
+  // instead of locking onto an unrelated unchanged function (HOR-328 round-3).
+  if (changedFiles !== undefined && changedFiles.has(s.filePath)) score += 5;
   // Strong file-suffix signals.
   if (/\.(resolver|controller|service)\.[jt]sx?$/i.test(s.filePath)) score += 2;
   // Scripts/migrations are rarely the incident surface.
@@ -61,9 +103,18 @@ export function scoreSeed(s: Symbol, index: number, hintTokens?: string[]): numb
 }
 
 /** Rank seeds best-first. Stable for equal scores (preserves search order). */
-export function rankSeeds(seeds: Symbol[], hintTokens?: string[]): RankedSeed[] {
+export function rankSeeds(
+  seeds: Symbol[],
+  hintTokens?: string[],
+  changedFiles?: Set<string>,
+): RankedSeed[] {
   return seeds
-    .map((symbol, i) => ({ symbol, score: scoreSeed(symbol, i, hintTokens), role: seedRole(symbol), i }))
+    .map((symbol, i) => ({
+      symbol,
+      score: scoreSeed(symbol, i, hintTokens, changedFiles),
+      role: seedRole(symbol),
+      i,
+    }))
     .sort((a, b) => (b.score === a.score ? a.i - b.i : b.score - a.score))
     .map(({ symbol, score, role }) => ({ symbol, score, role }));
 }

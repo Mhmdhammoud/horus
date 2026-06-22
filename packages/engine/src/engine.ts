@@ -60,7 +60,7 @@ import type {
 } from './types.js';
 import { buildTimeline } from './timeline.js';
 import { correlate } from './correlate.js';
-import { rankSeeds } from './seeds.js';
+import { rankSeeds, isTypeLikeName, executableBaseName } from './seeds.js';
 import { normalizeEvidence } from './normalize.js';
 import { computeWeightedEvidenceConfidence } from './confidence.js';
 import { collectGitChanges } from './git-collector.js';
@@ -181,15 +181,25 @@ export function classifyLogRelevance(
   seedTerms: string[],
   inputService: string | undefined,
 ): { relevanceClass: LogRelevanceClass; relevanceReason: string } {
-  if (seedTerms.length === 0) {
-    return { relevanceClass: 'direct', relevanceReason: 'no seed context — included by default' };
+  // Generic error/severity words ("error", "errors", "failing") appear in EVERY error
+  // signature, so matching on them marks every unrelated error "direct" — narrating a
+  // louder error from another service onto this seed/path (HOR-338). Relevance must come
+  // from DOMAIN terms, not the word "error".
+  const GENERIC_TERMS = new Set([
+    'error', 'errors', 'err', 'fail', 'failed', 'failing', 'failure', 'exception',
+    'exceptions', 'crash', 'crashing', 'issue', 'problem', 'slow', 'timeout', 'broken',
+    'down', 'production', 'prod', 'staging',
+  ]);
+  const domainTerms = seedTerms.filter((t) => !GENERIC_TERMS.has(t));
+  if (domainTerms.length === 0) {
+    return { relevanceClass: 'direct', relevanceReason: 'no specific seed context — included by default' };
   }
 
   const keyTokens = tokenize(sigKey);
   const serviceTokens = sigServices.flatMap((s) => tokenize(s));
   const combined = [...keyTokens, ...serviceTokens];
 
-  const matchingTerms = seedTerms.filter(
+  const matchingTerms = domainTerms.filter(
     (t) => combined.some((c) => c.includes(t) || t.includes(c)),
   );
 
@@ -378,12 +388,47 @@ export async function investigate(
   // HOR-319 layer-2: with no source-intelligence provider the engine runs RUNTIME-ONLY.
   // Skip seed resolution entirely — there are no symbols to resolve against.
   const degradedNoSource = !code;
+  // HOR-94 / HOR-193 — bounded git change summary for the incident window. Computed FIRST
+  // (independent of source intelligence) so commit evidence works in degraded runtime-only
+  // mode, when the source-backend ChangeSet is unavailable, or when --since is a relative
+  // ref (HEAD~5) detectChanges can't take — AND so a --since regression investigation can
+  // steer the seed toward changed code: the culprit lives in the diff, not an unrelated
+  // unchanged function (HOR-328 round-3).
+  let recentChanges: BoundedGitChange | undefined;
+  if (deps.repoPath && input.since) {
+    try {
+      recentChanges = await collectGitChanges({ repoPath: deps.repoPath, since: input.since });
+    } catch {
+      // Best-effort; skip on error
+    }
+  }
+  const changedFilePaths =
+    recentChanges && recentChanges.changedFiles.length > 0
+      ? new Set(recentChanges.changedFiles)
+      : undefined;
   const rawSeeds = code ? await code.searchSymbols(hint, 5) : [];
   const hintTokens = [...new Set(tokenize(hint))];
-  const ranked = rankSeeds(rawSeeds, hintTokens);
+  const ranked = rankSeeds(rawSeeds, hintTokens, changedFilePaths);
   let seeds = ranked.map((r) => r.symbol);
   // noUncheckedIndexedAccess: a non-empty array could still index to undefined.
   let top: Symbol | undefined = seeds[0];
+
+  // HOR-337: if the best seed is a TYPE/DTO declaration (e.g. `SyncBrandFulfillmentsResult`),
+  // the fault lives in the same-named EXECUTABLE, not the type. Search often only returns
+  // the type (its name hugs the hint), so demotion alone can't help — derive the base name
+  // and re-search for a method/function counterpart, preferring it when one is found.
+  if (top && code && isTypeLikeName(top.name)) {
+    const base = executableBaseName(top.name);
+    if (base) {
+      const altTop = rankSeeds(await code.searchSymbols(base, 5), hintTokens).find(
+        (r) => !isTypeLikeName(r.symbol.name),
+      )?.symbol;
+      if (altTop && altTop.id !== top.id) {
+        seeds = [altTop, ...seeds.filter((s) => s.id !== altTop.id)];
+        top = altTop;
+      }
+    }
+  }
 
   // HOR-216: a raw error string (e.g. "getaddrinfo ENOTFOUND host") matches no
   // source symbol. Before giving up, search the logs for the hint (across message,
@@ -397,6 +442,28 @@ export async function investigate(
       top = seeds[0];
     }
   }
+
+  // HOR-335: a seed with ZERO hint-token overlap (and not log-reseeded) is a
+  // semantic/fuzzy guess — not a match to anything the hint actually named. Flag it
+  // so we disclose the low confidence and damp the headline, else investigate
+  // fabricates a confident result for input that matches no real symbol (e.g.
+  // "ZzzNonexistentService is throwing" silently resolved to the helper `err`).
+  const seedHay = top ? `${top.name} ${top.filePath}`.toLowerCase() : '';
+  // Generic architectural/severity words match almost any file path ("service" is in
+  // every *.service.ts) — they don't indicate the seed is what the hint actually named.
+  const GENERIC_HINT_TOKENS = new Set([
+    'service', 'services', 'controller', 'controllers', 'resolver', 'resolvers', 'worker',
+    'workers', 'repository', 'provider', 'module', 'manager', 'util', 'utils', 'helper',
+    'handler', 'error', 'errors', 'exception', 'exceptions', 'fail', 'failed', 'failing',
+    'failure', 'throw', 'throwing', 'thrown', 'fatal', 'crash', 'crashing', 'timeout',
+    'production', 'prod', 'staging', 'application', 'issue', 'problem', 'broken', 'slow',
+  ]);
+  const meaningfulHintTokens = hintTokens.filter((t) => !GENERIC_HINT_TOKENS.has(t));
+  const seedIsLowConfidence =
+    top !== undefined &&
+    logReseed === null &&
+    meaningfulHintTokens.length > 0 &&
+    !meaningfulHintTokens.some((t) => seedHay.includes(t));
 
   // Empty-result only when source intelligence WAS available but resolved nothing.
   // In degraded runtime-only mode we fall through and build a report from runtime
@@ -428,18 +495,9 @@ export async function investigate(
     return report;
   }
 
-  // HOR-94 / HOR-193 — bounded git change summary for the incident window. Collected
-  // FIRST and independent of source intelligence, so commit evidence can be synthesized
-  // even in degraded runtime-only mode, when the source-backend ChangeSet is
-  // unavailable, or when --since is a relative ref (e.g. HEAD~5) detectChanges can't take.
-  let recentChanges: BoundedGitChange | undefined;
-  if (deps.repoPath && input.since) {
-    try {
-      recentChanges = await collectGitChanges({ repoPath: deps.repoPath, since: input.since });
-    } catch {
-      // Best-effort; skip on error
-    }
-  }
+  // (recentChanges — the bounded git change summary — is computed up front, before seed
+  // resolution above, so a --since regression investigation can steer the seed toward
+  // changed code.)
 
   // Structural-evidence accumulators. Populated only when a seed resolved (full run);
   // they stay at these runtime-only defaults in degraded mode (HOR-319 layer-2), where
@@ -586,6 +644,11 @@ export async function investigate(
   const logEvIds: string[] = [];
   const directLogEvIds: string[] = [];
   const ambientLogEvIds: string[] = [];
+  // HOR-338: track the DIRECT signatures (not just their evidence ids) so the
+  // error-correlation cause cites the errors actually linked to the seed/path — not
+  // the global top error, which co-occurrence would otherwise cross-wire onto an
+  // unrelated path (e.g. a scheduler error narrated onto a webhook worker).
+  const directSignatures: { key: string; count: number; message: string }[] = [];
   // HOR-215: distinct-failing-entity evidence (e.g. "16 brand_id, 50 order_id").
   const entityEvIds: string[] = [];
   const entitySummaries: string[] = [];
@@ -641,11 +704,17 @@ export async function investigate(
           }
           const svc = s.services.length > 0 ? ` · ${s.services.slice(0, 3).join(', ')}` : '';
           const tagStr = tags.length > 0 ? ` [${tags.join(', ')}]` : '';
+          // HOR-330: surface a representative message so the error means something beyond a
+          // bare count — e.g. "Error checking brand order fulfillment" points straight at the
+          // (data) cause that the signature key + count alone never reveal.
+          const msgStr = s.sampleMessage
+            ? ` — "${s.sampleMessage.replace(/\s+/g, ' ').trim().slice(0, 90)}"`
+            : '';
           const ev = mkEv(
             'log',
-            `Error ${s.key}: ${s.count}x (first ${shortTs(s.firstSeen)}, last ${shortTs(s.lastSeen)})${svc}${tagStr}`.slice(
+            `Error ${s.key}: ${s.count}x (first ${shortTs(s.firstSeen)}, last ${shortTs(s.lastSeen)})${svc}${tagStr}${msgStr}`.slice(
               0,
-              180,
+              220,
             ),
             {
               signature: s.key,
@@ -680,8 +749,10 @@ export async function investigate(
           if (s.isNew) ev.isNew = s.isNew;
           if (typeof s.ratio === 'number' && Number.isFinite(s.ratio)) ev.ratio = s.ratio;
           logEvIds.push(ev.id);
-          if (relevanceClass === 'direct') directLogEvIds.push(ev.id);
-          else ambientLogEvIds.push(ev.id);
+          if (relevanceClass === 'direct') {
+            directLogEvIds.push(ev.id);
+            directSignatures.push({ key: s.key, count: s.count, message: s.sampleMessage ?? '' });
+          } else ambientLogEvIds.push(ev.id);
         }
 
         // HOR-215: surface the DISTINCT failing entities behind the dominant error
@@ -749,6 +820,10 @@ export async function investigate(
   let stateAnalysis: StateAnalysis | null = null;
   const stateEvIds: string[] = [];
   const stateCollections = new Set<string>();
+  // HOR-332: anomaly state signals (records stuck in a failed/stale state) are a data
+  // CAUSE class, not just a finding — many prod incidents are data, not code.
+  const dataAnomalyEvIds: string[] = [];
+  const dataAnomalyCollections: string[] = [];
 
   if (deps.mongo) {
     try {
@@ -761,6 +836,10 @@ export async function investigate(
         const ev = mkEv('state', s.title, s.payload, {}, s.timestamp, s.relevance);
         stateEvIds.push(ev.id);
         stateCollections.add(s.collection);
+        if (s.kind === 'anomaly') {
+          dataAnomalyEvIds.push(ev.id);
+          dataAnomalyCollections.push(s.collection);
+        }
       }
     } catch {
       stateAnalysis = null;
@@ -798,6 +877,16 @@ export async function investigate(
   const queueRuntimeEvIdsByQueue = new Map<string, string[]>();
   const queueBacklogEvIdsByQueue = new Map<string, string[]>();
   const queueStarvationEvIdsByQueue = new Map<string, string[]>();
+  // HOR-328 round-2: dominant queue failed-job reasons (e.g. "getaddrinfo ENOTFOUND"),
+  // captured so a network/dependency failure that only surfaces in queue forensics — not
+  // the live error-log stream — can still be promoted to a cause (the GAIA DNS case).
+  const queueFailureSignals: {
+    reason: string;
+    queueName: string;
+    evId: string;
+    count: number;
+    stale: boolean;
+  }[] = [];
 
   if (deps.queue) {
     try {
@@ -828,6 +917,18 @@ export async function investigate(
           const st = queueStarvationEvIdsByQueue.get(s.queueName) ?? [];
           st.push(ev.id);
           queueStarvationEvIdsByQueue.set(s.queueName, st);
+        }
+        if (s.kind === 'failed-breakdown') {
+          const p = s.payload as { topReason?: unknown; topCount?: unknown; topStale?: unknown };
+          if (typeof p.topReason === 'string') {
+            queueFailureSignals.push({
+              reason: p.topReason,
+              queueName: s.queueName,
+              evId: ev.id,
+              count: typeof p.topCount === 'number' ? p.topCount : 0,
+              stale: p.topStale === true,
+            });
+          }
         }
       }
     } catch {
@@ -908,11 +1009,28 @@ export async function investigate(
         const labelVals = Object.values(f.labels).map((v) => v.toLowerCase());
 
         if (f.anomaly === 'latency-spike' || f.anomaly === 'error-rate-change') {
-          // Without a service scope, retain as evidence but don't boost hypotheses.
-          const relevant =
+          // Promote a latency/error-rate spike to a CAUSE when it's scoped to the
+          // investigated service OR — with no --service — when the panel/labels match the
+          // hint (HOR-328 round-2: a "scheduler run duration latency spike" hint must lift
+          // the matching x139 anomaly into a cause, not leave it unranked in evidence).
+          const matchesService =
             serviceFilter.length > 0 &&
             (panelLower.includes(serviceFilter) || labelVals.some((v) => v.includes(serviceFilter)));
-          if (relevant) latencyMetricEvIds.push(ev.id);
+          // Only promote on a hint match when the hint is actually PERFORMANCE-flavored —
+          // else a latency panel named after a domain noun (e.g. "GetProduct p95") gets
+          // lifted into the cause for any "product …" hint and metric-anomaly headlines
+          // everything (round-2 over-fire).
+          const hintIsPerf =
+            /\b(latenc|slow|spike|perf|throughput|duration|p9[5-9]|timeout|response\s*time|degrad)/i.test(
+              hint,
+            );
+          const matchesHint =
+            serviceFilter.length === 0 &&
+            hintIsPerf &&
+            hintTokens.some(
+              (t) => t.length >= 4 && (panelLower.includes(t) || labelVals.some((v) => v.includes(t))),
+            );
+          if (matchesService || matchesHint) latencyMetricEvIds.push(ev.id);
         } else if (f.anomaly === 'queue-growth') {
           // Attribute each queue-growth anomaly to the specific queue(s) it matches.
           // Match using normalized panel/label strings with word-boundary checks so
@@ -1334,11 +1452,16 @@ export async function investigate(
     });
   }
 
-  // Blast-radius cause: offered when a resolved symbol has reach (full run only).
-  if (top && impactEv && seedEv && impact && impact.affected > 0) {
+  // Blast-radius cause: offered only when a resolved symbol has GENUINE reach.
+  // "1 affected" is no fan-out — offering it produced a tautological top cause
+  // ("sits on a high-fan-out path (1 affected)") that led the ranking on pure
+  // topology while real (error/data) signals sat unranked (HOR-340). Require a
+  // real fan-out threshold before this structural observation can be a cause.
+  const MIN_FANOUT_FOR_CAUSE = 3;
+  if (top && impactEv && seedEv && impact && impact.affected >= MIN_FANOUT_FOR_CAUSE) {
     causeInputs.push({
       id: 'cause:blast-radius',
-      title: `${top.name} sits on a high-fan-out path (${impact.affected} affected) and may propagate the fault`,
+      title: `${top.name} has wide code reach (${impact.affected} dependent symbols) and may propagate the fault`,
       category: 'blast-radius',
       sourceEvidenceIds: [impactEv.id, seedEv.id],
       baseScore: clamp01(0.15 + (queueHits.length > 0 ? 0.05 : 0)),
@@ -1355,13 +1478,81 @@ export async function investigate(
       firstQueue !== undefined
         ? `"${firstQueue.queueName}" (${firstQueue.producerSymbol ?? 'unknown'} -> ${firstQueue.workerSymbol ?? 'unknown'})`
         : 'the queue path';
-    const topSig = analysis.signatures[0];
+    // HOR-338: cite the DIRECT errors (those linked to the seed/path), not the global
+    // top/total — otherwise a louder, unrelated error from another service/host is
+    // narrated onto this path purely by co-occurrence.
+    const directTotal = directSignatures.reduce((sum, d) => sum + d.count, 0);
+    const directTop = directSignatures[0];
     causeInputs.push({
       id: 'cause:error-correlation',
-      title: `Runtime errors (${analysis.totalErrors}${topSig ? `, top ${topSig.key}` : ''}) correlate with the implicated queue path ${queueLabel}`,
+      title: `Runtime errors (${directTotal}${directTop ? `, top ${directTop.key}` : ''}) directly linked to the implicated queue path ${queueLabel}`,
       category: 'error-correlation',
       sourceEvidenceIds: directLogEvIds.slice(0, 3),
       baseScore: 0.30,
+      metadata: { blastRadius },
+    });
+  }
+
+  // HOR-328 round-2: synthesize a network/dependency cause from the dominant DIRECT error
+  // MESSAGE. The real cause (a DNS/connection failure like "getaddrinfo ENOTFOUND host") is
+  // often verbatim in the message yet never promoted, so the headline defaulted to a
+  // co-occurring metric/stale signal instead of the actual outage. This is a strong,
+  // evidence-backed cause that should lead.
+  const INFRA_RE =
+    /\b(ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ECONNRESET|getaddrinfo|socket hang up|connection (?:refused|reset|timed out)|network (?:error|timeout)|DNS)\b/i;
+  const infraSig = directSignatures.find((d) => INFRA_RE.test(d.message));
+  // Only headline a queue failure that is RELEVANT to this investigation — otherwise a single
+  // stale failing queue (e.g. one GAIA DNS error days old) gets narrated onto every unrelated
+  // hint (round-3 over-fire). Relevant = the queue is a static hit for this investigation, or
+  // its name overlaps the hint tokens (so "gaia stock sync" matches GAIA_STOCK_SYNC, but an
+  // Emoda/HMAC/fulfillment hint does not).
+  const queueHitNames = new Set(queueHits.map((e) => e.queueName.toLowerCase()));
+  const infraQueue = queueFailureSignals.find((q) => {
+    if (!INFRA_RE.test(q.reason)) return false;
+    if (queueHitNames.has(q.queueName.toLowerCase())) return true;
+    const qTokens = new Set(tokenize(q.queueName));
+    return hintTokens.some((t) => t.length >= 3 && qTokens.has(t));
+  });
+  if (infraSig) {
+    causeInputs.push({
+      id: 'cause:dependency-failure',
+      title: `Dependency/network failure: ${infraSig.count}x ${infraSig.key} — "${infraSig.message.replace(/\s+/g, ' ').trim().slice(0, 100)}"`,
+      category: 'infrastructure',
+      sourceEvidenceIds: directLogEvIds.slice(0, 3),
+      baseScore: 0.5,
+      metadata: { blastRadius },
+    });
+  } else if (infraQueue) {
+    // The DNS/connection failure can surface ONLY in queue forensics, never the live error
+    // stream (the GAIA case: the real cause was an ENOTFOUND in the queue's failed jobs).
+    // Promote it so the headline is the actual outage, not a co-occurring stale-collection.
+    causeInputs.push({
+      id: 'cause:dependency-failure',
+      title: `Dependency/network failure on queue ${infraQueue.queueName}: ${infraQueue.count} failed job(s) — "${infraQueue.reason.replace(/\s+/g, ' ').trim().slice(0, 100)}"${infraQueue.stale ? ' (stale — reflects a past run)' : ''}`,
+      category: 'infrastructure',
+      sourceEvidenceIds: [infraQueue.evId],
+      // A stale-only queue failure is weaker than a live error, but still the best
+      // explanation — and far better than a co-occurring stale-collection guess.
+      baseScore: infraQueue.stale ? 0.34 : 0.5,
+      metadata: { blastRadius },
+    });
+  }
+
+  // HOR-332: data-state anomaly cause — records stuck in a failed/stale state are a
+  // data-quality root-cause class, not just a finding. Many prod incidents are data
+  // (stale/orphaned records), not code, and Horus otherwise anchors only on code.
+  if (dataAnomalyEvIds.length > 0) {
+    const collections = [...new Set(dataAnomalyCollections)];
+    const example = collections[0];
+    causeInputs.push({
+      id: 'cause:data-state-anomaly',
+      // Co-occurring, NOT asserted as the root cause: the stale collection is selected by
+      // hint relevance, not proven reachable from the seed's call graph, so claiming it is
+      // the cause mislead on e.g. a Shopify-fulfillment error citing unrelated gaia sync logs.
+      title: `Data-state anomaly (co-occurring): ${collections.length} collection(s) hold records in a failed/stale state${example ? ` (e.g. ${example})` : ''} — verify whether it relates to this failure`,
+      category: 'data-state-anomaly',
+      sourceEvidenceIds: dataAnomalyEvIds.slice(0, 3),
+      baseScore: 0.22,
       metadata: { blastRadius },
     });
   }
@@ -1419,17 +1610,28 @@ export async function investigate(
   // Without a seed (degraded runtime-only mode) seedResolved is 0, so this formula
   // already caps confidence at ≤0.5 — runtime evidence can never look as certain as a
   // full structural run (HOR-319 layer-2).
-  const seedResolved = seeds.length > 0 ? 1 : 0;
+  // A fuzzy/zero-support seed (HOR-335) is only partially "resolved" — it must not
+  // earn the full +0.5 a real, hint-matched seed does.
+  const seedResolved = seeds.length === 0 ? 0 : seedIsLowConfidence ? 0.3 : 1;
   const confidence = clamp01(0.5 * evidenceConfidence + 0.5 * seedResolved);
 
   // h. summary
   const area = ctx?.community?.name ?? top?.filePath ?? (input.service ?? 'runtime evidence');
   const topCause = rankedCauses[0];
+  // HOR-340/336: a sub-threshold cause (e.g. a weak "wide code reach" blast-radius scoring
+  // ~0.09) must not headline as "Top suspected cause" — that reads as a confident diagnosis.
+  // Below the meaningful bar it stays in the listed causes but the summary says "no dominant".
+  const headlineCause = topCause && topCause.finalScore >= 0.2 ? topCause : undefined;
   const banner = degradedNoSource ? 'Runtime-only (source intelligence unavailable). ' : '';
   const scope = top ? `resolved to ${label} (${area})` : `over runtime evidence (${area})`;
-  const summary = topCause
-    ? `${banner}Investigation of "${hint}" ${scope}. Top suspected cause: ${topCause.title}.`
-    : `${banner}Investigation of "${hint}" ${scope}. No dominant suspected cause emerged from the available ${degradedNoSource ? 'runtime' : 'structural'} evidence.`;
+  // HOR-335: lead with an honest disclaimer when the seed is only a semantic guess.
+  const seedDisclaimer =
+    seedIsLowConfidence && top
+      ? `⚠ No symbol closely matched "${hint}" — "${top.name}" is a low-confidence closest match (semantic). Refine with an exact symbol or error code to target precisely. `
+      : '';
+  const summary = headlineCause
+    ? `${seedDisclaimer}${banner}Investigation of "${hint}" ${scope}. Top suspected cause: ${headlineCause.title}.`
+    : `${seedDisclaimer}${banner}Investigation of "${hint}" ${scope}. No dominant suspected cause emerged from the available ${degradedNoSource ? 'runtime' : 'structural'} evidence.`;
 
   // i. nextActions
   const nextActions = buildNextActions(top, ctx, impact, queueHits, changes, input);
@@ -1439,8 +1641,9 @@ export async function investigate(
     );
   }
 
-  // Prepend owner routing when ownership is known (HOR-40).
-  if (ownershipEstimate?.likelyMaintainer) {
+  // Prepend owner routing when ownership is known (HOR-40) — but not for a fuzzy
+  // seed (HOR-335): routing a maintainer for a fabricated seed is false authority.
+  if (ownershipEstimate?.likelyMaintainer && !seedIsLowConfidence) {
     nextActions.unshift(
       `Route to likely maintainer: ${ownershipEstimate.likelyMaintainer} (${Math.round(ownershipEstimate.maintainerShare * 100)}% of commits to ${ownershipEstimate.file ?? top?.filePath ?? 'the implicated file'})`,
     );
@@ -1498,6 +1701,17 @@ export async function investigate(
   const gapAnalysis = detectMissingEvidence(report, connectorFlags);
   report.gapAnalysis = gapAnalysis;
   report.confidence = Math.min(report.confidence, gapAnalysis.confidenceCeiling);
+  // HOR-335: a fuzzy/zero-support seed can never claim more than low confidence,
+  // regardless of how much (unrelated) runtime evidence happens to be present.
+  if (seedIsLowConfidence) report.confidence = Math.min(report.confidence, 0.45);
+  // HOR-336: the headline must reflect DIAGNOSIS strength, not just localization +
+  // evidence volume. A run can localize a seed and surface lots of evidence yet
+  // produce no meaningful root cause — that is "localized, cause unknown", not a
+  // confident diagnosis. When no cause clears a meaningful bar (the cause scale is
+  // compressed; real causes score ~0.3+), cap the headline so it can't read 0.85
+  // over a 0.08 cause (or none at all).
+  const topCauseScore = report.suspectedCauses[0]?.finalScore ?? 0;
+  if (topCauseScore < 0.2) report.confidence = Math.min(report.confidence, 0.6);
   report.nextActions.push(...gapNextActions(gapAnalysis.gaps));
   report.sourceStatus = buildRuntimeSourceStatus(evidence, connectorFlags);
 

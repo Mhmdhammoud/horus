@@ -50,6 +50,23 @@ export function classifyAnomaly(
   const spike = opts?.spike ?? 1.5;
   const drop = opts?.drop ?? 0.67;
 
+  // HOR-342: a "spike" on a metric with no baseline (baselineAvg ≈ 0) yields an Infinity
+  // ratio and is flagged regardless of magnitude — so a no-traffic op going 0 → 0.024s, or
+  // a queue depth 0 → 0.03, reads identically to a real 0 → 2.4s spike. Require a meaningful
+  // absolute magnitude before flagging a zero-baseline jump, so trivial blips are dropped.
+  const NEAR_ZERO = 1e-9;
+  if (cmp.baselineAvg <= NEAR_ZERO && cmp.currentAvg > 0) {
+    const floor =
+      kind === 'queue'
+        ? 1 // < 1 job is not a backlog (unit-independent)
+        : kind === 'latency'
+          ? 0.05 // 50ms p95 (latency series are in seconds on this instance)
+          : kind === 'error-rate'
+            ? 0.005
+            : 0; // throughput is about drops; generic 'change' keeps its own gate
+    if (cmp.currentAvg < floor) return 'none';
+  }
+
   if (kind === 'latency' && cmp.ratio >= spike) return 'latency-spike';
 
   if (

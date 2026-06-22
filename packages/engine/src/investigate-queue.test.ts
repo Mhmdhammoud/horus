@@ -583,3 +583,94 @@ describe('investigate() — Grafana queue metric canonical key attribution', () 
     expect(wsPreorders?.verdict).toBe('unconfirmed');
   });
 });
+
+// ---------------------------------------------------------------------------
+// HOR-328 round-2: a dependency/network failure that only surfaces in queue
+// forensics (e.g. a stale ENOTFOUND in failed jobs) is promoted to a cause.
+// ---------------------------------------------------------------------------
+
+describe('investigate() — dependency cause from queue failure forensics (HOR-328)', () => {
+  it('promotes a queue ENOTFOUND failure reason to a dependency/network cause', async () => {
+    const state: QueueRuntimeState = {
+      prefix: 'bull',
+      collectedAt: new Date().toISOString(),
+      queues: [
+        {
+          queueName: 'GAIA_STOCK_SYNC',
+          waiting: 0,
+          active: 0,
+          failed: 50,
+          delayed: 0,
+          completed: 100,
+          paused: 0,
+          isPaused: false,
+          newestFailedAgeMs: 5_000,
+          failedBreakdown: [
+            {
+              reason: 'Gaia API fetch failed: getaddrinfo ENOTFOUND monnier.example.com',
+              count: 50,
+              lastFailedAgeMs: 5_000,
+            },
+          ],
+        },
+      ],
+    };
+    const queue: QueueRuntimeProvider = {
+      id: 'bullmq',
+      kind: 'queue',
+      async health() { return { ok: true, detail: 'fake' }; },
+      async analyzeQueues() { return state; },
+      async discoverQueues() { return ['GAIA_STOCK_SYNC']; },
+      toEvidence() { return []; },
+      async close() {},
+    };
+    const report = await investigate(
+      { hint: 'GAIA_STOCK_SYNC gaia sync failing' },
+      { code: fakeCode, db: fakeDb, queue },
+    );
+    expect(
+      report.suspectedCauses.some((c) => /Dependency\/network failure on queue/.test(c.title)),
+    ).toBe(true);
+  });
+
+  it('does NOT narrate an unrelated stale queue failure onto a non-matching hint (HOR-328)', async () => {
+    // Same GAIA DNS failure, but an Emoda hint: the queue is not a static hit and its name
+    // does not overlap the hint, so it must not be headlined (round-3 over-fire fix).
+    const state: QueueRuntimeState = {
+      prefix: 'bull',
+      collectedAt: new Date().toISOString(),
+      queues: [
+        {
+          queueName: 'GAIA_STOCK_SYNC',
+          waiting: 0,
+          active: 0,
+          failed: 50,
+          delayed: 0,
+          completed: 100,
+          paused: 0,
+          isPaused: false,
+          newestFailedAgeMs: 5_000,
+          failedBreakdown: [
+            { reason: 'getaddrinfo ENOTFOUND monnier.example.com', count: 50, lastFailedAgeMs: 5_000 },
+          ],
+        },
+      ],
+    };
+    const queue: QueueRuntimeProvider = {
+      id: 'bullmq',
+      kind: 'queue',
+      async health() { return { ok: true, detail: 'fake' }; },
+      async analyzeQueues() { return state; },
+      async discoverQueues() { return ['GAIA_STOCK_SYNC']; },
+      toEvidence() { return []; },
+      async close() {},
+    };
+    const report = await investigate(
+      { hint: 'emoda token refresh failing' },
+      { code: fakeCode, db: fakeDb, queue },
+    );
+    expect(
+      report.suspectedCauses.some((c) => /Dependency\/network failure on queue/.test(c.title)),
+    ).toBe(false);
+  });
+});

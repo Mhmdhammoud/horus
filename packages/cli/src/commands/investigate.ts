@@ -381,7 +381,11 @@ export async function runInvestigate(
       if (cloudActive && cloudSession && cloudCfg) {
         try {
           const refs = await uploadInvestigationToCloud(cloudSession.client, cloudCfg, report);
-          console.log(pc.dim(`[cloud] investigation saved: ${refs.investigationId}`));
+          // Never write the human notice to STDOUT under --json — it corrupts the
+          // machine-readable output (a trailing non-JSON line breaks every parser).
+          const cloudNote = pc.dim(`[cloud] investigation saved: ${refs.investigationId}`);
+          if (format === 'json') console.error(cloudNote);
+          else console.log(cloudNote);
         } catch (err) {
           return reportCloudError(err);
         }

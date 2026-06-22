@@ -328,19 +328,25 @@ export function refineInvestigation(
     }
 
     const recognizedList = ALL_TOPICS.join(', ');
-    const note =
-      'No specific topic directive recognized. ' +
-      'Recognized topics: ' +
-      recognizedList +
-      '. ' +
-      'Example usage: "focus on queue behavior", "ignore deployment changes".';
+    // HOR-331: `horus ask` reuses saved evidence and cannot run a new lookup. For a
+    // code-locating QUESTION, re-printing all evidence under a "topic not recognized"
+    // note reads as a (non-)answer — be explicit and point at a path that CAN re-query,
+    // and don't dump the full evidence list.
+    const looksLikeQuestion = /\?|\b(where|which|what|how|why|when|does|do|is|are|can|should)\b/i.test(
+      directive,
+    );
+    const note = looksLikeQuestion
+      ? `This question can't be answered from the saved evidence — \`horus ask\` reuses the report and does not run a new source/runtime lookup. For a fresh answer run:  horus investigate "${directive.slice(0, 80)}". (To filter the saved evidence instead, use a topic: ${recognizedList}.)`
+      : 'No specific topic directive recognized. Recognized topics: ' +
+        recognizedList +
+        '. Example usage: "focus on queue behavior", "ignore deployment changes".';
     return {
       directive,
       mode: 'none',
       topics,
       hypotheses: r.hypotheses,
       suspectedCauses: r.suspectedCauses,
-      evidence: r.evidence,
+      evidence: looksLikeQuestion ? [] : r.evidence,
       note,
     };
   }

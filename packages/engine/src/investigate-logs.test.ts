@@ -224,6 +224,49 @@ describe('investigate() WITH logs provider (HOR-13)', () => {
     expect(logEvidence.length).toBeGreaterThan(0);
   });
 
+  it('surfaces the error sample message in the evidence title (HOR-330)', async () => {
+    const report = await investigate(
+      { hint: 'zoho', service: 'leadcall-api-prod' },
+      { code: fakeCode, db: fakeDb, logs: fakeLogs },
+    );
+    const withMsg = report.evidence.find(
+      (e) => e.kind === 'log' && e.title.includes('Zoho API returned 503 Service Unavailable'),
+    );
+    expect(withMsg).toBeDefined();
+  });
+
+  it('synthesizes a dependency/network cause from a direct ENOTFOUND error message (HOR-328 round-2)', async () => {
+    const dnsLogs: LogsProvider = {
+      ...fakeLogs,
+      async analyzeErrors() {
+        return {
+          window: { from: 'x', to: 'y' },
+          totalErrors: 20,
+          signatures: [
+            {
+              key: 'GAIA_FETCH_FAIL',
+              count: 20,
+              firstSeen: '2026-06-13T10:00:00.000Z',
+              lastSeen: '2026-06-13T15:00:00.000Z',
+              services: ['gaia-sync'],
+              isNew: true,
+              baselineCount: 0,
+              ratio: Infinity,
+              sampleMessage: 'Gaia API fetch failed: getaddrinfo ENOTFOUND monnier.example.com',
+            },
+          ],
+          newSignatures: ['GAIA_FETCH_FAIL'],
+          affectedServices: ['gaia-sync'],
+        };
+      },
+    };
+    const report = await investigate(
+      { hint: 'gaia fetch failing', service: 'gaia-sync' },
+      { code: fakeCode, db: fakeDb, logs: dnsLogs },
+    );
+    expect(report.suspectedCauses.some((c) => /Dependency\/network failure/.test(c.title))).toBe(true);
+  });
+
   it('a NEW error signature yields evidence with relevance 0.95', async () => {
     const report = await investigate(
       { hint: 'zoho', service: 'leadcall-api-prod' },

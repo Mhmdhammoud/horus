@@ -42,6 +42,23 @@ describe('classifyAnomaly', () => {
     expect(classifyAnomaly('latency', makeCmp({ ratio: 4 }))).toBe('latency-spike');
   });
 
+  it('suppresses a trivial zero-baseline blip (HOR-342)', () => {
+    // 0 -> 24ms p95 on a no-traffic op: Infinity ratio but meaningless magnitude.
+    expect(
+      classifyAnomaly('latency', makeCmp({ baselineAvg: 0, currentAvg: 0.024, ratio: Infinity })),
+    ).toBe('none');
+    // 0 -> 0.03 queue depth: less than one job, not a backlog.
+    expect(
+      classifyAnomaly('queue', makeCmp({ baselineAvg: 0, currentAvg: 0.03, ratio: Infinity, delta: 0.03 })),
+    ).toBe('none');
+  });
+
+  it('still flags a real zero-baseline spike that clears the floor (HOR-342)', () => {
+    expect(
+      classifyAnomaly('latency', makeCmp({ baselineAvg: 0, currentAvg: 2.4, ratio: Infinity })),
+    ).toBe('latency-spike');
+  });
+
   it('returns throughput-drop when kind is throughput and ratio <= drop threshold', () => {
     expect(
       classifyAnomaly('throughput', makeCmp({ ratio: 0.3, currentAvg: 0.3 })),

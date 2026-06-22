@@ -172,4 +172,26 @@ describe('classifyLogRelevance', () => {
     expect(typeof r.relevanceReason).toBe('string');
     expect(r.relevanceReason.length).toBeGreaterThan(0);
   });
+
+  it('does not link an unrelated error via the generic word "errors" (HOR-338)', () => {
+    // brand-webhook seed; E_FULFILLMENT_* lives on the scheduler. The only overlap is
+    // "errors"~"error" — a generic severity term that must NOT mark it direct.
+    const r = classifyLogRelevance(
+      'E_FULFILLMENT_SYNC_ERROR_04',
+      ['maison-safqa-prod-scheduler'],
+      ['brand', 'webhook', 'worker', 'errors', 'failing'],
+      undefined,
+    );
+    expect(r.relevanceClass).toBe('ambient');
+  });
+
+  it('still classifies as direct on a real domain term (HOR-338)', () => {
+    const r = classifyLogRelevance(
+      'E_FULFILLMENT_SYNC_ERROR_04',
+      ['maison-safqa-prod-scheduler'],
+      ['fulfillment', 'errors'], // "fulfillment" is a genuine domain match
+      undefined,
+    );
+    expect(r.relevanceClass).toBe('direct');
+  });
 });
