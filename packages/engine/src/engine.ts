@@ -388,9 +388,27 @@ export async function investigate(
   // HOR-319 layer-2: with no source-intelligence provider the engine runs RUNTIME-ONLY.
   // Skip seed resolution entirely — there are no symbols to resolve against.
   const degradedNoSource = !code;
+  // HOR-94 / HOR-193 — bounded git change summary for the incident window. Computed FIRST
+  // (independent of source intelligence) so commit evidence works in degraded runtime-only
+  // mode, when the source-backend ChangeSet is unavailable, or when --since is a relative
+  // ref (HEAD~5) detectChanges can't take — AND so a --since regression investigation can
+  // steer the seed toward changed code: the culprit lives in the diff, not an unrelated
+  // unchanged function (HOR-328 round-3).
+  let recentChanges: BoundedGitChange | undefined;
+  if (deps.repoPath && input.since) {
+    try {
+      recentChanges = await collectGitChanges({ repoPath: deps.repoPath, since: input.since });
+    } catch {
+      // Best-effort; skip on error
+    }
+  }
+  const changedFilePaths =
+    recentChanges && recentChanges.changedFiles.length > 0
+      ? new Set(recentChanges.changedFiles)
+      : undefined;
   const rawSeeds = code ? await code.searchSymbols(hint, 5) : [];
   const hintTokens = [...new Set(tokenize(hint))];
-  const ranked = rankSeeds(rawSeeds, hintTokens);
+  const ranked = rankSeeds(rawSeeds, hintTokens, changedFilePaths);
   let seeds = ranked.map((r) => r.symbol);
   // noUncheckedIndexedAccess: a non-empty array could still index to undefined.
   let top: Symbol | undefined = seeds[0];
@@ -477,18 +495,9 @@ export async function investigate(
     return report;
   }
 
-  // HOR-94 / HOR-193 — bounded git change summary for the incident window. Collected
-  // FIRST and independent of source intelligence, so commit evidence can be synthesized
-  // even in degraded runtime-only mode, when the source-backend ChangeSet is
-  // unavailable, or when --since is a relative ref (e.g. HEAD~5) detectChanges can't take.
-  let recentChanges: BoundedGitChange | undefined;
-  if (deps.repoPath && input.since) {
-    try {
-      recentChanges = await collectGitChanges({ repoPath: deps.repoPath, since: input.since });
-    } catch {
-      // Best-effort; skip on error
-    }
-  }
+  // (recentChanges — the bounded git change summary — is computed up front, before seed
+  // resolution above, so a --since regression investigation can steer the seed toward
+  // changed code.)
 
   // Structural-evidence accumulators. Populated only when a seed resolved (full run);
   // they stay at these runtime-only defaults in degraded mode (HOR-319 layer-2), where

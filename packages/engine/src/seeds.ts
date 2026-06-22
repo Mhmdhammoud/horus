@@ -57,7 +57,12 @@ export function seedRole(s: Symbol): string {
 }
 
 /** Score a seed; higher = a more likely investigation entry point. */
-export function scoreSeed(s: Symbol, index: number, hintTokens?: string[]): number {
+export function scoreSeed(
+  s: Symbol,
+  index: number,
+  hintTokens?: string[],
+  changedFiles?: Set<string>,
+): number {
   const hay = `${s.name} ${s.filePath}`.toLowerCase();
   let score = 0;
   if (PREFER.test(hay)) score += 3;
@@ -71,6 +76,10 @@ export function scoreSeed(s: Symbol, index: number, hintTokens?: string[]): numb
   if (s.startLine !== undefined && s.endLine !== undefined && s.endLine - s.startLine <= 3) {
     score -= 3;
   }
+  // Regression investigations (--since): a candidate that lives in a file changed in the
+  // window is far more likely to be the culprit. Strong boost so the seed follows the diff
+  // instead of locking onto an unrelated unchanged function (HOR-328 round-3).
+  if (changedFiles !== undefined && changedFiles.has(s.filePath)) score += 5;
   // Strong file-suffix signals.
   if (/\.(resolver|controller|service)\.[jt]sx?$/i.test(s.filePath)) score += 2;
   // Scripts/migrations are rarely the incident surface.
@@ -94,9 +103,18 @@ export function scoreSeed(s: Symbol, index: number, hintTokens?: string[]): numb
 }
 
 /** Rank seeds best-first. Stable for equal scores (preserves search order). */
-export function rankSeeds(seeds: Symbol[], hintTokens?: string[]): RankedSeed[] {
+export function rankSeeds(
+  seeds: Symbol[],
+  hintTokens?: string[],
+  changedFiles?: Set<string>,
+): RankedSeed[] {
   return seeds
-    .map((symbol, i) => ({ symbol, score: scoreSeed(symbol, i, hintTokens), role: seedRole(symbol), i }))
+    .map((symbol, i) => ({
+      symbol,
+      score: scoreSeed(symbol, i, hintTokens, changedFiles),
+      role: seedRole(symbol),
+      i,
+    }))
     .sort((a, b) => (b.score === a.score ? a.i - b.i : b.score - a.score))
     .map(({ symbol, score, role }) => ({ symbol, score, role }));
 }

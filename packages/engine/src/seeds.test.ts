@@ -70,6 +70,20 @@ describe('rankSeeds', () => {
     expect(scoreSeed(service, 1)).toBeGreaterThan(scoreSeed(getter, 0));
   });
 
+  it('boosts a seed that lives in a --since changed file (HOR-328)', () => {
+    const s = sym('Foo', 'src/services/sale.service.ts');
+    const changedFiles = new Set(['src/services/sale.service.ts']);
+    expect(scoreSeed(s, 0, [], changedFiles)).toBeGreaterThan(scoreSeed(s, 0, []));
+  });
+
+  it('a changed-file seed outranks an otherwise-equal unchanged one (HOR-328)', () => {
+    const changed = sym('AService', 'src/services/a.service.ts');
+    const unchanged = sym('BService', 'src/services/b.service.ts');
+    // Without a change set they tie → search order keeps BService first; the change set flips it.
+    const ranked = rankSeeds([unchanged, changed], undefined, new Set(['src/services/a.service.ts']));
+    expect(ranked[0]?.symbol.name).toBe('AService');
+  });
+
   it('scores a resolver above a util', () => {
     expect(scoreSeed(SEEDS[1]!, 1)).toBeGreaterThan(scoreSeed(SEEDS[0]!, 0));
   });
