@@ -1504,6 +1504,9 @@ export async function investigate(
   // j. PERSIST — may overwrite report.id with the DB-assigned id.
   const persistedId = await persist(db, input, report);
   if (persistedId) report.id = persistedId;
+  // Record whether the report actually reached the investigation store so callers
+  // can warn that a display-only run won't be retrievable via `horus ask`.
+  report.persisted = persistedId !== null;
 
   // k. INCIDENT MEMORY (HOR-18) — recall similar past incidents THEN store.
   //    Past incidents are CONTEXT ONLY; they must never override report.confidence.

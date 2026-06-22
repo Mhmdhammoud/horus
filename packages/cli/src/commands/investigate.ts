@@ -390,7 +390,21 @@ export async function runInvestigate(
       // HOR-319 (Bug 1): point the user at the id that `horus ask` accepts. report.id is
       // the local id printed in the header and now resolves in both local and cloud mode.
       if (format !== 'json') {
-        console.log(pc.dim(`\nAsk a follow-up:  horus ask ${report.id} "<question>"`));
+        if (report.persisted === false) {
+          // DB-resilient degrade (HOR-319): the investigation store was unreachable,
+          // so the report wasn't saved — be explicit instead of pointing at an id
+          // that `horus ask` can't resolve.
+          console.error(
+            pc.yellow(`\n⚠ Results were not saved — the investigation database was unreachable.`),
+          );
+          console.error(
+            pc.dim(
+              `  This report is display-only; \`horus ask\` won't find it. Start the database and re-run to persist.`,
+            ),
+          );
+        } else {
+          console.log(pc.dim(`\nAsk a follow-up:  horus ask ${report.id} "<question>"`));
+        }
         // Sampled, skippable impact prompt — never on non-TTY/--json (HOR-326).
         await maybePromptFeedback({
           investigationId: report.id,
