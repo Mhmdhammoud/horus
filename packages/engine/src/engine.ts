@@ -31,6 +31,7 @@ import type {
   MetricsProvider,
   RedisStateProvider,
   RedisStateAnalysis,
+  SentryProvider,
 } from '@horus/connectors';
 import { shortTs, selectStateSignals, tokenize, analyzeQueueRuntime } from '@horus/connectors';
 import { formatSymbolLocation } from './render.js';
@@ -82,6 +83,13 @@ export interface EngineDeps {
   mongo?: StateProvider | null;
   /** Optional Postgres state provider — same state-evidence contract as `mongo`. */
   postgres?: StateProvider | null;
+  /**
+   * Optional Sentry error-evidence provider — folds grouped exceptions (issues) into the
+   * same error-signature / directSignatures / seed path as Elasticsearch logs. Each issue
+   * carries a direct code seed (top in-app stack frame). A configured-but-empty Sentry is
+   * negative evidence, not a gap; one failing provider never aborts the investigation.
+   */
+  sentry?: SentryProvider | null;
   /** Optional BullMQ queue runtime provider — folds queue depth/failure evidence. */
   queue?: QueueRuntimeProvider | null;
   /** Optional Redis state provider — folds cache/state/locks/rate-limit evidence (HOR-201). */
@@ -901,6 +909,115 @@ export async function investigate(
     } catch {
       // Logs failure must never break the investigation — continue without log evidence.
       analysis = null;
+    }
+  }
+
+  // e0a2. SENTRY ERROR EVIDENCE (HOR-CONNECTORS) — grouped exceptions (issues) folded
+  // into the SAME error-signature / directSignatures / seed path as Elasticsearch logs.
+  // Each issue is both "what's the error" (title + culprit + count + frequency) AND a
+  // direct code seed (its latest event's top in-app stack frame → filePath:fn:line).
+  // Optional; a configured-but-empty Sentry is negative evidence (not a gap). One failing
+  // provider must never abort the investigation.
+  let sentryCollected = false;
+  let sentryIssueCount = 0;
+  if (deps.sentry) {
+    try {
+      const from = logWindowFrom(input.since);
+      const to = new Date().toISOString();
+      // Seed terms mirror the log block: hint + seed symbol + seed file base, so a Sentry
+      // frame that points at the implicated code is classified 'direct' (HOR-156).
+      const sentrySeedBase = top ? top.filePath.split('/').pop() ?? '' : '';
+      const sentryTerms = top
+        ? [...new Set([...tokenize(hint), ...tokenize(top.name), ...tokenize(sentrySeedBase)])]
+        : [...new Set(tokenize(hint))];
+      const seedFileBase = top ? (top.filePath.split('/').pop() ?? '').toLowerCase() : '';
+
+      const signatures = await deps.sentry.collect({ from, to, hintTerms: sentryTerms });
+      sentryCollected = true;
+      sentryIssueCount = signatures.length;
+
+      for (const sig of signatures.slice(0, 15)) {
+        const { issue, frame } = sig;
+        // A signature "key" the relevance classifier can tokenize: the issue title plus
+        // culprit + frame symbol/file (so domain terms in any of them count).
+        const sigKey = [issue.title, issue.culprit ?? '', frame?.function ?? '', frame?.filename ?? '']
+          .filter(Boolean)
+          .join(' ');
+        // The frame's file is the strongest link: when it matches the resolved seed file,
+        // this issue IS the error at the seed — force 'direct'.
+        const frameFileBase = (frame?.filename ?? '').split('/').pop()?.toLowerCase() ?? '';
+        const frameMatchesSeed =
+          seedFileBase.length > 0 && frameFileBase.length > 0 &&
+          (frameFileBase === seedFileBase || frameFileBase.includes(seedFileBase) || seedFileBase.includes(frameFileBase));
+
+        const { relevanceClass: classified, relevanceReason } = classifyLogRelevance(
+          sigKey,
+          frame?.filename ? [frame.filename] : [],
+          sentryTerms,
+          input.service,
+        );
+        const relevanceClass: LogRelevanceClass = frameMatchesSeed ? 'direct' : classified;
+        const reason = frameMatchesSeed
+          ? `Sentry frame at seed file ${frame?.filename ?? ''}`
+          : relevanceReason;
+
+        const frameLoc = frame?.filename
+          ? ` @ ${frame.filename}${frame.lineno !== undefined ? `:${frame.lineno}` : ''}`
+          : '';
+        const culprit = issue.culprit ? ` · ${issue.culprit}` : '';
+        const tag = relevanceClass === 'ambient' ? ' [ambient]' : '';
+        const title =
+          `Sentry ${issue.title}: ${issue.count}x${issue.userCount > 0 ? ` · ${issue.userCount} user(s)` : ''} (last ${shortTs(issue.lastSeen ?? '')})${culprit}${frameLoc}${tag}`.slice(
+            0,
+            220,
+          );
+
+        const links: EvidenceLinks = {};
+        if (frame?.filename !== undefined) links.file = frame.filename;
+        if (frame?.lineno !== undefined) links.line = frame.lineno;
+
+        const ev = mkEv(
+          'log',
+          title,
+          {
+            source: 'sentry',
+            issueId: issue.id,
+            signature: issue.title,
+            count: issue.count,
+            userCount: issue.userCount,
+            culprit: issue.culprit ?? null,
+            level: issue.level ?? null,
+            lastSeen: issue.lastSeen ?? null,
+            firstSeen: issue.firstSeen ?? null,
+            permalink: issue.permalink ?? null,
+            // Direct code seed — same fields the engine reads off a code symbol.
+            filePath: frame?.filename ?? null,
+            symbolName: frame?.function ?? null,
+            lineStart: frame?.lineno ?? null,
+            relevanceClass,
+            relevanceReason: reason,
+          },
+          links,
+          issue.lastSeen || undefined,
+          // Direct: full error weight, boosted when the raise-site frame is resolved.
+          // Ambient: demoted so unrelated high-volume groups don't inflate confidence.
+          relevanceClass === 'direct'
+            ? frame?.filename
+              ? 0.95
+              : 0.85
+            : 0.4,
+        );
+        logEvIds.push(ev.id);
+        if (relevanceClass === 'direct') {
+          directLogEvIds.push(ev.id);
+          directSignatures.push({ key: issue.title, count: issue.count, message: issue.title });
+        } else {
+          ambientLogEvIds.push(ev.id);
+        }
+      }
+    } catch {
+      // Sentry failure must never break the investigation — continue without it.
+      sentryCollected = false;
     }
   }
 
@@ -1811,6 +1928,10 @@ export async function investigate(
         // The queue connector is configured iff a BullMQ provider was constructed
         // (queueForEnv returns null without a bullmq/queues Redis DB) — HOR-205.
         queue: deps.queue != null,
+        // Sentry is configured iff a provider was built; sentryCollected tracks whether
+        // its collection ran (distinguishes "no open issues" from "collection failed").
+        sentry: deps.sentry != null,
+        sentryCollected,
         metricsCollected,
         metricsFailureReason,
         logsCollected,
@@ -1821,6 +1942,8 @@ export async function investigate(
         elasticsearch: deps.logs != null,
         mongodb: deps.mongo != null,
         postgres: deps.postgres != null,
+        sentry: deps.sentry != null,
+        sentryCollected,
         grafana: deps.metrics != null,
         queue: deps.queue != null,
         metricsCollected,

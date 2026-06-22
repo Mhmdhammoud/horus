@@ -156,6 +156,7 @@ export async function runDoctor(opts?: {
     let anyGrafana = false;
     let anyMongo = false;
     let anyPostgres = false;
+    let anySentry = false;
     let anyRedis = false;
 
     for (const project of globalConfig.projects) {
@@ -240,6 +241,26 @@ export async function runDoctor(opts?: {
           }
         }
 
+        // Sentry (error tracking)
+        if (c.sentry) {
+          anySentry = true;
+          const tokenSet = c.sentry.authToken || process.env[c.sentry.authTokenEnv ?? 'SENTRY_AUTH_TOKEN'];
+          if (!tokenSet) {
+            checks.push({
+              label: 'Sentry',
+              status: 'warn',
+              detail: `${ctx} — auth token not set`,
+              next: 'set sentry.authToken or sentry.authTokenEnv (default SENTRY_AUTH_TOKEN) in your Horus config',
+            });
+          } else {
+            checks.push({
+              label: 'Sentry',
+              status: 'pass',
+              detail: `${ctx} — ${c.sentry.org}/${c.sentry.project} [runtime ingestion pending]`,
+            });
+          }
+        }
+
         // Redis / BullMQ (queue state)
         if (c.redis) {
           anyRedis = true;
@@ -291,6 +312,14 @@ export async function runDoctor(opts?: {
         status: 'warn',
         detail: 'not configured',
         next: 'add connectors.postgres to an environment for database state evidence',
+      });
+    }
+    if (!anySentry) {
+      checks.push({
+        label: 'Sentry',
+        status: 'warn',
+        detail: 'not configured',
+        next: 'add connectors.sentry to an environment for error-tracking evidence',
       });
     }
     if (!anyRedis) {

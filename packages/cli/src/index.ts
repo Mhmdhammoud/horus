@@ -168,7 +168,7 @@ Examples:
   program
     .command('connect <type>')
     .description(
-      'Add or update a connector (elasticsearch / mongodb / postgres / grafana / redis / ai) in .horus/config.json',
+      'Add or update a connector (elasticsearch / mongodb / postgres / sentry / grafana / redis / ai) in .horus/config.json',
     )
     .option('--env <name>', 'target environment (default: first environment in config)')
     .option('--provider <name>', 'AI provider for `connect ai` (anthropic / claude / codex / gemini)')
@@ -183,6 +183,9 @@ Examples:
     .option('--collections <list>', 'comma-separated collection allowlist (mongodb)')
     .option('--schema <name>', 'schema to introspect (postgres; default public)')
     .option('--tables <list>', 'comma-separated table allowlist (postgres)')
+    .option('--auth-token <token>', 'Sentry API auth token (required for sentry)')
+    .option('--org <slug>', 'Sentry org slug (required for sentry)')
+    .option('--project <slug>', 'Sentry project slug (required for sentry)')
     .option('--dashboard <uid>', 'default dashboard uid (grafana)')
     .option(
       '--db <spec>',
@@ -210,6 +213,9 @@ Examples:
           collections?: string;
           schema?: string;
           tables?: string;
+          authToken?: string;
+          org?: string;
+          project?: string;
           dashboard?: string;
           db?: string[];
           bullmqPrefix?: string;
@@ -231,6 +237,9 @@ Examples:
           collections: opts.collections,
           schema: opts.schema,
           tables: opts.tables,
+          authToken: opts.authToken,
+          org: opts.org,
+          project: opts.project,
           dashboard: opts.dashboard,
           db: opts.db,
           bullmqPrefix: opts.bullmqPrefix,

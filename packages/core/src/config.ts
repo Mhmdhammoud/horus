@@ -163,6 +163,27 @@ const connectorsSchema = z
         urlEnv: z.string().optional(),
       })
       .optional(),
+    /**
+     * Sentry error-tracking connector (HOR-CONNECTORS). Grouped exceptions (issues)
+     * become ERROR evidence: title + culprit + count + frequency + last-seen, plus a
+     * direct code seed from the top in-app stack frame of the latest event.
+     */
+    sentry: z
+      .object({
+        /** Sentry org slug. */
+        org: z.string(),
+        /** Sentry project slug. */
+        project: z.string(),
+        /** Direct API auth token (takes priority over authTokenEnv). */
+        authToken: z.string().optional(),
+        /** Env var holding the auth token. Defaults to "SENTRY_AUTH_TOKEN". */
+        authTokenEnv: z.string().optional(),
+        /** Direct base URL (self-hosted). Takes priority over urlEnv. Defaults to https://sentry.io. */
+        url: z.string().optional(),
+        /** Env var holding the base URL. Defaults to "SENTRY_URL". */
+        urlEnv: z.string().optional(),
+      })
+      .optional(),
     grafana: z
       .object({
         dashboard: z.string().optional(),
@@ -348,6 +369,7 @@ export interface ResolvedConnectors {
   };
   mongodb?: { url?: string; database: string; collections: string[] };
   postgres?: { url?: string; schema?: string; database?: string; tables: string[] };
+  sentry?: { authToken?: string; org: string; project: string; url?: string };
   grafana?: {
     url?: string;
     username?: string;
@@ -527,6 +549,18 @@ export function resolveEnvironment(
       schema: p.schema,
       database: p.database,
       tables: p.tables,
+    };
+  }
+
+  if (c.sentry !== undefined) {
+    const s = c.sentry;
+    const authToken = s.authToken ?? process.env[s.authTokenEnv ?? 'SENTRY_AUTH_TOKEN'];
+    const url = s.url ?? process.env[s.urlEnv ?? 'SENTRY_URL'];
+    resolved.sentry = {
+      org: s.org,
+      project: s.project,
+      ...(authToken !== undefined ? { authToken } : {}),
+      ...(url !== undefined ? { url } : {}),
     };
   }
 
