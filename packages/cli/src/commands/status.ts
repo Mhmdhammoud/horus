@@ -15,6 +15,7 @@ import {
   logsForEnv,
   metricsForEnv,
   mongoForEnv,
+  postgresForEnv,
   redisServerStatus,
   type StateProvider,
   type RedisServerStatus,
@@ -39,6 +40,7 @@ async function checkEnv(
   renv: ResolvedEnvironment,
   deps?: {
     mongoFactory?: (renv: ResolvedEnvironment) => StateProvider | null;
+    postgresFactory?: (renv: ResolvedEnvironment) => StateProvider | null;
     redisStatus?: (renv: ResolvedEnvironment) => Promise<RedisServerStatus | null>;
   },
 ): Promise<boolean> {
@@ -180,6 +182,48 @@ async function checkEnv(
     );
   }
 
+  // Postgres (state)
+  const postgresCfg = renv.connectors.postgres;
+  if (postgresCfg) {
+    const dbName = postgresCfg.database ?? postgresCfg.schema ?? 'postgres';
+    const pg = (deps?.postgresFactory ?? postgresForEnv)(renv);
+    if (pg) {
+      try {
+        const h = await pg.health();
+        if (!h.ok) {
+          console.log(
+            `    ${mark(false)} ${pc.bold('Postgres')}       ${pc.dim(`unreachable · db ${dbName}`)}`,
+          );
+          allOk = false;
+        } else {
+          const allowlist = postgresCfg.tables;
+          const allowlistPart =
+            allowlist.length === 0 ? 'allowlist: all' : `allowlist: ${allowlist.length}`;
+          const discovered = pg.listCollections
+            ? await pg.listCollections()
+            : undefined;
+          const discoveredPart = discovered
+            ? ` · discovered: ${discovered.length} table(s)`
+            : '';
+          const detail = `reachable · db ${dbName} · ${allowlistPart}${discoveredPart}`;
+          console.log(
+            `    ${mark(true)} ${pc.bold('Postgres')}        ${pc.dim(detail)}`,
+          );
+        }
+      } finally {
+        await pg.close();
+      }
+    } else {
+      console.log(
+        `    ${mark(false)} ${pc.bold('Postgres')}       ${pc.dim(`configured (db ${dbName}) but Postgres URL not set`)}`,
+      );
+    }
+  } else {
+    console.log(
+      `    ${mark('pending')} ${pc.bold('Postgres')}        ${pc.dim('not configured')}`,
+    );
+  }
+
   // Redis — probe the server and each configured logical DB (HOR-201). Redis is a
   // general runtime connector: one server commonly holds queues in one DB and cache/
   // state in others, so we show a server line plus a per-DB breakdown.
@@ -255,6 +299,8 @@ export async function runStatus(
     env?: string;
     /** Inject a MongoDB provider factory for tests. */
     _mongoFactory?: (renv: ResolvedEnvironment) => StateProvider | null;
+    /** Inject a Postgres provider factory for tests. */
+    _postgresFactory?: (renv: ResolvedEnvironment) => StateProvider | null;
     /** Inject a Redis server-status prober for tests. */
     _redisStatus?: (renv: ResolvedEnvironment) => Promise<RedisServerStatus | null>;
   },
@@ -316,7 +362,7 @@ export async function runStatus(
       console.error(pc.red((err as Error).message));
       return 1;
     }
-    const ok = await checkEnv(renv, { mongoFactory: opts?._mongoFactory, redisStatus: opts?._redisStatus });
+    const ok = await checkEnv(renv, { mongoFactory: opts?._mongoFactory, postgresFactory: opts?._postgresFactory, redisStatus: opts?._redisStatus });
     return ok ? 0 : 1;
   }
 
@@ -331,7 +377,7 @@ export async function runStatus(
       allHealthy = false;
       continue;
     }
-    const ok = await checkEnv(renv, { mongoFactory: opts?._mongoFactory, redisStatus: opts?._redisStatus });
+    const ok = await checkEnv(renv, { mongoFactory: opts?._mongoFactory, postgresFactory: opts?._postgresFactory, redisStatus: opts?._redisStatus });
     if (!ok) allHealthy = false;
   }
 

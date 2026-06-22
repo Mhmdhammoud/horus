@@ -4,6 +4,7 @@ import {
   codeForEnv,
   logsForEnv,
   mongoForEnv,
+  postgresForEnv,
   queueForEnv,
   redisStateForEnv,
   metricsForEnv,
@@ -247,6 +248,7 @@ export async function runInvestigate(
 
     const logs = logsForEnv(renv);
     const mongo = mongoForEnv(renv);
+    const postgres = postgresForEnv(renv);
     const queue = queueForEnv(renv);
     const redisState = redisStateForEnv(renv);
     const metrics = metricsForEnv(renv);
@@ -265,6 +267,7 @@ export async function runInvestigate(
           db,
           logs,
           mongo,
+          postgres,
           queue,
           redisState,
           metrics,
@@ -273,6 +276,7 @@ export async function runInvestigate(
             elasticsearch: !!renv.connectors.elasticsearch?.url,
             grafana: !!renv.connectors.grafana?.url,
             mongodb: !!renv.connectors.mongodb?.url,
+            postgres: !!renv.connectors.postgres?.url,
             redis: !!renv.connectors.redis?.url,
             // Queue runtime is configured iff a BullMQ provider was built (HOR-205).
             queue: !!queue,

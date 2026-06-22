@@ -1,24 +1,21 @@
 /**
- * MongoDB state-evidence provider (HOR-33). Read-only, allowlisted collections.
- * Surfaces application STATE anomalies (stale sync records, failed/disconnected
- * states, stuck schedules) as Evidence — never raw documents. The analysis loop is
- * shared with the Postgres provider via `analyzeStateWith` (see ../state).
+ * Postgres state-evidence provider (HOR-CONNECTORS). Read-only, allowlisted tables.
+ * Surfaces application STATE anomalies (stale sync rows, failed/stuck states) as
+ * Evidence — never raw rows. Shares the analysis loop with the Mongo provider via
+ * `analyzeStateWith`; only the read-only client differs.
  */
 
 import type { Evidence, HealthStatus, ProviderKind } from '@horus/core';
-import { MongoStateClient } from './client.js';
-import {
-  type StateProvider,
-  analyzeStateWith,
-} from '../state/provider.js';
+import { PostgresStateClient } from './client.js';
+import { type StateProvider, analyzeStateWith } from '../state/provider.js';
 import { type StateAnalysis, DEFAULT_LEGACY_HOURS, stateToEvidence } from '../state/analyze.js';
 
-export class MongoStateProvider implements StateProvider {
-  readonly id = 'mongodb';
+export class PostgresStateProvider implements StateProvider {
+  readonly id = 'postgres';
   readonly kind: ProviderKind = 'state';
 
   constructor(
-    private readonly client: MongoStateClient,
+    private readonly client: PostgresStateClient,
     private readonly opts: {
       database: string;
       collections: string[];
@@ -42,7 +39,7 @@ export class MongoStateProvider implements StateProvider {
   }
 
   toEvidence(analysis: StateAnalysis): Evidence[] {
-    return stateToEvidence(analysis, 'mongo.analyzeState', new Date().toISOString());
+    return stateToEvidence(analysis, 'postgres.analyzeState', new Date().toISOString());
   }
 
   async health(): Promise<HealthStatus> {

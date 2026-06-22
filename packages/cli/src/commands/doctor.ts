@@ -155,6 +155,7 @@ export async function runDoctor(opts?: {
     let anyEs = false;
     let anyGrafana = false;
     let anyMongo = false;
+    let anyPostgres = false;
     let anyRedis = false;
 
     for (const project of globalConfig.projects) {
@@ -220,6 +221,25 @@ export async function runDoctor(opts?: {
           }
         }
 
+        // Postgres (state)
+        if (c.postgres) {
+          anyPostgres = true;
+          if (!c.postgres.url) {
+            checks.push({
+              label: 'Postgres',
+              status: 'warn',
+              detail: `${ctx} — URL not set`,
+              next: 'set postgres.url or postgres.urlEnv in your Horus config',
+            });
+          } else {
+            checks.push({
+              label: 'Postgres',
+              status: 'pass',
+              detail: `${ctx} — ${c.postgres.database ?? c.postgres.schema ?? 'postgres'} [runtime ingestion pending]`,
+            });
+          }
+        }
+
         // Redis / BullMQ (queue state)
         if (c.redis) {
           anyRedis = true;
@@ -263,6 +283,14 @@ export async function runDoctor(opts?: {
         status: 'warn',
         detail: 'not configured',
         next: 'add connectors.mongodb to an environment for database state evidence',
+      });
+    }
+    if (!anyPostgres) {
+      checks.push({
+        label: 'Postgres',
+        status: 'warn',
+        detail: 'not configured',
+        next: 'add connectors.postgres to an environment for database state evidence',
       });
     }
     if (!anyRedis) {

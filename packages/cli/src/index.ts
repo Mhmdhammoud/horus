@@ -168,7 +168,7 @@ Examples:
   program
     .command('connect <type>')
     .description(
-      'Add or update a connector (elasticsearch / mongodb / grafana / redis / ai) in .horus/config.json',
+      'Add or update a connector (elasticsearch / mongodb / postgres / grafana / redis / ai) in .horus/config.json',
     )
     .option('--env <name>', 'target environment (default: first environment in config)')
     .option('--provider <name>', 'AI provider for `connect ai` (anthropic / claude / codex / gemini)')
@@ -181,6 +181,8 @@ Examples:
     .option('--service <name>', 'service name scope for log queries')
     .option('--database <name>', 'database name (required for mongodb)')
     .option('--collections <list>', 'comma-separated collection allowlist (mongodb)')
+    .option('--schema <name>', 'schema to introspect (postgres; default public)')
+    .option('--tables <list>', 'comma-separated table allowlist (postgres)')
     .option('--dashboard <uid>', 'default dashboard uid (grafana)')
     .option(
       '--db <spec>',
@@ -206,6 +208,8 @@ Examples:
           service?: string;
           database?: string;
           collections?: string;
+          schema?: string;
+          tables?: string;
           dashboard?: string;
           db?: string[];
           bullmqPrefix?: string;
@@ -225,6 +229,8 @@ Examples:
           service: opts.service,
           database: opts.database,
           collections: opts.collections,
+          schema: opts.schema,
+          tables: opts.tables,
           dashboard: opts.dashboard,
           db: opts.db,
           bullmqPrefix: opts.bullmqPrefix,
