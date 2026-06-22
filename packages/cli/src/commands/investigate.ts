@@ -456,8 +456,12 @@ export async function runInvestigate(
         });
       }
     } finally {
+      // Close EVERY connector — an unclosed pg/ioredis handle keeps the Node event loop alive
+      // so the CLI prints its report but never exits (the process lingers indefinitely).
       await sql.end();
       if (mongo) await mongo.close();
+      if (postgres) await postgres.close();
+      if (redisState) await redisState.close();
       if (queue) await queue.close();
     }
 
