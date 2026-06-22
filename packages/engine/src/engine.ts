@@ -120,6 +120,33 @@ function clamp01(n: number): number {
   return n;
 }
 
+/**
+ * Bind the overall-confidence CEILING to the headline suspected cause's finalScore
+ * (HOR-336 extended). Overall confidence must track DIAGNOSIS strength: a weak
+ * "observation" cause cannot license a high headline number just because a seed
+ * localized + lots of evidence accrued.
+ *
+ * The mapping is MONOTONIC (higher cause score → higher allowed confidence) and is
+ * applied as a Math.min ceiling by the caller — it never raises confidence:
+ *   score < 0.20        → 0.60  (sub-threshold; "localized, cause unknown" — HOR-336)
+ *   score in [0.20,0.50)→ 0.60 … 0.78 (a modest cause caps to the upper-mid range)
+ *   score in [0.50,0.85)→ 0.78 … 1.00 (a strong cause permits high confidence)
+ *   score >= 0.85       → 1.00  (no additional ceiling from the cause)
+ */
+export function confidenceCeilingForCause(score: number): number {
+  const s = clamp01(score);
+  if (s < 0.2) return 0.6;
+  if (s < 0.5) {
+    // [0.20,0.50) → [0.60,0.78]
+    return 0.6 + ((s - 0.2) / (0.5 - 0.2)) * (0.78 - 0.6);
+  }
+  if (s < 0.85) {
+    // [0.50,0.85) → [0.78,1.00]
+    return 0.78 + ((s - 0.5) / (0.85 - 0.5)) * (1.0 - 0.78);
+  }
+  return 1.0;
+}
+
 /** Heuristic relevance per kind, kept deterministic. */
 function relevanceForKind(kind: EvidenceKind): number {
   switch (kind) {
@@ -343,6 +370,66 @@ export function looksDiffable(since: string): boolean {
   if (/^\d+[smhd]$/i.test(s)) return false;
   // A bare ref (tag, branch, sha) or relative ref (HEAD~5, v1.2~3) is diffable.
   return /^[A-Za-z0-9._/~^-]+$/.test(s);
+}
+
+/**
+ * HOR-334: does the hint read as a behavioral "how does X work" question rather
+ * than an incident report? Such hints want an explanation of a code path, not a
+ * fault hunt — when there is no real incident signal, the investigation should
+ * point the user at `horus explain <symbol>` instead of dumping empty incident
+ * sections. Conservative: matches a how/what/why question paired with a
+ * behavior/flow verb, or a leading interrogative/"explain".
+ */
+export function looksExplanatory(hint: string): boolean {
+  const h = hint.trim();
+  if (h.length === 0) return false;
+  // Question/behavior pairing: "how does X work", "what happens when …", "why does … flow".
+  if (/\b(how|what|why|when|where)\b.*\b(work|works|working|do|does|done|happen|happens|flow|flows|behave|called|invoked|triggered|used)\b/i.test(h)) {
+    return true;
+  }
+  // Leading interrogative or an explicit "explain"/"describe"/"walk me through".
+  if (/^\s*(how|what|why|when|where|explain|describe|walk\s+me\s+through|tell\s+me\s+(?:about|how))\b/i.test(h)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * HOR-333: build the commit + changed-symbol citation clauses for the regression
+ * cause title. Cites the most-recent 1-2 commits (short SHA + subject) from the
+ * bounded git history and the changed symbol name(s) from the source-backend
+ * ChangeSet. Bounded so the headline stays scannable. Returns empty clauses when
+ * no commits/symbols are available, so the title degrades to the prior wording.
+ */
+export function formatRegressionCitation(
+  recentChanges: BoundedGitChange | undefined,
+  changes: ChangeSet | null,
+): { commitClause: string; symbolClause: string } {
+  // Commits are newest-first (git log default) — cite up to the 2 most recent.
+  const commits = (recentChanges?.commits ?? []).slice(0, 2);
+  const commitParts = commits.map((c) => {
+    const sha = c.shortSha || c.sha.slice(0, 7);
+    const subject = (c.subject ?? '').replace(/\s+/g, ' ').trim();
+    return subject ? `${sha} "${subject.slice(0, 50)}"` : sha;
+  });
+  const commitClause = commitParts.length > 0 ? ` (${commitParts.join(', ')})` : '';
+
+  // Changed symbol names from the source-backend diff — prefer the post-change name.
+  const modified = changes?.modified ?? [];
+  const symbolNames: string[] = [];
+  for (const m of modified) {
+    const name = m.after?.name ?? m.before?.name;
+    if (name && !symbolNames.includes(name)) symbolNames.push(name);
+    if (symbolNames.length >= 3) break;
+  }
+  let symbolClause = '';
+  if (symbolNames.length > 0) {
+    const shown = symbolNames.join(', ');
+    const more = modified.length > symbolNames.length ? ', …' : '';
+    symbolClause = ` touched ${shown}${more}`;
+  }
+
+  return { commitClause, symbolClause };
 }
 
 export async function investigate(
@@ -1440,11 +1527,15 @@ export async function investigate(
       seedFile !== undefined &&
       gitChangedFiles.length > 0 &&
       gitChangedFiles.some((f) => f === seedFile || seedFile.endsWith(f) || f.endsWith(seedFile));
+    // HOR-333: cite the actual culprit — the most-recent commit(s) (short SHA + subject)
+    // and the changed symbol name(s) — so the cause names what to look at, not just the
+    // seed + range. Bounded to 1-2 commits and a few symbols to stay scannable.
+    const citation = formatRegressionCitation(recentChanges, changes);
     causeInputs.push({
       id: 'cause:deployment-regression',
       title: top
-        ? `Recent change to ${top.name} in ${input.since}..HEAD may have introduced the regression`
-        : `Recent changes in ${input.since}..HEAD may have introduced the regression`,
+        ? `Recent change${citation.commitClause} to ${top.name}${citation.symbolClause} in ${input.since}..HEAD may have introduced the regression`
+        : `Recent change${citation.commitClause}${citation.symbolClause} in ${input.since}..HEAD may have introduced the regression`,
       category: 'deployment-regression',
       sourceEvidenceIds: [changeEvId, ...(seedEv ? [seedEv.id] : [])],
       baseScore: clamp01((seedInChanges ? 0.45 : 0.25) + (queueHits.length > 0 ? 0.05 : 0)),
@@ -1629,12 +1720,43 @@ export async function investigate(
     seedIsLowConfidence && top
       ? `⚠ No symbol closely matched "${hint}" — "${top.name}" is a low-confidence closest match (semantic). Refine with an exact symbol or error code to target precisely. `
       : '';
-  const summary = headlineCause
+  let summary = headlineCause
     ? `${seedDisclaimer}${banner}Investigation of "${hint}" ${scope}. Top suspected cause: ${headlineCause.title}.`
     : `${seedDisclaimer}${banner}Investigation of "${hint}" ${scope}. No dominant suspected cause emerged from the available ${degradedNoSource ? 'runtime' : 'structural'} evidence.`;
 
+  // HOR-334: a behavioral "how does X work" hint with NO real incident signal is a
+  // request for an explanation, not a fault hunt. Rather than dumping empty incident
+  // sections (no errors, no anomalies, no failing queues), lead the user to the
+  // focused `horus explain <symbol>` answer. Conservative: only fires when the hint
+  // reads as a question AND nothing actually looks wrong — a real incident (even with
+  // a question-shaped hint) still gets a normal investigation.
+  const hasIncidentSignal =
+    directLogEvIds.length > 0 ||
+    latencyMetricEvIds.length > 0 ||
+    queueMetricEvIds.length > 0 ||
+    dataAnomalyEvIds.length > 0 ||
+    queueFailureSignals.length > 0 ||
+    findings.some((f) => f.kind === 'anomaly') ||
+    headlineCause !== undefined;
+  const explanatoryHint = looksExplanatory(hint) && !hasIncidentSignal;
+  if (explanatoryHint) {
+    const explainTarget = top?.name ?? input.service ?? hint;
+    summary =
+      `${seedDisclaimer}${banner}"${hint}" reads as a "how does it work" question and no incident signal was found ` +
+      `(no error signatures, anomalies, or failing queues). For a focused answer, run \`horus explain ${explainTarget}\`. ` +
+      `${top ? `Investigated ${label} (${area}); the` : 'The'} incident sections below are empty by design — this is not a fault hunt.`;
+  }
+
   // i. nextActions
   const nextActions = buildNextActions(top, ctx, impact, queueHits, changes, input);
+  // HOR-334: for an explanatory hint with no incident signal, lead with the focused
+  // `horus explain` action so the user is steered to the right tool first.
+  if (explanatoryHint) {
+    const explainTarget = top?.name ?? input.service ?? hint;
+    nextActions.unshift(
+      `This looks like a behavioral question — run \`horus explain ${explainTarget}\` for a focused walkthrough of how it works.`,
+    );
+  }
   if (degradedNoSource) {
     nextActions.unshift(
       'Source intelligence was unavailable — run `horus index` to enable code-aware analysis, then re-run for a full investigation.',
@@ -1709,9 +1831,12 @@ export async function investigate(
   // produce no meaningful root cause — that is "localized, cause unknown", not a
   // confident diagnosis. When no cause clears a meaningful bar (the cause scale is
   // compressed; real causes score ~0.3+), cap the headline so it can't read 0.85
-  // over a 0.08 cause (or none at all).
+  // over a 0.08 cause (or none at all). The ceiling is MONOTONIC in the headline
+  // cause score: a modest cause (0.2–0.5) caps confidence to ~0.6–0.78; only a
+  // strong cause (>=~0.5) permits high confidence. It is only ever a ceiling —
+  // it never raises confidence.
   const topCauseScore = report.suspectedCauses[0]?.finalScore ?? 0;
-  if (topCauseScore < 0.2) report.confidence = Math.min(report.confidence, 0.6);
+  report.confidence = Math.min(report.confidence, confidenceCeilingForCause(topCauseScore));
   report.nextActions.push(...gapNextActions(gapAnalysis.gaps));
   report.sourceStatus = buildRuntimeSourceStatus(evidence, connectorFlags);
 

@@ -1,0 +1,404 @@
+/**
+ * Regression tests for three engine fixes:
+ *
+ *  - HOR-333: the deployment-regression cause cites the most-recent commit(s)
+ *    (short SHA + subject) and the changed symbol name(s), not just the seed + range.
+ *  - HOR-336 (extended): overall confidence ceiling is MONOTONIC in the headline
+ *    suspected cause's finalScore — a weak headline reads lower than a strong one.
+ *  - HOR-334: a behavioral "how does X work" hint with no incident signal points the
+ *    user at `horus explain <symbol>` instead of dumping empty incident sections.
+ */
+
+import { describe, it, expect, vi } from 'vitest';
+import type { Symbol, SymbolContext, ImpactResult, ChangeSet, CypherResult, Evidence } from '@horus/core';
+import type {
+  CodeProvider,
+  GitCommit,
+  LogsProvider,
+  LogAnalysis,
+  MetricsProvider,
+  MetricFinding,
+} from '@horus/connectors';
+import type { HorusDb } from '@horus/db';
+import type { BoundedGitChange } from './git-collector.js';
+
+// ---------------------------------------------------------------------------
+// collectGitChanges is mocked so the regression-citation test controls the
+// bounded git history without touching a real repository.
+// ---------------------------------------------------------------------------
+
+vi.mock('./git-collector.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./git-collector.js')>();
+  return { ...actual, collectGitChanges: vi.fn() };
+});
+
+import { investigate, confidenceCeilingForCause, looksExplanatory, formatRegressionCitation } from './engine.js';
+import { collectGitChanges } from './git-collector.js';
+
+const mockCollectGitChanges = vi.mocked(collectGitChanges);
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const SEED_SYMBOL: Symbol = {
+  id: 'sym:services:SaleService',
+  name: 'SaleService',
+  filePath: 'src/services/sale.service.ts',
+  startLine: 40,
+  endLine: 120,
+};
+
+const fakeCtx: SymbolContext = {
+  symbol: SEED_SYMBOL,
+  callers: [],
+  callees: [],
+  imports: [],
+  usesType: [],
+  community: null,
+  coupledWith: [],
+};
+
+function makeCommit(sha: string, subject: string, files: string[] = ['src/services/sale.service.ts']): GitCommit {
+  return { sha, shortSha: sha.slice(0, 7), subject, author: 'Dev', dateIso: '2026-01-01', files };
+}
+
+function makeChangedSymbol(name: string): Symbol {
+  return { id: `sym:services:${name}`, name, filePath: 'src/services/sale.service.ts', startLine: 50, endLine: 60 };
+}
+
+const baseCode: CodeProvider = {
+  id: 'fake-code',
+  kind: 'code',
+  async health() { return { ok: true, detail: 'fake' }; },
+  async searchSymbols() { return [SEED_SYMBOL]; },
+  async context() { return fakeCtx; },
+  async impact(): Promise<ImpactResult> { return { target: SEED_SYMBOL, affected: 0, byDepth: [] }; },
+  async flowsFor() { return []; },
+  async detectChanges(): Promise<ChangeSet> { return { added: [], removed: [], modified: [] }; },
+  async cypher(): Promise<CypherResult> { return { columns: [], rows: [], rowCount: 0 }; },
+};
+
+const fakeDb = {
+  select() { return { from(_t: unknown) { return Promise.resolve([]); } }; },
+  insert(_t: unknown) {
+    return {
+      values(_r: unknown) {
+        return {
+          returning(_c: unknown): Promise<{ id: string }[]> {
+            return Promise.resolve([{ id: globalThis.crypto.randomUUID() }]);
+          },
+        };
+      },
+    };
+  },
+  update(_t: unknown) {
+    return { set(_v: unknown) { return { where(_c: unknown): Promise<void> { return Promise.resolve(); } }; } };
+  },
+} as unknown as HorusDb;
+
+// ---------------------------------------------------------------------------
+// HOR-333: regression cause cites commit (short SHA + subject) + changed symbols
+// ---------------------------------------------------------------------------
+
+describe('investigate() — regression cause cites commit + changed functions (HOR-333)', () => {
+  it('enriches the deployment-regression title with commit SHA, subject, and changed symbol names', async () => {
+    mockCollectGitChanges.mockResolvedValue({
+      commits: [
+        makeCommit('a1b2c3d4e5f6', 'fix throttle'),
+        makeCommit('99887766abcd', 'tidy imports'),
+      ],
+      fileStats: [],
+      changedFiles: ['src/services/sale.service.ts'],
+      totalInsertions: 10,
+      totalDeletions: 3,
+      window: { since: 'a1b2c3d', until: undefined },
+      truncated: false,
+    } as BoundedGitChange);
+
+    const codeWithChanges: CodeProvider = {
+      ...baseCode,
+      async detectChanges(): Promise<ChangeSet> {
+        return {
+          added: [],
+          removed: [],
+          modified: [
+            { before: makeChangedSymbol('activateSale'), after: makeChangedSymbol('activateSale') },
+            { before: makeChangedSymbol('priceSale'), after: makeChangedSymbol('priceSale') },
+          ],
+        };
+      },
+    };
+
+    const report = await investigate(
+      { hint: 'SaleService regression', since: 'a1b2c3d' },
+      { code: codeWithChanges, db: fakeDb, repoPath: '/repo' },
+    );
+
+    const regression = report.suspectedCauses.find((c) => c.id === 'cause:deployment-regression');
+    expect(regression).toBeDefined();
+    // Cites the most-recent commit short SHA + subject.
+    expect(regression?.title).toContain('a1b2c3d');
+    expect(regression?.title).toContain('"fix throttle"');
+    // Cites the changed symbol name(s).
+    expect(regression?.title).toContain('activateSale');
+    // Still names the seed + range.
+    expect(regression?.title).toContain('SaleService');
+    expect(regression?.title).toContain('a1b2c3d..HEAD');
+  });
+
+  it('degrades to the plain title when no commits/changed symbols are available', () => {
+    const { commitClause, symbolClause } = formatRegressionCitation(undefined, null);
+    expect(commitClause).toBe('');
+    expect(symbolClause).toBe('');
+  });
+
+  it('bounds the citation to 2 commits and 3 symbols', () => {
+    const recent = {
+      commits: [
+        makeCommit('1111111', 'one'),
+        makeCommit('2222222', 'two'),
+        makeCommit('3333333', 'three'),
+      ],
+      fileStats: [],
+      changedFiles: [],
+      totalInsertions: 0,
+      totalDeletions: 0,
+      window: { since: 'x', until: undefined },
+      truncated: false,
+    } as BoundedGitChange;
+    const changes: ChangeSet = {
+      added: [],
+      removed: [],
+      modified: ['a', 'b', 'c', 'd'].map((n) => ({ before: makeChangedSymbol(n), after: makeChangedSymbol(n) })),
+    };
+    const { commitClause, symbolClause } = formatRegressionCitation(recent, changes);
+    // Only the first 2 commits appear; the third does not.
+    expect(commitClause).toContain('1111111');
+    expect(commitClause).toContain('2222222');
+    expect(commitClause).not.toContain('3333333');
+    // Only the first 3 symbols are named, with a "…" overflow marker.
+    expect(symbolClause).toContain('a, b, c');
+    expect(symbolClause).not.toContain('d,');
+    expect(symbolClause).toContain('…');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-336 (extended): confidence ceiling tracks the headline cause strength.
+// ---------------------------------------------------------------------------
+
+describe('confidenceCeilingForCause — monotonic ceiling bound to headline cause score', () => {
+  it('is monotonic non-decreasing in the cause score', () => {
+    const samples = [0, 0.1, 0.19, 0.2, 0.3, 0.4, 0.49, 0.5, 0.6, 0.7, 0.84, 0.85, 0.95, 1];
+    for (let i = 1; i < samples.length; i++) {
+      const prev = confidenceCeilingForCause(samples[i - 1]!);
+      const cur = confidenceCeilingForCause(samples[i]!);
+      expect(cur).toBeGreaterThanOrEqual(prev);
+    }
+  });
+
+  it('caps a sub-threshold cause to 0.6 (preserves HOR-336)', () => {
+    expect(confidenceCeilingForCause(0.08)).toBeCloseTo(0.6, 5);
+    expect(confidenceCeilingForCause(0.19)).toBeCloseTo(0.6, 5);
+  });
+
+  it('caps a modest cause (0.2–0.5) to roughly the 0.6–0.78 range', () => {
+    expect(confidenceCeilingForCause(0.2)).toBeCloseTo(0.6, 5);
+    expect(confidenceCeilingForCause(0.35)).toBeGreaterThan(0.6);
+    expect(confidenceCeilingForCause(0.35)).toBeLessThan(0.78);
+    expect(confidenceCeilingForCause(0.49)).toBeLessThanOrEqual(0.78);
+  });
+
+  it('permits high confidence only for a strong cause (>=~0.5)', () => {
+    expect(confidenceCeilingForCause(0.5)).toBeGreaterThanOrEqual(0.78);
+    expect(confidenceCeilingForCause(0.9)).toBeCloseTo(1, 5);
+  });
+});
+
+function queueProvider(waiting: number, active: number) {
+  return {
+    async discoverQueues() { return ['SaleQueue']; },
+    async analyzeQueues() {
+      return {
+        prefix: 'bull',
+        collectedAt: new Date().toISOString(),
+        queues: [
+          {
+            queueName: 'SaleQueue',
+            waiting,
+            active,
+            failed: 0,
+            completed: 0,
+            delayed: 0,
+            paused: 0,
+            isPaused: false,
+          },
+        ],
+      };
+    },
+  } as unknown as Parameters<typeof investigate>[1]['queue'];
+}
+
+// A logs provider with no error signatures + a metrics provider that checked
+// cleanly: these close the logs + metrics evidence gaps (raising the gap-analysis
+// confidence ceiling) WITHOUT contributing any incident signal, so the headline
+// cause's strength — not gap noise — becomes the binding confidence constraint.
+const quietLogs: LogsProvider = {
+  id: 'fake-logs',
+  kind: 'logs',
+  async health() { return { ok: true, detail: 'fake' }; },
+  async searchLogs() { return []; },
+  async aggregateErrors() { return []; },
+  async errorDeltas() { return []; },
+  async analyzeErrors(): Promise<LogAnalysis> {
+    return {
+      window: { from: 'x', to: 'y' },
+      totalErrors: 4,
+      signatures: [
+        {
+          key: 'SALE_ACTIVATE_FAIL',
+          count: 4,
+          firstSeen: '2026-06-13T10:00:00.000Z',
+          lastSeen: '2026-06-13T15:00:00.000Z',
+          services: ['sale-service'],
+          isNew: false,
+          baselineCount: 4,
+          sampleMessage: 'sale activation failed',
+        },
+      ],
+      newSignatures: [],
+      affectedServices: ['sale-service'],
+    };
+  },
+  async checkCompatibility() { return { ok: true, indexCount: 1, issues: [] }; },
+  toEvidence() { return []; },
+  async queryEvidence() { return []; },
+};
+
+function makeNoneMetrics(): MetricsProvider {
+  const findings: MetricFinding[] = [
+    {
+      dashboardUid: 'dash-1',
+      panelTitle: 'sale-service p99 latency',
+      kind: 'latency',
+      anomaly: 'none',
+      labels: {},
+      baselineAvg: 0.05,
+      currentAvg: 0.05,
+      ratio: 1,
+      lastValue: 0.05,
+    },
+  ];
+  return {
+    id: 'grafana',
+    kind: 'metrics',
+    async health() { return { ok: true, detail: 'fake' }; },
+    async findPanels() { return []; },
+    async analyze() { return findings; },
+    async rawRange() { return []; },
+    toEvidence(fs: MetricFinding[]): Evidence[] {
+      return fs.filter((f) => f.anomaly !== 'none').map((f, i): Evidence => ({
+        id: `ev_metric_${i}`,
+        source: 'metrics',
+        kind: 'metric',
+        title: f.panelTitle,
+        relevance: 0.85,
+        payload: f,
+        links: {},
+        provenance: { query: 'grafana.analyze', collectedAt: new Date().toISOString() },
+      }));
+    },
+  } as unknown as MetricsProvider;
+}
+
+describe('investigate() — weak headline reads lower than a strong headline', () => {
+  it('a weak-headline run reports lower confidence than a strong-headline run', async () => {
+    // Both runs share the same evidence-gap profile (logs + metrics checked, same
+    // missing connectors), so the gap-analysis ceiling is identical. They differ ONLY
+    // in headline-cause strength: the WEAK run has a healthy queue (no backlog cause),
+    // the STRONG run a deep backlog (strong queue-backlog cause). The monotonic
+    // cause-ceiling therefore drives the confidence difference.
+    const deps = { code: baseCode, db: fakeDb, logs: quietLogs, metrics: makeNoneMetrics() };
+    const weakReport = await investigate(
+      { hint: 'SaleService' },
+      { ...deps, queue: queueProvider(0, 3) }, // healthy: no backlog/starvation cause
+    );
+    const strongReport = await investigate(
+      { hint: 'SaleService' },
+      { ...deps, queue: queueProvider(5000, 2) }, // deep backlog: strong cause
+    );
+
+    const weakTop = weakReport.suspectedCauses[0]?.finalScore ?? 0;
+    const strongTop = strongReport.suspectedCauses[0]?.finalScore ?? 0;
+    // Sanity: the strong run genuinely has a stronger headline cause.
+    expect(strongTop).toBeGreaterThan(weakTop);
+    // The headline confidence tracks it: weaker cause → strictly lower confidence.
+    expect(weakReport.confidence).toBeLessThan(strongReport.confidence);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-334: behavioral "how does X work" hint routes to `horus explain`.
+// ---------------------------------------------------------------------------
+
+describe('looksExplanatory — detects interrogative/explanatory hints', () => {
+  it('matches "how does X work" style questions', () => {
+    expect(looksExplanatory('how does SaleService work')).toBe(true);
+    expect(looksExplanatory('what happens when a sale is activated')).toBe(true);
+    expect(looksExplanatory('explain the checkout flow')).toBe(true);
+    expect(looksExplanatory('walk me through SaleService')).toBe(true);
+  });
+
+  it('does NOT match an ordinary incident hint', () => {
+    expect(looksExplanatory('SaleService is throwing 500s')).toBe(false);
+    expect(looksExplanatory('checkout latency spike')).toBe(false);
+    expect(looksExplanatory('')).toBe(false);
+  });
+});
+
+describe('investigate() — behavioral hint with no incident signal routes to explain (HOR-334)', () => {
+  it('adds an explain note to the summary and a next action, instead of an incident headline', async () => {
+    const report = await investigate(
+      { hint: 'how does SaleService work' },
+      { code: baseCode, db: fakeDb },
+    );
+    expect(report.summary).toContain('horus explain');
+    expect(report.summary.toLowerCase()).toContain('how does it work');
+    expect(report.summary).not.toContain('Top suspected cause');
+    expect(report.nextActions.some((a) => a.includes('horus explain'))).toBe(true);
+  });
+
+  it('does NOT route to explain when a real incident signal is present', async () => {
+    // A failing queue is a genuine incident signal — even with a question-shaped hint
+    // the normal investigation must proceed.
+    const failingQueue = {
+      async discoverQueues() { return ['SaleQueue']; },
+      async analyzeQueues() {
+        return {
+          prefix: 'bull',
+          collectedAt: new Date().toISOString(),
+          queues: [
+            {
+              queueName: 'SaleQueue',
+              waiting: 500,
+              active: 0,
+              failed: 100,
+              completed: 0,
+              delayed: 0,
+              paused: 0,
+              isPaused: false,
+            },
+          ],
+        };
+      },
+    } as unknown as Parameters<typeof investigate>[1]['queue'];
+
+    const report = await investigate(
+      { hint: 'how does SaleService work' },
+      { code: baseCode, db: fakeDb, queue: failingQueue },
+    );
+    expect(report.summary).not.toContain('this is not a fault hunt');
+    expect(report.summary).not.toContain('horus explain');
+  });
+});
