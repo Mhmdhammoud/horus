@@ -13,6 +13,7 @@ export interface ConnectorFlags {
   elasticsearch?: boolean;
   grafana?: boolean;
   mongodb?: boolean;
+  postgres?: boolean;
   redis?: boolean;
   /**
    * True when a BullMQ/queues runtime connector is configured for the env — i.e. a

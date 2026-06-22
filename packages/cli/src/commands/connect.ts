@@ -30,6 +30,7 @@ import {
 import {
   ElasticsearchClient,
   MongoStateClient,
+  PostgresStateClient,
   GrafanaClient,
   RedisScanClient,
   probeRedisDatabases,
@@ -75,6 +76,10 @@ export interface ConnectOpts {
   service?: string;
   database?: string;
   collections?: string;
+  /** Postgres schema to introspect (default "public"). */
+  schema?: string;
+  /** Postgres tables (comma-separated allowlist; empty = auto-discover all base tables). */
+  tables?: string;
   dashboard?: string;
   /** Multiple dashboard UIDs selected during interactive discovery. */
   dashboardUids?: string[];
@@ -95,7 +100,7 @@ export interface ConnectOpts {
   redisDatabases?: RedisDatabaseSpec[];
 }
 
-const SUPPORTED = ['elasticsearch', 'mongodb', 'grafana', 'redis'] as const;
+const SUPPORTED = ['elasticsearch', 'mongodb', 'postgres', 'grafana', 'redis'] as const;
 type ConnectorType = (typeof SUPPORTED)[number];
 
 export async function runConnect(type: string, opts: ConnectOpts): Promise<number> {
@@ -133,6 +138,9 @@ export async function runConnect(type: string, opts: ConnectOpts): Promise<numbe
         break;
       case 'mongodb':
         patch = buildMongoPatch(filled);
+        break;
+      case 'postgres':
+        patch = buildPostgresPatch(filled);
         break;
       case 'grafana':
         patch = buildGrafanaPatch(filled);
@@ -259,6 +267,15 @@ async function fillInteractive(
         ((await ask('Collections (comma-separated, or Enter for all)', '')) || undefined);
       break;
 
+    case 'postgres':
+      filled.url =
+        filled.url ?? (await ask('Connection string', 'postgres://localhost:5432/postgres'));
+      filled.schema = filled.schema ?? ((await ask('Schema', 'public')) || undefined);
+      filled.tables =
+        filled.tables ??
+        ((await ask('Tables (comma-separated, or Enter for all)', '')) || undefined);
+      break;
+
     case 'grafana':
       filled.url = filled.url ?? (await ask('URL', 'https://grafana.example.com'));
       filled.username =
@@ -323,6 +340,8 @@ function missingRequired(type: ConnectorType, opts: ConnectOpts): boolean {
       return !opts.url || (!opts.indexPattern && !opts.indexPatterns?.length);
     case 'mongodb':
       return !opts.url || !opts.database;
+    case 'postgres':
+      return !opts.url;
     case 'grafana':
       return !opts.url;
     case 'redis':
@@ -420,6 +439,19 @@ function buildMongoPatch(opts: ConnectOpts): Record<string, unknown> {
     patch['collections'] = opts.collections
       .split(',')
       .map((c) => c.trim())
+      .filter(Boolean);
+  }
+  return patch;
+}
+
+function buildPostgresPatch(opts: ConnectOpts): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  if (opts.url) patch['url'] = opts.url;
+  if (opts.schema) patch['schema'] = opts.schema;
+  if (opts.tables) {
+    patch['tables'] = opts.tables
+      .split(',')
+      .map((t) => t.trim())
       .filter(Boolean);
   }
   return patch;
@@ -558,6 +590,21 @@ async function probe(type: ConnectorType, opts: ConnectOpts): Promise<ProbeResul
                 .split(',')
                 .map((c) => c.trim())
                 .filter(Boolean)
+            : [],
+        });
+        try {
+          return await client.health();
+        } finally {
+          await client.close();
+        }
+      }
+      case 'postgres': {
+        if (!opts.url) return { ok: true, detail: 'skipped (no URL)' };
+        const client = new PostgresStateClient({
+          url: opts.url,
+          schema: opts.schema,
+          allowlist: opts.tables
+            ? opts.tables.split(',').map((t) => t.trim()).filter(Boolean)
             : [],
         });
         try {

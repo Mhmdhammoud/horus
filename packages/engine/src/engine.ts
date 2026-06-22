@@ -80,6 +80,8 @@ export interface EngineDeps {
   logs?: LogsProvider | null;
   /** Optional MongoDB state provider — folds application-state anomalies as evidence. */
   mongo?: StateProvider | null;
+  /** Optional Postgres state provider — same state-evidence contract as `mongo`. */
+  postgres?: StateProvider | null;
   /** Optional BullMQ queue runtime provider — folds queue depth/failure evidence. */
   queue?: QueueRuntimeProvider | null;
   /** Optional Redis state provider — folds cache/state/locks/rate-limit evidence (HOR-201). */
@@ -912,14 +914,20 @@ export async function investigate(
   const dataAnomalyEvIds: string[] = [];
   const dataAnomalyCollections: string[] = [];
 
-  if (deps.mongo) {
+  // Any configured state provider (Mongo and/or Postgres) contributes the same
+  // state-evidence shape; one provider failing must not abort the others.
+  const stateProviders = [deps.mongo, deps.postgres].filter(
+    (p): p is StateProvider => p != null,
+  );
+  for (const provider of stateProviders) {
     try {
-      stateAnalysis = await deps.mongo.analyzeState();
+      const analysis = await provider.analyzeState();
+      stateAnalysis = analysis;
       // Relevance terms: hint tokens only. Using seed name/file tokens (e.g. "service"
       // from BrandService) causes generic architectural words to match unrelated
       // collections (e.g. "services", "handlers"). Domain context lives in the hint.
       const stateTerms = [...new Set(tokenize(hint))];
-      for (const s of selectStateSignals(stateAnalysis, stateTerms)) {
+      for (const s of selectStateSignals(analysis, stateTerms)) {
         const ev = mkEv('state', s.title, s.payload, {}, s.timestamp, s.relevance);
         stateEvIds.push(ev.id);
         stateCollections.add(s.collection);
@@ -929,7 +937,7 @@ export async function investigate(
         }
       }
     } catch {
-      stateAnalysis = null;
+      // Leave any prior provider's analysis intact.
     }
   }
 
@@ -1812,6 +1820,7 @@ export async function investigate(
     : {
         elasticsearch: deps.logs != null,
         mongodb: deps.mongo != null,
+        postgres: deps.postgres != null,
         grafana: deps.metrics != null,
         queue: deps.queue != null,
         metricsCollected,

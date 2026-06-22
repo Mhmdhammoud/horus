@@ -192,6 +192,7 @@ export async function runReadiness(opts?: {
     let anyEs = false;
     let anyGrafana = false;
     let anyMongo = false;
+    let anyPostgres = false;
     let anyRedis = false;
 
     for (const project of globalConfig.projects) {
@@ -203,6 +204,7 @@ export async function runReadiness(opts?: {
         if (c.elasticsearch) anyEs = true;
         if (c.grafana) anyGrafana = true;
         if (c.mongodb) anyMongo = true;
+        if (c.postgres) anyPostgres = true;
         if (c.redis) anyRedis = true;
       }
     }
@@ -252,6 +254,18 @@ export async function runReadiness(opts?: {
             blocking: false,
             detail: 'not configured — no database state evidence',
             next: 'run `horus connect mongodb`',
+          },
+    );
+
+    checks.push(
+      anyPostgres
+        ? { label: 'Postgres', status: 'pass', blocking: false, detail: 'configured' }
+        : {
+            label: 'Postgres',
+            status: 'warn',
+            blocking: false,
+            detail: 'not configured — no database state evidence',
+            next: 'run `horus connect postgres`',
           },
     );
 

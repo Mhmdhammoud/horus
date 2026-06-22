@@ -70,7 +70,7 @@ export function buildRuntimeSourceStatus(
   const metricsFailed = metricsConfigured && !connectors.metricsCollected;
 
   const stateCount = evidence.filter((e) => e.source === 'state').length;
-  const stateConfigured = !!(connectors.redis || connectors.mongodb);
+  const stateConfigured = !!(connectors.redis || connectors.mongodb || connectors.postgres);
 
   // Queue: configured when the BullMQ/queues connector is wired up (HOR-205) —
   // not merely when queue evidence happens to exist. An investigation whose hint

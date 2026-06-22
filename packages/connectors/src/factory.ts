@@ -32,7 +32,9 @@ import { GrafanaMetricsProvider } from './grafana/provider.js';
 import type { MetricsProvider } from './grafana/provider.js';
 import { MongoStateClient } from './mongodb/client.js';
 import { MongoStateProvider } from './mongodb/provider.js';
-import type { StateProvider } from './mongodb/provider.js';
+import type { StateProvider } from './state/provider.js';
+import { PostgresStateClient } from './postgres/client.js';
+import { PostgresStateProvider } from './postgres/provider.js';
 import { BullMQRedisClient } from './bullmq/client.js';
 import { BullMQRuntimeProvider } from './bullmq/provider.js';
 import type { QueueRuntimeProvider } from './bullmq/provider.js';
@@ -178,6 +180,25 @@ export function mongoForEnv(renv: ResolvedEnvironment): StateProvider | null {
       allowlist: m.collections,
     }),
     { database: m.database, collections: m.collections, staleHours: 24 },
+  );
+}
+
+/**
+ * Return a Postgres `StateProvider` for the given resolved environment, or `null`
+ * when no Postgres connector is configured (no URL — e.g. its URL env var is unset).
+ * Read-only, allowlisted tables only. `tables` maps onto the shared state analyzer's
+ * `collections` slot.
+ */
+export function postgresForEnv(renv: ResolvedEnvironment): StateProvider | null {
+  const p = renv.connectors.postgres;
+  if (!p || !p.url) return null;
+  return new PostgresStateProvider(
+    new PostgresStateClient({
+      url: p.url,
+      schema: p.schema,
+      allowlist: p.tables,
+    }),
+    { database: p.database ?? p.schema ?? 'postgres', collections: p.tables, staleHours: 24 },
   );
 }
 

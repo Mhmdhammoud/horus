@@ -1,9 +1,9 @@
 /**
- * Pure state-evidence helpers for the MongoDB provider (HOR-33).
+ * Pure state-evidence helpers, shared by every state provider (MongoDB, Postgres, …).
  *
- * MongoDB holds system STATE, not just storage. These helpers turn collection
- * shape + counts into Evidence — never raw documents. Generic by design: no
- * project-specific field names are hard-coded as logic, only as detection hints.
+ * A datastore holds system STATE, not just storage. These helpers turn container
+ * (collection / table) shape + counts into Evidence — never raw records. Generic by
+ * design: no project-specific field names are hard-coded as logic, only as detection hints.
  */
 
 import type { Evidence } from '@horus/core';
@@ -44,7 +44,7 @@ export interface StatusCount {
 }
 
 /**
- * Operational classification of a collection by last-activity age:
+ * Operational classification of a container by last-activity age:
  *  - active:  recent activity (< staleHours)
  *  - stale:   no recent activity but within the legacy horizon
  *  - legacy:  not touched in a very long time — likely an old/abandoned artifact
@@ -56,6 +56,7 @@ export type Classification = 'active' | 'stale' | 'legacy' | 'unknown';
 export const DEFAULT_LEGACY_HOURS = 90 * 24;
 
 export interface CollectionState {
+  /** Container name — a Mongo collection or a Postgres table. */
   collection: string;
   count: number;
   dateField?: string;
@@ -74,7 +75,7 @@ export interface StateAnalysis {
   staleHours: number;
   legacyHours: number;
   collections: CollectionState[];
-  /** True when no allowlist was configured — collections were discovered from the database. */
+  /** True when no allowlist was configured — containers were discovered from the database. */
   autoDiscovered?: boolean;
 }
 
@@ -120,7 +121,7 @@ export function tokenize(s: string): string[] {
     .filter((t) => t.length >= 4);
 }
 
-/** Does a collection name relate to any of the hint/seed terms? */
+/** Does a container name relate to any of the hint/seed terms? */
 export function collectionMatchesTerms(collection: string, terms: string[]): boolean {
   if (terms.length === 0) return true; // no hint context => everything is "relevant"
   const cl = collection.toLowerCase();
@@ -142,8 +143,8 @@ export interface StateSignal {
 /**
  * Select the notable state signals, filtered + weighted by relevance to the hint
  * terms and by classification. Relevance discipline:
- *  - a stale/legacy collection unrelated to the hint is dropped (it's just noise);
- *  - an ACTIVE anomaly is always surfaced (a currently-failing collection matters),
+ *  - a stale/legacy container unrelated to the hint is dropped (it's just noise);
+ *  - an ACTIVE anomaly is always surfaced (a currently-failing container matters),
  *    but down-weighted when it isn't hint-relevant;
  *  - legacy artifacts are heavily down-weighted and only shown when hint-relevant.
  */
@@ -168,13 +169,13 @@ export function selectStateSignals(
         classification: c.classification,
         relevant,
         relevance,
-        title: `${c.collection}: ${a.count} doc(s) in state "${a.value}"${tag}`,
+        title: `${c.collection}: ${a.count} record(s) in state "${a.value}"${tag}`,
         payload: {
           collection: c.collection,
           statusField: c.statusField,
           status: a.value,
           count: a.count,
-          totalDocs: c.count,
+          totalRecords: c.count,
           classification: c.classification,
         },
       });
@@ -208,7 +209,7 @@ export function selectStateSignals(
 /**
  * Convert a state analysis into Evidence. With no hint terms this surfaces all
  * notable signals (classification-weighted); pass hint terms to apply relevance
- * filtering. Counts + state only — never raw documents.
+ * filtering. Counts + state only — never raw records.
  */
 export function stateToEvidence(
   analysis: StateAnalysis,

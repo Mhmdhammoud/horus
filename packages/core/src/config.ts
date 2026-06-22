@@ -149,6 +149,20 @@ const connectorsSchema = z
         urlEnv: z.string().optional(),
       })
       .optional(),
+    postgres: z
+      .object({
+        /** Schema to introspect (default: "public"). */
+        schema: z.string().optional(),
+        /** Logical database label for evidence provenance (optional). */
+        database: z.string().optional(),
+        /** Allowlisted tables to analyze (empty = auto-discover all base tables). */
+        tables: z.array(z.string()).default([]),
+        /** Direct connection string (takes priority over urlEnv). */
+        url: z.string().optional(),
+        /** Name of the env var holding the Postgres URL. Defaults to "DATABASE_URL". */
+        urlEnv: z.string().optional(),
+      })
+      .optional(),
     grafana: z
       .object({
         dashboard: z.string().optional(),
@@ -333,6 +347,7 @@ export interface ResolvedConnectors {
     fields?: ResolvedElasticsearchFields;
   };
   mongodb?: { url?: string; database: string; collections: string[] };
+  postgres?: { url?: string; schema?: string; database?: string; tables: string[] };
   grafana?: {
     url?: string;
     username?: string;
@@ -502,6 +517,16 @@ export function resolveEnvironment(
       url: m.url ?? process.env[m.urlEnv ?? 'MONGODB_URL'],
       database: m.database,
       collections: m.collections,
+    };
+  }
+
+  if (c.postgres !== undefined) {
+    const p = c.postgres;
+    resolved.postgres = {
+      url: p.url ?? process.env[p.urlEnv ?? 'DATABASE_URL'],
+      schema: p.schema,
+      database: p.database,
+      tables: p.tables,
     };
   }
 
