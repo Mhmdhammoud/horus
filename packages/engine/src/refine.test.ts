@@ -199,8 +199,14 @@ describe('refineInvestigation', () => {
     expect(v.hypotheses.length).toBe(REPORT.hypotheses.length);
   });
 
-  it('mode none: all evidence is returned', () => {
+  it('mode none: a question directive returns no evidence + points at investigate (HOR-331)', () => {
     const v = refineInvestigation(REPORT, 'what is the meaning of life');
+    expect(v.evidence.length).toBe(0);
+    expect(v.note).toContain('horus investigate');
+  });
+
+  it('mode none: a non-question no-match still returns the full evidence', () => {
+    const v = refineInvestigation(REPORT, 'foobar nonsense gibberish');
     expect(v.evidence.length).toBe(REPORT.evidence.length);
   });
 
