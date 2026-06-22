@@ -398,6 +398,28 @@ export async function investigate(
     }
   }
 
+  // HOR-335: a seed with ZERO hint-token overlap (and not log-reseeded) is a
+  // semantic/fuzzy guess — not a match to anything the hint actually named. Flag it
+  // so we disclose the low confidence and damp the headline, else investigate
+  // fabricates a confident result for input that matches no real symbol (e.g.
+  // "ZzzNonexistentService is throwing" silently resolved to the helper `err`).
+  const seedHay = top ? `${top.name} ${top.filePath}`.toLowerCase() : '';
+  // Generic architectural/severity words match almost any file path ("service" is in
+  // every *.service.ts) — they don't indicate the seed is what the hint actually named.
+  const GENERIC_HINT_TOKENS = new Set([
+    'service', 'services', 'controller', 'controllers', 'resolver', 'resolvers', 'worker',
+    'workers', 'repository', 'provider', 'module', 'manager', 'util', 'utils', 'helper',
+    'handler', 'error', 'errors', 'exception', 'exceptions', 'fail', 'failed', 'failing',
+    'failure', 'throw', 'throwing', 'thrown', 'fatal', 'crash', 'crashing', 'timeout',
+    'production', 'prod', 'staging', 'application', 'issue', 'problem', 'broken', 'slow',
+  ]);
+  const meaningfulHintTokens = hintTokens.filter((t) => !GENERIC_HINT_TOKENS.has(t));
+  const seedIsLowConfidence =
+    top !== undefined &&
+    logReseed === null &&
+    meaningfulHintTokens.length > 0 &&
+    !meaningfulHintTokens.some((t) => seedHay.includes(t));
+
   // Empty-result only when source intelligence WAS available but resolved nothing.
   // In degraded runtime-only mode we fall through and build a report from runtime
   // evidence instead (HOR-319 layer-2).
@@ -1424,7 +1446,9 @@ export async function investigate(
   // Without a seed (degraded runtime-only mode) seedResolved is 0, so this formula
   // already caps confidence at ≤0.5 — runtime evidence can never look as certain as a
   // full structural run (HOR-319 layer-2).
-  const seedResolved = seeds.length > 0 ? 1 : 0;
+  // A fuzzy/zero-support seed (HOR-335) is only partially "resolved" — it must not
+  // earn the full +0.5 a real, hint-matched seed does.
+  const seedResolved = seeds.length === 0 ? 0 : seedIsLowConfidence ? 0.3 : 1;
   const confidence = clamp01(0.5 * evidenceConfidence + 0.5 * seedResolved);
 
   // h. summary
@@ -1432,9 +1456,14 @@ export async function investigate(
   const topCause = rankedCauses[0];
   const banner = degradedNoSource ? 'Runtime-only (source intelligence unavailable). ' : '';
   const scope = top ? `resolved to ${label} (${area})` : `over runtime evidence (${area})`;
+  // HOR-335: lead with an honest disclaimer when the seed is only a semantic guess.
+  const seedDisclaimer =
+    seedIsLowConfidence && top
+      ? `⚠ No symbol closely matched "${hint}" — "${top.name}" is a low-confidence closest match (semantic). Refine with an exact symbol or error code to target precisely. `
+      : '';
   const summary = topCause
-    ? `${banner}Investigation of "${hint}" ${scope}. Top suspected cause: ${topCause.title}.`
-    : `${banner}Investigation of "${hint}" ${scope}. No dominant suspected cause emerged from the available ${degradedNoSource ? 'runtime' : 'structural'} evidence.`;
+    ? `${seedDisclaimer}${banner}Investigation of "${hint}" ${scope}. Top suspected cause: ${topCause.title}.`
+    : `${seedDisclaimer}${banner}Investigation of "${hint}" ${scope}. No dominant suspected cause emerged from the available ${degradedNoSource ? 'runtime' : 'structural'} evidence.`;
 
   // i. nextActions
   const nextActions = buildNextActions(top, ctx, impact, queueHits, changes, input);
@@ -1444,8 +1473,9 @@ export async function investigate(
     );
   }
 
-  // Prepend owner routing when ownership is known (HOR-40).
-  if (ownershipEstimate?.likelyMaintainer) {
+  // Prepend owner routing when ownership is known (HOR-40) — but not for a fuzzy
+  // seed (HOR-335): routing a maintainer for a fabricated seed is false authority.
+  if (ownershipEstimate?.likelyMaintainer && !seedIsLowConfidence) {
     nextActions.unshift(
       `Route to likely maintainer: ${ownershipEstimate.likelyMaintainer} (${Math.round(ownershipEstimate.maintainerShare * 100)}% of commits to ${ownershipEstimate.file ?? top?.filePath ?? 'the implicated file'})`,
     );
@@ -1503,6 +1533,9 @@ export async function investigate(
   const gapAnalysis = detectMissingEvidence(report, connectorFlags);
   report.gapAnalysis = gapAnalysis;
   report.confidence = Math.min(report.confidence, gapAnalysis.confidenceCeiling);
+  // HOR-335: a fuzzy/zero-support seed can never claim more than low confidence,
+  // regardless of how much (unrelated) runtime evidence happens to be present.
+  if (seedIsLowConfidence) report.confidence = Math.min(report.confidence, 0.45);
   report.nextActions.push(...gapNextActions(gapAnalysis.gaps));
   report.sourceStatus = buildRuntimeSourceStatus(evidence, connectorFlags);
 

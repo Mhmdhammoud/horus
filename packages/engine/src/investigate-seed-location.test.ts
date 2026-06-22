@@ -155,3 +155,28 @@ describe('investigate() — blast-radius cause requires genuine fan-out (HOR-340
     expect(report.suspectedCauses.some((c) => /code reach/i.test(c.title))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// HOR-335: a fuzzy/zero-support seed must be DISCLOSED and damped, not presented
+// as a confident result (investigate used to silently seed garbage at 0.75).
+// ---------------------------------------------------------------------------
+
+describe('investigate() — fuzzy seed disclosed + confidence damped (HOR-335)', () => {
+  it('discloses + caps confidence when no meaningful hint token matches the seed', async () => {
+    // none of these tokens appear in getSaleWithLink / sales.resolver.ts
+    const report = await investigate(
+      { hint: 'WidgetFactory exploded catastrophically' },
+      { code: fakeCode, db: fakeDb },
+    );
+    expect(report.summary).toContain('low-confidence closest match');
+    expect(report.confidence).toBeLessThanOrEqual(0.45);
+  });
+
+  it('does NOT flag when a hint token matches the seed name', async () => {
+    const report = await investigate(
+      { hint: 'getSaleWithLink is failing' }, // "sale"/"link" match the seed
+      { code: fakeCode, db: fakeDb },
+    );
+    expect(report.summary).not.toContain('low-confidence closest match');
+  });
+});
