@@ -157,6 +157,27 @@ export function classifyAIFailure(firstError?: string): string {
   return firstError;
 }
 
+/**
+ * Resolve `p`, or reject after `ms` with a clear, actionable message. The underlying work is
+ * left to be torn down by process exit — this exists so a hung connector (e.g. a dropped
+ * tunnel/port-forward, or a stuck source-intelligence query) can never hang the CLI forever.
+ */
+export function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        new Error(
+          `Investigation exceeded ${Math.round(ms / 1000)}s and was aborted. A runtime connector ` +
+            `is likely unreachable (e.g. a dropped SSH tunnel / port-forward) or the source-` +
+            `intelligence host is slow. Re-run, or raise --timeout <seconds>.`,
+        ),
+      );
+    }, ms);
+  });
+  return Promise.race([p, deadline]).finally(() => clearTimeout(timer)) as Promise<T>;
+}
+
 export async function runInvestigate(
   hint: string,
   opts: {
@@ -167,6 +188,10 @@ export async function runInvestigate(
     /** @deprecated use project — kept for back-compat with parked commands */
     repo?: string;
     since?: string;
+    /** Widen the runtime-log window independently of `--since` (a duration like 30d/24h). */
+    logsSince?: string;
+    /** Overall investigation deadline in seconds (default 120). */
+    timeout?: string;
     service?: string;
     json?: boolean;
     format?: string;
@@ -260,8 +285,8 @@ export async function runInvestigate(
 
     const { db, sql } = createDb(config.database.url);
     try {
-      const report = await investigate(
-        { hint, repo: renv.project, since: opts.since, service },
+      const investigation = investigate(
+        { hint, repo: renv.project, since: opts.since, logsSince: opts.logsSince, service },
         {
           // Runtime-only degrade (HOR-319 layer-2): pass no source provider so the engine
           // skips seed resolution + structural evidence and builds from runtime evidence.
@@ -287,6 +312,13 @@ export async function runInvestigate(
           },
         },
       );
+      // Overall deadline so an unreachable/slow connector (e.g. a dropped tunnel or a stuck
+      // source-intelligence query) can never hang the investigation forever (HOR — reliability).
+      const timeoutSec =
+        (opts.timeout !== undefined ? Number(opts.timeout) : 0) ||
+        Number(process.env.HORUS_INVESTIGATE_TIMEOUT_S) ||
+        120;
+      const report = await withDeadline(investigation, timeoutSec * 1000);
       // --json is back-compat for --format json.
       const format = opts.json ? 'json' : (opts.format ?? 'text');
       const rendered =

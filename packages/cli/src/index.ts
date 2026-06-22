@@ -434,6 +434,8 @@ Examples:
     .option('--env <name>', 'environment name (e.g. production)')
     .option('--repo <name>', 'repository/project to scope to (alias for --project)')
     .option('--since <ref>', 'git ref/range for change-impact (e.g. HEAD~5)')
+    .option('--logs-since <dur>', 'runtime-log window as a duration (e.g. 30d, 24h); independent of --since')
+    .option('--timeout <sec>', 'overall investigation deadline in seconds (default 120)')
     .option(
       '--service <name>',
       'service name to scope runtime logs, e.g. leadcall-api-prod',
@@ -452,6 +454,8 @@ Examples:
           env?: string;
           repo?: string;
           since?: string;
+          logsSince?: string;
+          timeout?: string;
           service?: string;
           json?: boolean;
           format?: string;
@@ -466,6 +470,8 @@ Examples:
           env: opts.env,
           repo: opts.repo,
           since: opts.since,
+          logsSince: opts.logsSince,
+          timeout: opts.timeout,
           service: opts.service,
           json: opts.json,
           format: opts.format,

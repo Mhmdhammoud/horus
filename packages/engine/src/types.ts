@@ -26,6 +26,12 @@ export interface InvestigationInput {
   repo?: string;
   /** Optional git ref or range (e.g. `v1.2.0` or `abc123..HEAD`) to bound history. */
   since?: string;
+  /**
+   * Optional runtime-log window as a duration (e.g. `30d`, `24h`), independent of `since`.
+   * `since` is git-shaped (refs/ranges) and falls back to the 7-day default for logs; set
+   * this to look further back for the actual error signatures.
+   */
+  logsSince?: string;
   /** Optional service name scope. */
   service?: string;
 }

@@ -11,7 +11,23 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildNarrativeInput, classifyAIFailure, runInvestigate } from './investigate.js';
+import {
+  buildNarrativeInput,
+  classifyAIFailure,
+  runInvestigate,
+  withDeadline,
+} from './investigate.js';
+
+describe('withDeadline (investigation timeout safety)', () => {
+  it('resolves with the value when the promise settles before the deadline', async () => {
+    await expect(withDeadline(Promise.resolve(42), 1000)).resolves.toBe(42);
+  });
+
+  it('rejects with an actionable message when the deadline passes (never hangs)', async () => {
+    const neverSettles = new Promise<number>(() => {});
+    await expect(withDeadline(neverSettles, 20)).rejects.toThrow(/was aborted/);
+  });
+});
 import type { InvestigationReport } from '@horus/engine';
 
 const dirs: string[] = [];
