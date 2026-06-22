@@ -8,12 +8,39 @@
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { buildNarrativeInput, classifyAIFailure } from './investigate.js';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { buildNarrativeInput, classifyAIFailure, runInvestigate } from './investigate.js';
 import type { InvestigationReport } from '@horus/engine';
 
+const dirs: string[] = [];
+
 afterEach(() => {
+  for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  dirs.length = 0;
   vi.restoreAllMocks();
 });
+
+function writeSingleEnvConfig(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'horus-investigate-'));
+  dirs.push(dir);
+  const path = join(dir, 'horus.config.js');
+  writeFileSync(
+    path,
+    `export default {
+  database: { url: "postgresql://horus:horus@localhost:5433/horus" },
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{ name: "production", connectors: {} }],
+  }],
+};
+`,
+    'utf8',
+  );
+  return path;
+}
 
 // ---------------------------------------------------------------------------
 // Minimal fixture — enough to exercise buildNarrativeInput without connectors
@@ -173,5 +200,24 @@ describe('classifyAIFailure', () => {
   it('passes through unclassified error messages verbatim', () => {
     const reason = classifyAIFailure('some unexpected provider message');
     expect(reason).toBe('some unexpected provider message');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unknown environment exits non-zero (scripts must be able to detect the error)
+// ---------------------------------------------------------------------------
+
+describe('runInvestigate — unknown environment', () => {
+  it('returns a non-zero code (1) when --env names an unconfigured environment', async () => {
+    const config = writeSingleEnvConfig();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // `staging` is not configured (only `production` exists) — resolveEnvironment
+    // throws before any connector/DB access, so this stays fully offline.
+    const code = await runInvestigate('some hint', { config, env: 'staging' });
+
+    expect(code).toBe(1);
+    const stderr = errSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(stderr).toContain('Unknown environment: staging');
   });
 });

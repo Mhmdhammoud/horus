@@ -26,11 +26,21 @@ export async function stitch(
   // Producers: NestJS @InjectQueue (Class), raw `new Queue(...)`, and modules that
   // declare a queue-name constant (the queue's definition site). `MATCH (n)` (any
   // label) because raw bullmq lives in Files/Functions, not just Classes.
+  //
+  // Also pulls the indirection sources the extractor needs to resolve dynamically
+  // registered queues (HOR-341): enum declarations (`new Queue(Enum.MEMBER)` /
+  // `Object.values(Enum)` resolution) and dispatch tables that map enum members to
+  // handler functions. These are harmless extra rows for the literal-string path.
   const producerRows = (
     await client.cypher(
       // "new Queue" (no paren) so generic-typed `new Queue<T>(...)` also matches.
       'MATCH (n) WHERE n.content CONTAINS "@InjectQueue(" OR n.content CONTAINS "new Queue" ' +
         'OR n.content CONTAINS "QUEUE_NAME" OR n.content CONTAINS "QueueName" ' +
+        'OR n.content CONTAINS "enum " OR n.content CONTAINS "Object.values(" ' +
+        // HOR-341: dispatch tables `[Enum.MEMBER]: () => this.ctrl.handler()` map runtime
+        // queues to owning code, and often live in a file with NO new Queue/Worker of their
+        // own (e.g. a scheduler controller) — so pull computed-key arrow entries too.
+        'OR n.content CONTAINS "]: (" ' +
         'RETURN n.name, n.file_path, n.content',
     )
   ).rows;
