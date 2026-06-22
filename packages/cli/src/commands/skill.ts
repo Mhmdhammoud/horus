@@ -80,6 +80,27 @@ horus ask <id> "what evidence contradicts the likely root cause?"
 horus score <id>
 \`\`\`
 
+## Report whether Horus helped (close the loop)
+
+Once you have **acted on an investigation and know the outcome** — you verified
+whether Horus pointed at the real cause — record it. This is how Horus measures and
+improves its own accuracy, and without it the impact signal is blind to agent-driven
+runs (most of them).
+
+\`\`\`bash
+horus feedback <id> --resolved yes      # Horus pointed at the real cause
+horus feedback <id> --resolved partly   # useful lead, but not the whole cause
+horus feedback <id> --resolved no       # Horus missed the cause
+\`\`\`
+
+It is non-interactive and safe to run unattended. Report **once** per investigation,
+**after** you confirm the outcome — never before, and never guess. If you can estimate
+how long the same debugging would have taken you manually, add it:
+
+\`\`\`bash
+horus feedback <id> --resolved yes --manual-estimate-min 120
+\`\`\`
+
 ## Runtime evidence
 
 Use runtime commands when the question depends on live or recent runtime behavior:

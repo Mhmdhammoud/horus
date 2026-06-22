@@ -40,6 +40,13 @@ export function submitFeedback(input: {
   resolved: Resolved;
   manualEstimateMinutes: number | null;
   horusSeconds: number | null;
+  /**
+   * Where the feedback came from: `prompt` = a human answered the interactive
+   * post-result prompt; `flag` = supplied non-interactively via `horus feedback
+   * --resolved …` (typically an agent driving Horus through the skill). Lets the
+   * metrics weigh/separate agent-attested vs human-attested impact.
+   */
+  source: 'prompt' | 'flag';
 }): void {
   track({ type: 'feedback.submitted', ...input });
 }
@@ -65,6 +72,7 @@ export async function runFeedbackPrompt(
       resolved: parseResolved(a1),
       manualEstimateMinutes: parseManualEstimate(a2),
       horusSeconds,
+      source: 'prompt',
     });
     console.log(pc.dim('  Thanks — recorded.'));
     return true;

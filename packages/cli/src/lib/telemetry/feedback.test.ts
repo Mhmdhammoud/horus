@@ -10,6 +10,7 @@ import {
 } from './feedback.js';
 import { readSpooledEvents } from './spool.js';
 import { loadOrInitTelemetryState, updateTelemetryState } from './store.js';
+import { runFeedback } from '../../commands/feedback.js';
 
 const ENV_KEYS = [
   'HORUS_HOME',
@@ -78,6 +79,7 @@ describe('submitFeedback', () => {
       resolved: 'yes',
       manualEstimateMinutes: 120,
       horusSeconds: 8,
+      source: 'prompt',
     });
     const events = readSpooledEvents();
     expect(events).toHaveLength(1);
@@ -86,6 +88,39 @@ describe('submitFeedback', () => {
     expect(e.tier).toBe('A');
     expect(e.resolved).toBe('yes');
     expect(e.manualEstimateMinutes).toBe(120);
+    expect(e.source).toBe('prompt');
+  });
+});
+
+describe('runFeedback (non-interactive flag path — agent/scripted)', () => {
+  it('emits a feedback event from --resolved without a TTY, tagged source=flag', async () => {
+    loadOrInitTelemetryState();
+    setTTY(false); // agents run non-interactively
+    const code = await runFeedback('inv-9', { resolved: 'partly', manualEstimateMin: '30' });
+    expect(code).toBe(0);
+    const events = readSpooledEvents();
+    expect(events).toHaveLength(1);
+    const e = events[0] as unknown as Record<string, unknown>;
+    expect(e.type).toBe('feedback.submitted');
+    expect(e.resolved).toBe('partly');
+    expect(e.manualEstimateMinutes).toBe(30);
+    expect(e.source).toBe('flag');
+  });
+
+  it('rejects an invalid --resolved verdict and emits nothing', async () => {
+    loadOrInitTelemetryState();
+    setTTY(false);
+    const code = await runFeedback('inv-9', { resolved: 'maybe' });
+    expect(code).toBe(1);
+    expect(readSpooledEvents()).toEqual([]);
+  });
+
+  it('requires a TTY when no --resolved flag is given', async () => {
+    loadOrInitTelemetryState();
+    setTTY(false);
+    const code = await runFeedback('inv-9', {});
+    expect(code).toBe(1);
+    expect(readSpooledEvents()).toEqual([]);
   });
 });
 
