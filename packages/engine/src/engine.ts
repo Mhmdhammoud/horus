@@ -978,11 +978,19 @@ export async function investigate(
         const labelVals = Object.values(f.labels).map((v) => v.toLowerCase());
 
         if (f.anomaly === 'latency-spike' || f.anomaly === 'error-rate-change') {
-          // Without a service scope, retain as evidence but don't boost hypotheses.
-          const relevant =
+          // Promote a latency/error-rate spike to a CAUSE when it's scoped to the
+          // investigated service OR — with no --service — when the panel/labels match the
+          // hint (HOR-328 round-2: a "scheduler run duration latency spike" hint must lift
+          // the matching x139 anomaly into a cause, not leave it unranked in evidence).
+          const matchesService =
             serviceFilter.length > 0 &&
             (panelLower.includes(serviceFilter) || labelVals.some((v) => v.includes(serviceFilter)));
-          if (relevant) latencyMetricEvIds.push(ev.id);
+          const matchesHint =
+            serviceFilter.length === 0 &&
+            hintTokens.some(
+              (t) => t.length >= 4 && (panelLower.includes(t) || labelVals.some((v) => v.includes(t))),
+            );
+          if (matchesService || matchesHint) latencyMetricEvIds.push(ev.id);
         } else if (f.anomaly === 'queue-growth') {
           // Attribute each queue-growth anomaly to the specific queue(s) it matches.
           // Match using normalized panel/label strings with word-boundary checks so
