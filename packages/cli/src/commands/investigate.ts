@@ -194,12 +194,15 @@ export async function runInvestigate(
     const cloudActive = isCloudActive(cloudCfg);
     const cloudSession = cloudActive ? authedClient() : null;
     if (cloudActive && !cloudSession) {
+      // Horus Cloud is OPTIONAL — never block a local investigation on it. Warn and
+      // proceed locally; the cloud upload at the end is simply skipped when there is
+      // no session (see the `cloudSession` guard before uploadInvestigationToCloud).
       console.error(
-        pc.red(
-          `This repo is linked to Horus Cloud but you are not logged in. Run ${pc.bold('horus login')} first.`,
+        pc.yellow(
+          `This repo is linked to Horus Cloud but you are not logged in — running locally only. ` +
+            `Run ${pc.bold('horus login')} to also sync results to the cloud.`,
         ),
       );
-      return 1;
     }
 
     const code = codeForEnv(renv);
@@ -402,7 +405,11 @@ export async function runInvestigate(
 
     return 0;
   } catch (err) {
-    console.error(pc.red((err as Error).message));
+    // Never fail silently: surface a message even when the error carries none,
+    // and include the stack under HORUS_DEBUG for diagnosis.
+    const msg = (err as Error)?.message || String(err);
+    console.error(pc.red(msg.trim() ? msg : 'Investigation failed (unknown error).'));
+    if (process.env.HORUS_DEBUG) console.error(pc.dim((err as Error)?.stack ?? String(err)));
     return 1;
   }
 }

@@ -470,7 +470,15 @@ export async function investigate(
       code.impact(top.id, 2),
       code.flowsFor(top.id),
     ]);
-    const edges = await listQueueEdges(db, { project: input.repo });
+    let edges: QueueEdge[] = [];
+    try {
+      edges = await listQueueEdges(db, { project: input.repo });
+    } catch {
+      // Investigation-store DB unreachable — degrade (HOR-319 spirit) rather than
+      // aborting the whole investigation: skip queue-edge evidence. persist() already
+      // tolerates a down DB, so the report still runs, renders, and reports telemetry.
+      edges = [];
+    }
 
     const symbolNames = new Set<string>([
       top.name,
