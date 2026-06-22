@@ -23,6 +23,8 @@ export class BullMQRedisClient {
       enableReadyCheck: false,
       maxRetriesPerRequest: 1,
       connectTimeout: 5_000,
+      // Bound reconnection so a dropped connection fails fast instead of retrying forever.
+      retryStrategy: (times) => (times > 3 ? null : Math.min(times * 200, 1000)),
     };
     this.redis = new Redis(opts.url, redisOpts);
     // Prevent unhandled-error process crash; failures surface via thrown promises.

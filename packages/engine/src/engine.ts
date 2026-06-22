@@ -320,7 +320,7 @@ export async function reseedFromLogs(
   if (!deps.code) return null;
   const code = deps.code;
   try {
-    const from = logWindowFrom(input.since);
+    const from = logWindowFrom(input.logsSince ?? input.since);
     const records = await deps.logs.searchLogs({
       text: hint,
       broadText: true,
@@ -769,11 +769,23 @@ export async function investigate(
           .join('; ')
           .slice(0, 300);
       } else {
-        const from = logWindowFrom(input.since);
+        const logsSince = input.logsSince ?? input.since;
+        const from = logWindowFrom(logsSince);
         // Error signatures are scoped by service + window, NOT by the hint text:
         // the errors that matter to an incident rarely contain the hint words in
         // their message (the hint resolves the code seed; the service scopes logs).
         analysis = await deps.logs.analyzeErrors({ service: input.service, from });
+        // Auto-widen: the 7-day default frequently misses a real incident only slightly older
+        // — a common false "no error logs matched". When nothing matched and no window was
+        // pinned (--logs-since / a duration --since), retry once at 30d and keep it only if it
+        // actually surfaces signatures.
+        if (analysis.signatures.length === 0 && logsSince === undefined) {
+          const retry = await deps.logs.analyzeErrors({
+            service: input.service,
+            from: logWindowFrom('30d'),
+          });
+          if (retry.signatures.length > 0) analysis = retry;
+        }
         logsCollected = true;
 
         // Seed relevance terms: used to classify each signature as 'direct' or
@@ -922,7 +934,7 @@ export async function investigate(
   let sentryIssueCount = 0;
   if (deps.sentry) {
     try {
-      const from = logWindowFrom(input.since);
+      const from = logWindowFrom(input.logsSince ?? input.since);
       const to = new Date().toISOString();
       // Seed terms mirror the log block: hint + seed symbol + seed file base, so a Sentry
       // frame that points at the implicated code is classified 'direct' (HOR-156).
@@ -1171,7 +1183,7 @@ export async function investigate(
     const ac = new AbortController();
     let metricsTimerId: ReturnType<typeof setTimeout> | undefined;
     try {
-      const fromMs = new Date(logWindowFrom(input.since)).getTime();
+      const fromMs = new Date(logWindowFrom(input.logsSince ?? input.since)).getTime();
       const toMs = Date.now();
       metricsTimerId = setTimeout(() => ac.abort(new Error('metrics timeout')), METRICS_TIMEOUT_MS);
       // unref() prevents the timer from keeping the Node process alive.

@@ -44,6 +44,10 @@ export class RedisScanClient {
       enableReadyCheck: false,
       maxRetriesPerRequest: 1,
       connectTimeout: 5_000,
+      // Bound RECONNECTION — without this, ioredis reconnects forever when an
+      // already-established connection drops (e.g. a port-forward/tunnel switches),
+      // hanging the investigation indefinitely. Give up after 3 quick attempts.
+      retryStrategy: (times) => (times > 3 ? null : Math.min(times * 200, 1000)),
     };
     this.redis = new Redis(opts.url, redisOpts);
     this.redis.on('error', () => {});
