@@ -180,3 +180,22 @@ describe('investigate() — fuzzy seed disclosed + confidence damped (HOR-335)',
     expect(report.summary).not.toContain('low-confidence closest match');
   });
 });
+
+// ---------------------------------------------------------------------------
+// HOR-336: headline confidence reflects DIAGNOSIS strength — a well-localized run
+// with no meaningful root cause is "localized, cause unknown", not a confident
+// diagnosis, so it cannot read high.
+// ---------------------------------------------------------------------------
+
+describe('investigate() — confidence reflects diagnosis strength (HOR-336)', () => {
+  it('caps the headline when no meaningful cause emerges', async () => {
+    // seed matches the hint (not fuzzy), but fakeCode has impact.affected=0 and no
+    // runtime evidence => no meaningful suspected cause.
+    const report = await investigate(
+      { hint: 'getSaleWithLink' },
+      { code: fakeCode, db: fakeDb },
+    );
+    expect(report.suspectedCauses[0]?.finalScore ?? 0).toBeLessThan(0.2);
+    expect(report.confidence).toBeLessThanOrEqual(0.6);
+  });
+});

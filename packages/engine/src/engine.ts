@@ -1536,6 +1536,14 @@ export async function investigate(
   // HOR-335: a fuzzy/zero-support seed can never claim more than low confidence,
   // regardless of how much (unrelated) runtime evidence happens to be present.
   if (seedIsLowConfidence) report.confidence = Math.min(report.confidence, 0.45);
+  // HOR-336: the headline must reflect DIAGNOSIS strength, not just localization +
+  // evidence volume. A run can localize a seed and surface lots of evidence yet
+  // produce no meaningful root cause — that is "localized, cause unknown", not a
+  // confident diagnosis. When no cause clears a meaningful bar (the cause scale is
+  // compressed; real causes score ~0.3+), cap the headline so it can't read 0.85
+  // over a 0.08 cause (or none at all).
+  const topCauseScore = report.suspectedCauses[0]?.finalScore ?? 0;
+  if (topCauseScore < 0.2) report.confidence = Math.min(report.confidence, 0.6);
   report.nextActions.push(...gapNextActions(gapAnalysis.gaps));
   report.sourceStatus = buildRuntimeSourceStatus(evidence, connectorFlags);
 
