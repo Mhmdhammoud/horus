@@ -181,15 +181,25 @@ export function classifyLogRelevance(
   seedTerms: string[],
   inputService: string | undefined,
 ): { relevanceClass: LogRelevanceClass; relevanceReason: string } {
-  if (seedTerms.length === 0) {
-    return { relevanceClass: 'direct', relevanceReason: 'no seed context — included by default' };
+  // Generic error/severity words ("error", "errors", "failing") appear in EVERY error
+  // signature, so matching on them marks every unrelated error "direct" — narrating a
+  // louder error from another service onto this seed/path (HOR-338). Relevance must come
+  // from DOMAIN terms, not the word "error".
+  const GENERIC_TERMS = new Set([
+    'error', 'errors', 'err', 'fail', 'failed', 'failing', 'failure', 'exception',
+    'exceptions', 'crash', 'crashing', 'issue', 'problem', 'slow', 'timeout', 'broken',
+    'down', 'production', 'prod', 'staging',
+  ]);
+  const domainTerms = seedTerms.filter((t) => !GENERIC_TERMS.has(t));
+  if (domainTerms.length === 0) {
+    return { relevanceClass: 'direct', relevanceReason: 'no specific seed context — included by default' };
   }
 
   const keyTokens = tokenize(sigKey);
   const serviceTokens = sigServices.flatMap((s) => tokenize(s));
   const combined = [...keyTokens, ...serviceTokens];
 
-  const matchingTerms = seedTerms.filter(
+  const matchingTerms = domainTerms.filter(
     (t) => combined.some((c) => c.includes(t) || t.includes(c)),
   );
 
@@ -625,6 +635,11 @@ export async function investigate(
   const logEvIds: string[] = [];
   const directLogEvIds: string[] = [];
   const ambientLogEvIds: string[] = [];
+  // HOR-338: track the DIRECT signatures (not just their evidence ids) so the
+  // error-correlation cause cites the errors actually linked to the seed/path — not
+  // the global top error, which co-occurrence would otherwise cross-wire onto an
+  // unrelated path (e.g. a scheduler error narrated onto a webhook worker).
+  const directSignatures: { key: string; count: number }[] = [];
   // HOR-215: distinct-failing-entity evidence (e.g. "16 brand_id, 50 order_id").
   const entityEvIds: string[] = [];
   const entitySummaries: string[] = [];
@@ -719,8 +734,10 @@ export async function investigate(
           if (s.isNew) ev.isNew = s.isNew;
           if (typeof s.ratio === 'number' && Number.isFinite(s.ratio)) ev.ratio = s.ratio;
           logEvIds.push(ev.id);
-          if (relevanceClass === 'direct') directLogEvIds.push(ev.id);
-          else ambientLogEvIds.push(ev.id);
+          if (relevanceClass === 'direct') {
+            directLogEvIds.push(ev.id);
+            directSignatures.push({ key: s.key, count: s.count });
+          } else ambientLogEvIds.push(ev.id);
         }
 
         // HOR-215: surface the DISTINCT failing entities behind the dominant error
@@ -1399,10 +1416,14 @@ export async function investigate(
       firstQueue !== undefined
         ? `"${firstQueue.queueName}" (${firstQueue.producerSymbol ?? 'unknown'} -> ${firstQueue.workerSymbol ?? 'unknown'})`
         : 'the queue path';
-    const topSig = analysis.signatures[0];
+    // HOR-338: cite the DIRECT errors (those linked to the seed/path), not the global
+    // top/total — otherwise a louder, unrelated error from another service/host is
+    // narrated onto this path purely by co-occurrence.
+    const directTotal = directSignatures.reduce((sum, d) => sum + d.count, 0);
+    const directTop = directSignatures[0];
     causeInputs.push({
       id: 'cause:error-correlation',
-      title: `Runtime errors (${analysis.totalErrors}${topSig ? `, top ${topSig.key}` : ''}) correlate with the implicated queue path ${queueLabel}`,
+      title: `Runtime errors (${directTotal}${directTop ? `, top ${directTop.key}` : ''}) directly linked to the implicated queue path ${queueLabel}`,
       category: 'error-correlation',
       sourceEvidenceIds: directLogEvIds.slice(0, 3),
       baseScore: 0.30,
