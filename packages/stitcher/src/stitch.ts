@@ -37,6 +37,10 @@ export async function stitch(
       'MATCH (n) WHERE n.content CONTAINS "@InjectQueue(" OR n.content CONTAINS "new Queue" ' +
         'OR n.content CONTAINS "QUEUE_NAME" OR n.content CONTAINS "QueueName" ' +
         'OR n.content CONTAINS "enum " OR n.content CONTAINS "Object.values(" ' +
+        // HOR-341: dispatch tables `[Enum.MEMBER]: () => this.ctrl.handler()` map runtime
+        // queues to owning code, and often live in a file with NO new Queue/Worker of their
+        // own (e.g. a scheduler controller) — so pull computed-key arrow entries too.
+        'OR n.content CONTAINS "]: (" ' +
         'RETURN n.name, n.file_path, n.content',
     )
   ).rows;

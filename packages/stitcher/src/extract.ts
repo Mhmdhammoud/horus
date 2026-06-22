@@ -76,8 +76,10 @@ const OBJECT_VALUES_LOOP_RE =
 // A dispatch-table entry mapping an enum member to a handler:
 //   `[Enum.MEMBER]: () => this.ctrl.method(...)`  or  `[Enum.MEMBER]: handlerFn`
 // Captures the member-access key and a best-effort handler symbol (method name, or fn name).
+// The rhs runs to the entry's trailing comma/brace (NOT the first newline) so a handler that
+// wraps onto the next line — `[Enum.MEMBER]: () =>\n  this.ctrl.method()` — still resolves.
 const DISPATCH_ENTRY_RE =
-  /\[\s*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*\]\s*:\s*([^,\n}]+)/g;
+  /\[\s*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*\]\s*:\s*([^,}]+)/g;
 
 function baseName(filePath: string): string {
   const parts = filePath.split('/');

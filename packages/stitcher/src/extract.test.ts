@@ -234,6 +234,38 @@ describe('extractQueueGraph — dispatch table links queue to handler', () => {
   });
 });
 
+// Real dispatch tables wrap the arrow body onto the next line — the rhs must span past the
+// newline to the entry's trailing comma (HOR-341, found dogfooding maison-safqa).
+describe('extractQueueGraph — dispatch handler wrapped across lines (HOR-341)', () => {
+  const wrappedDispatch = `getTaskForEvent(eventName) {
+  const taskMap = {
+    [ScheduledEvents.SEED_PRODUCTS]: () =>
+      this.productController.seedProducts(),
+    [ScheduledEvents.SYNC_BRAND_FULFILLMENTS]: () =>
+      this.orderController.syncBrandFulfillments(),
+  }
+  return taskMap[eventName]
+}`;
+  const g = extractQueueGraph({
+    producerClasses: [
+      { name: 'EnumsModule', filePath: 'src/types/enums.ts', content: ENUM_CONTENT },
+      {
+        name: 'SchedulerController',
+        filePath: 'src/controllers/scheduler.controller.ts',
+        content: wrappedDispatch,
+      },
+    ],
+    workerFiles: [],
+  });
+
+  it('resolves a handler whose arrow body is on the next line', () => {
+    const hasHandler = (q: string, handler: string) =>
+      g.edges.some((e) => e.queueName === q && e.workerSymbol === handler);
+    expect(hasHandler('SYNC_BRAND_FULFILLMENTS', 'syncBrandFulfillments')).toBe(true);
+    expect(hasHandler('SEED_PRODUCTS', 'seedProducts')).toBe(true);
+  });
+});
+
 describe('extractQueueGraph — new Queue(EnumMember) producer + dispatch worker', () => {
   const g = extractQueueGraph({
     producerClasses: [
