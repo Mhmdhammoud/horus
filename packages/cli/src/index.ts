@@ -1030,9 +1030,22 @@ Examples:
   program
     .command('feedback [investigationId]')
     .description('Leave quick impact feedback on an investigation (helps improve Horus)')
-    .action(async (investigationId?: string) => {
-      process.exitCode = await runFeedback(investigationId);
-    });
+    .option(
+      '--resolved <verdict>',
+      'did Horus point at the cause? yes | partly | no — non-interactive, for agents/scripts',
+    )
+    .option(
+      '--manual-estimate-min <minutes>',
+      'estimated minutes this would have taken manually (optional, pair with --resolved)',
+    )
+    .action(
+      async (
+        investigationId: string | undefined,
+        opts: { resolved?: string; manualEstimateMin?: string },
+      ) => {
+        process.exitCode = await runFeedback(investigationId, opts);
+      },
+    );
 
   const telemetry = program
     .command('telemetry')
