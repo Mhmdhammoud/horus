@@ -112,13 +112,16 @@ export class GrafanaMetricsProvider implements MetricsProvider {
     ): Promise<MetricFinding[]> => {
       const results: MetricFinding[] = [];
       for (const panel of panels) {
-        signal?.throwIfAborted();
+        // HOR-339: on timeout, return the metrics gathered so far instead of discarding
+        // them. Partial metrics beat zero — an all-or-nothing abort needlessly capped
+        // investigation confidence whenever the per-panel fan-out exceeded the budget.
+        if (signal?.aborted) return results;
         const panelMatchSrc = hint !== undefined && hint !== ''
           ? findMatchSource(panel, hint)
           : null;
 
         for (const rawExpr of panel.exprs) {
-          signal?.throwIfAborted();
+          if (signal?.aborted) return results;
           const expr = sanitizeExpr(rawExpr);
           if (expr === null) continue;
           try {
@@ -144,7 +147,7 @@ export class GrafanaMetricsProvider implements MetricsProvider {
             ).map((f) => ({ ...f, matchSource: panelMatchSrc }));
             results.push(...findings);
           } catch (err) {
-            if (signal?.aborted) throw signal.reason ?? err;
+            if (signal?.aborted) return results; // HOR-339: keep partial metrics on timeout
             continue;
           }
         }
