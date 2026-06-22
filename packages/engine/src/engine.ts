@@ -1841,15 +1841,34 @@ export async function investigate(
   // A fuzzy/zero-support seed (HOR-335) is only partially "resolved" — it must not
   // earn the full +0.5 a real, hint-matched seed does.
   const seedResolved = seeds.length === 0 ? 0 : seedIsLowConfidence ? 0.3 : 1;
-  const confidence = clamp01(0.5 * evidenceConfidence + 0.5 * seedResolved);
+  let confidence = clamp01(0.5 * evidenceConfidence + 0.5 * seedResolved);
 
   // h. summary
   const area = ctx?.community?.name ?? top?.filePath ?? (input.service ?? 'runtime evidence');
   const topCause = rankedCauses[0];
-  // HOR-340/336: a sub-threshold cause (e.g. a weak "wide code reach" blast-radius scoring
-  // ~0.09) must not headline as "Top suspected cause" — that reads as a confident diagnosis.
-  // Below the meaningful bar it stays in the listed causes but the summary says "no dominant".
-  const headlineCause = topCause && topCause.finalScore >= 0.2 ? topCause : undefined;
+  // HOR — gate the headline on a STRUCTURAL LINK to the seed. A cause is "linked" when it cites
+  // the seed's own evidence (its symbol / blast-impact) or a direct (seed-tied) log signature —
+  // as opposed to purely co-occurring runtime noise (an unrelated stale queue, a data-state
+  // anomaly on another table, ambient errors). Prefer the strongest LINKED cause; an unlinked
+  // top cause only headlines when nothing linked clears the bar, and is then framed honestly.
+  const seedLinkedEvIds = new Set<string>([
+    ...directLogEvIds,
+    ...(seedEv ? [seedEv.id] : []),
+    ...(impactEv ? [impactEv.id] : []),
+  ]);
+  const isLinkedToSeed = (ids: string[]): boolean => ids.some((id) => seedLinkedEvIds.has(id));
+  // HOR-340/336: a sub-threshold cause (e.g. a weak blast-radius ~0.09) must not headline as a
+  // confident diagnosis; below the bar it stays listed but the summary says "no dominant".
+  const topLinkedCause = rankedCauses.find(
+    (c) => c.finalScore >= 0.2 && isLinkedToSeed(c.sourceEvidenceIds),
+  );
+  const headlineCause =
+    topLinkedCause ?? (topCause && topCause.finalScore >= 0.2 ? topCause : undefined);
+  const headlineLinked = headlineCause !== undefined && isLinkedToSeed(headlineCause.sourceEvidenceIds);
+  // #2 calibration — a headline that isn't structurally linked to the seed is a co-occurring
+  // signal, not a verified diagnosis: cap it in the "possible" band so it never reads as a
+  // confident "likely" diagnosis (and so confidence actually discriminates linked vs not).
+  if (headlineCause && !headlineLinked) confidence = Math.min(confidence, 0.6);
   const banner = degradedNoSource ? 'Runtime-only (source intelligence unavailable). ' : '';
   const scope = top ? `resolved to ${label} (${area})` : `over runtime evidence (${area})`;
   // HOR-335: lead with an honest disclaimer when the seed is only a semantic guess.
@@ -1858,7 +1877,9 @@ export async function investigate(
       ? `⚠ No symbol closely matched "${hint}" — "${top.name}" is a low-confidence closest match (semantic). Refine with an exact symbol or error code to target precisely. `
       : '';
   let summary = headlineCause
-    ? `${seedDisclaimer}${banner}Investigation of "${hint}" ${scope}. Top suspected cause: ${headlineCause.title}.`
+    ? headlineLinked
+      ? `${seedDisclaimer}${banner}Investigation of "${hint}" ${scope}. Top suspected cause: ${headlineCause.title}.`
+      : `${seedDisclaimer}${banner}Investigation of "${hint}" ${scope}. No cause is structurally linked to the seed; the strongest co-occurring signal (a lead to verify, not a diagnosis) is: ${headlineCause.title}.`
     : `${seedDisclaimer}${banner}Investigation of "${hint}" ${scope}. No dominant suspected cause emerged from the available ${degradedNoSource ? 'runtime' : 'structural'} evidence.`;
 
   // HOR-334: a behavioral "how does X work" hint with NO real incident signal is a

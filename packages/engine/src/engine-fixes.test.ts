@@ -312,8 +312,8 @@ function makeNoneMetrics(): MetricsProvider {
   } as unknown as MetricsProvider;
 }
 
-describe('investigate() — weak headline reads lower than a strong headline', () => {
-  it('a weak-headline run reports lower confidence than a strong-headline run', async () => {
+describe('investigate() — an unlinked (co-occurring) headline is capped regardless of raw strength', () => {
+  it('a strong but seed-UNLINKED cause does not escalate confidence past the "possible" band', async () => {
     // Both runs share the same evidence-gap profile (logs + metrics checked, same
     // missing connectors), so the gap-analysis ceiling is identical. They differ ONLY
     // in headline-cause strength: the WEAK run has a healthy queue (no backlog cause),
@@ -333,8 +333,13 @@ describe('investigate() — weak headline reads lower than a strong headline', (
     const strongTop = strongReport.suspectedCauses[0]?.finalScore ?? 0;
     // Sanity: the strong run genuinely has a stronger headline cause.
     expect(strongTop).toBeGreaterThan(weakTop);
-    // The headline confidence tracks it: weaker cause → strictly lower confidence.
-    expect(weakReport.confidence).toBeLessThan(strongReport.confidence);
+    // #1/#2: neither queue-backlog cause is structurally LINKED to the SaleService seed (no
+    // direct log / seed evidence / graph edge), so both headlines are co-occurring signals.
+    // Confidence is therefore capped in the "possible" band and does NOT escalate with raw
+    // cause strength — the confident-but-wrong "likely" headline from a loud unlinked signal is
+    // exactly the gap this closes.
+    expect(strongReport.confidence).toBeLessThanOrEqual(0.6);
+    expect(weakReport.confidence).toBeLessThanOrEqual(0.6);
   });
 });
 
