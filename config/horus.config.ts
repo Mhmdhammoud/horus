@@ -97,7 +97,7 @@ export default defineConfig({
 
   // Global version pin only (not a host) — Axon hosts live per repository.
   axon: {
-    pinnedVersion: '1.0.1',
+    pinnedVersion: '1.1.1',
   },
 
   // Plain Postgres (docker-compose maps it to localhost:5433). No pgvector in v0.

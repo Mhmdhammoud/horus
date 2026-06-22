@@ -52,6 +52,19 @@ import { runUpdate } from './commands/update.js';
 import { runLogin, runLogout } from './commands/login.js';
 import { runContextList, runContextUse, runContextShow } from './commands/context.js';
 import { runCloudLink, runCloudUnlink, runCloudStatus, runCloudSync } from './commands/cloud.js';
+import {
+  runTelemetryStatus,
+  runTelemetryEnable,
+  runTelemetryDisable,
+  runTelemetryEnableContent,
+  runTelemetryDisableContent,
+  runTelemetryResetId,
+  runTelemetryDelete,
+} from './commands/telemetry.js';
+import { maybeShowFirstRunNotice } from './lib/telemetry/notice.js';
+import { installCommandTelemetry } from './lib/telemetry/command-hooks.js';
+import { flushTelemetry } from './lib/telemetry/transport.js';
+import { runFeedback } from './commands/feedback.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -1014,10 +1027,81 @@ Examples:
   horus cloud sync               # confirm, then upload
   horus cloud sync --yes         # upload without prompting`);
 
+  program
+    .command('feedback [investigationId]')
+    .description('Leave quick impact feedback on an investigation (helps improve Horus)')
+    .action(async (investigationId?: string) => {
+      process.exitCode = await runFeedback(investigationId);
+    });
+
+  const telemetry = program
+    .command('telemetry')
+    .description('Manage anonymous usage telemetry that helps improve Horus');
+  telemetry
+    .command('status')
+    .description('Show the effective telemetry decision, saved preferences, and install ID')
+    .action(async () => {
+      process.exitCode = await runTelemetryStatus();
+    });
+  telemetry
+    .command('enable')
+    .description('Turn on anonymous usage metadata (Tier A)')
+    .action(async () => {
+      process.exitCode = await runTelemetryEnable();
+    });
+  telemetry
+    .command('disable')
+    .description('Turn off all telemetry (Tier A and Tier B)')
+    .action(async () => {
+      process.exitCode = await runTelemetryDisable();
+    });
+  telemetry
+    .command('enable-content')
+    .description('Opt in to sharing redacted investigation inputs/outputs (Tier B)')
+    .action(async () => {
+      process.exitCode = await runTelemetryEnableContent();
+    });
+  telemetry
+    .command('disable-content')
+    .description('Stop sharing inputs/outputs; keep usage metadata (Tier B off)')
+    .action(async () => {
+      process.exitCode = await runTelemetryDisableContent();
+    });
+  telemetry
+    .command('reset-id')
+    .description('Generate a new random install ID')
+    .action(async () => {
+      process.exitCode = await runTelemetryResetId();
+    });
+  telemetry
+    .command('delete')
+    .description('Delete local telemetry state (install ID + saved preferences)')
+    .action(async () => {
+      process.exitCode = await runTelemetryDelete();
+    });
+  telemetry.addHelpText(
+    'after',
+    `
+Defaults: usage metadata ON (with this notice), content sharing OFF.
+Hard opt-out via env: HORUS_TELEMETRY=0 or DO_NOT_TRACK=1.
+
+Examples:
+  horus telemetry status
+  horus telemetry disable
+  horus telemetry enable-content`,
+  );
+
   return program;
 }
 
 export async function run(argv: string[] = process.argv): Promise<void> {
+  // One-time disclosure + install-identity bootstrap. Never throws/blocks.
+  maybeShowFirstRunNotice(argv);
   const program = buildProgram();
+  // Tier-A usage events (command.invoked/completed) — fire-and-forget, gated on
+  // consent, spooled locally. Never affects command behavior.
+  installCommandTelemetry(program);
   await program.parseAsync(argv);
+  // Best-effort, time-boxed drain of spooled events to the cloud. Never throws.
+  await flushTelemetry();
 }

@@ -1,5 +1,5 @@
 import pc from 'picocolors';
-import { loadConfig, resolveEnvironment, resolveAiSettings } from '@horus/core';
+import { loadConfig, resolveEnvironment, resolveAiSettings, redactContent, redactOrDrop } from '@horus/core';
 import {
   codeForEnv,
   logsForEnv,
@@ -17,6 +17,9 @@ import type { Evidence } from '@horus/engine';
 import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
 import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
 import { uploadInvestigationToCloud } from '../lib/cloud/investigation-sync.js';
+import { track } from '../lib/telemetry/client.js';
+import { isContentSharingEnabled } from '../lib/telemetry/consent.js';
+import { maybePromptFeedback } from '../lib/telemetry/feedback.js';
 import { ensureSourceHost, ensureHostReasonHint } from '../lib/ensure-host.js';
 import { reportCloudError } from './context.js';
 
@@ -171,6 +174,7 @@ export async function runInvestigate(
     _aiProvider?: NarrativeProvider;
   },
 ): Promise<number> {
+  const startedAtMs = Date.now();
   try {
     const config = await loadConfig(opts.config, { name: opts.name });
 
@@ -190,12 +194,15 @@ export async function runInvestigate(
     const cloudActive = isCloudActive(cloudCfg);
     const cloudSession = cloudActive ? authedClient() : null;
     if (cloudActive && !cloudSession) {
+      // Horus Cloud is OPTIONAL — never block a local investigation on it. Warn and
+      // proceed locally; the cloud upload at the end is simply skipped when there is
+      // no session (see the `cloudSession` guard before uploadInvestigationToCloud).
       console.error(
-        pc.red(
-          `This repo is linked to Horus Cloud but you are not logged in. Run ${pc.bold('horus login')} first.`,
+        pc.yellow(
+          `This repo is linked to Horus Cloud but you are not logged in — running locally only. ` +
+            `Run ${pc.bold('horus login')} to also sync results to the cloud.`,
         ),
       );
-      return 1;
     }
 
     const code = codeForEnv(renv);
@@ -336,6 +343,41 @@ export async function runInvestigate(
         }
       }
 
+      // Tier-A usage signal: shape + confidence + gaps only, no report bodies (HOR-324).
+      track({
+        type: 'investigation.completed',
+        investigationId: report.id,
+        confidence: typeof report.confidence === 'number' ? report.confidence : null,
+        evidenceCount: report.evidence?.length ?? 0,
+        findingCount: report.findings?.length ?? 0,
+        suspectedCauseCount: report.suspectedCauses?.length ?? 0,
+        degraded: Boolean(report.degraded),
+        gapCount: report.gapAnalysis?.gaps?.length ?? 0,
+        hasAi: Boolean(report.aiJudgment),
+      });
+
+      // Tier-B (explicit content opt-in): redacted inputs/outputs to improve the
+      // engine + future ML (HOR-325). Every field is scrubbed; the hint is
+      // fail-closed (dropped if a secret survives), in which case we send nothing.
+      if (isContentSharingEnabled()) {
+        const hint = redactOrDrop(report.input.hint ?? '');
+        if (!hint.dropped) {
+          track({
+            type: 'investigation.content',
+            investigationId: report.id,
+            hint: hint.value ?? '',
+            summary: redactContent(report.summary ?? ''),
+            findingTitles: (report.findings ?? [])
+              .slice(0, 20)
+              .map((f) => redactContent(f.title ?? '')),
+            suspectedCauseTitles: (report.suspectedCauses ?? [])
+              .slice(0, 20)
+              .map((c) => redactContent(c.title ?? '')),
+            confidence: typeof report.confidence === 'number' ? report.confidence : null,
+          });
+        }
+      }
+
       if (cloudActive && cloudSession && cloudCfg) {
         try {
           const refs = await uploadInvestigationToCloud(cloudSession.client, cloudCfg, report);
@@ -348,7 +390,26 @@ export async function runInvestigate(
       // HOR-319 (Bug 1): point the user at the id that `horus ask` accepts. report.id is
       // the local id printed in the header and now resolves in both local and cloud mode.
       if (format !== 'json') {
-        console.log(pc.dim(`\nAsk a follow-up:  horus ask ${report.id} "<question>"`));
+        if (report.persisted === false) {
+          // DB-resilient degrade (HOR-319): the investigation store was unreachable,
+          // so the report wasn't saved — be explicit instead of pointing at an id
+          // that `horus ask` can't resolve.
+          console.error(
+            pc.yellow(`\n⚠ Results were not saved — the investigation database was unreachable.`),
+          );
+          console.error(
+            pc.dim(
+              `  This report is display-only; \`horus ask\` won't find it. Start the database and re-run to persist.`,
+            ),
+          );
+        } else {
+          console.log(pc.dim(`\nAsk a follow-up:  horus ask ${report.id} "<question>"`));
+        }
+        // Sampled, skippable impact prompt — never on non-TTY/--json (HOR-326).
+        await maybePromptFeedback({
+          investigationId: report.id,
+          horusSeconds: (Date.now() - startedAtMs) / 1000,
+        });
       }
     } finally {
       await sql.end();
@@ -358,7 +419,11 @@ export async function runInvestigate(
 
     return 0;
   } catch (err) {
-    console.error(pc.red((err as Error).message));
+    // Never fail silently: surface a message even when the error carries none,
+    // and include the stack under HORUS_DEBUG for diagnosis.
+    const msg = (err as Error)?.message || String(err);
+    console.error(pc.red(msg.trim() ? msg : 'Investigation failed (unknown error).'));
+    if (process.env.HORUS_DEBUG) console.error(pc.dim((err as Error)?.stack ?? String(err)));
     return 1;
   }
 }

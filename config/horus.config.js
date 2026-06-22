@@ -87,7 +87,7 @@ export default {
   ],
 
   axon: {
-    pinnedVersion: '1.0.1',
+    pinnedVersion: '1.1.1',
   },
 
   database: {

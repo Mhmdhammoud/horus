@@ -470,7 +470,15 @@ export async function investigate(
       code.impact(top.id, 2),
       code.flowsFor(top.id),
     ]);
-    const edges = await listQueueEdges(db, { project: input.repo });
+    let edges: QueueEdge[] = [];
+    try {
+      edges = await listQueueEdges(db, { project: input.repo });
+    } catch {
+      // Investigation-store DB unreachable — degrade (HOR-319 spirit) rather than
+      // aborting the whole investigation: skip queue-edge evidence. persist() already
+      // tolerates a down DB, so the report still runs, renders, and reports telemetry.
+      edges = [];
+    }
 
     const symbolNames = new Set<string>([
       top.name,
@@ -1496,6 +1504,9 @@ export async function investigate(
   // j. PERSIST — may overwrite report.id with the DB-assigned id.
   const persistedId = await persist(db, input, report);
   if (persistedId) report.id = persistedId;
+  // Record whether the report actually reached the investigation store so callers
+  // can warn that a display-only run won't be retrievable via `horus ask`.
+  report.persisted = persistedId !== null;
 
   // k. INCIDENT MEMORY (HOR-18) — recall similar past incidents THEN store.
   //    Past incidents are CONTEXT ONLY; they must never override report.confidence.

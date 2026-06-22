@@ -28,7 +28,7 @@ vi.mock('@horus/core', async (importOriginal) => {
     loadConfig: vi.fn().mockResolvedValue({
       database: { url: 'postgresql://horus:horus@localhost:5433/horus' },
       projects: [],
-      axon: { pinnedVersion: '1.0.1' },
+      axon: { pinnedVersion: '1.1.1' },
       models: { reasoning: 'claude-opus-4-8', extraction: 'claude-haiku-4-5' },
     }),
   };

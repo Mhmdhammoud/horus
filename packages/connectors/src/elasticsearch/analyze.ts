@@ -8,6 +8,7 @@
  */
 
 import type { Evidence } from '@horus/core';
+import { redactSecrets } from '@horus/core';
 import {
   levelToValue,
   buildLevelFilter,
@@ -221,33 +222,17 @@ export function annotateAgainstBaseline(
   return current;
 }
 
-// ── Sensitive-field redaction (HOR-91) ───────────────────────────────────────
-
-const REDACTION_PATTERNS: [RegExp, string][] = [
-  // Authorization headers (Bearer / Basic / API-key tokens)
-  [/(authorization\s*[=:]\s*)(bearer\s+)[^\s,"')]+/gi, '$1$2[REDACTED]'],
-  [/(authorization\s*[=:]\s*)(basic\s+)[^\s,"')]+/gi, '$1$2[REDACTED]'],
-  // Standalone password/token/secret keys in KV strings, query params, JSON
-  [/("?(?:password|passwd|secret|token|api[_-]key|apikey|x-api-key)"?\s*[=:]\s*)"?[^"',\s)>]+/gi, '$1[REDACTED]'],
-  // Cookie / set-cookie header values
-  [/((?:cookie|set-cookie)\s*[=:]\s*)[^\s"',;>]{4,}/gi, '$1[REDACTED]'],
-  // Database / service connection strings with embedded credentials
-  [/((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis(?:s)?):\/\/)[^:@/\s]+:[^@\s]+@/gi, '$1[REDACTED]@'],
-  // 16-digit card-number-like sequences (PCIDSS)
-  [/\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b/g, '[REDACTED-CARD]'],
-];
+// ── Sensitive-field redaction (HOR-91; canonical impl promoted to @horus/core
+//    in HOR-325) ─────────────────────────────────────────────────────────────
 
 /**
  * Scrub common sensitive patterns (tokens, passwords, card numbers) from a
  * single string. Applied to sampleMessage before evidence reaches reports or
- * AI input. Purposely conservative — only known-bad patterns are removed.
+ * AI input. Delegates to the shared conservative redactor so the log-evidence
+ * behavior is unchanged while the logic has a single owner.
  */
 export function redactSensitiveString(s: string): string {
-  let out = s;
-  for (const [pattern, replacement] of REDACTION_PATTERNS) {
-    out = out.replace(pattern, replacement);
-  }
-  return out;
+  return redactSecrets(s);
 }
 
 /**

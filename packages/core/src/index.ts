@@ -4,3 +4,4 @@ export * from './config.js';
 export * from './discovery.js';
 export * from './git.js';
 export * from './codeowners.js';
+export * from './redact.js';

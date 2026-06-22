@@ -30,7 +30,7 @@ vi.mock('@horus/core', async (importOriginal) => {
   return {
     ...actual,
     loadConfig: vi.fn(),
-    PINNED_SOURCE_VERSION: '1.0.1',
+    PINNED_SOURCE_VERSION: '1.1.1',
   };
 });
 
@@ -61,7 +61,7 @@ const REPO_AXON_CONFIG = {
 const MINIMAL_CONFIG = {
   projects: [{ name: 'proj', repositories: [REPO_AXON_CONFIG], environments: [] }],
   database: { url: 'postgresql://horus:horus@localhost:5433/horus' },
-  axon: { pinnedVersion: '1.0.1' },
+  axon: { pinnedVersion: '1.1.1' },
   models: { reasoning: 'claude-opus-4-8', extraction: 'claude-haiku-4-5' },
 } as unknown as Awaited<ReturnType<typeof loadConfig>>;
 
@@ -75,7 +75,7 @@ function makeSourceClient(health: { ok: boolean }, nodeCount = 42) {
 beforeEach(() => {
   vi.clearAllMocks();
   // Default happy-path mocks
-  mockGetSourceVersion.mockResolvedValue('1.0.1');
+  mockGetSourceVersion.mockResolvedValue('1.1.1');
   mockCheckDatabase.mockResolvedValue(PASSING_DB);
   mockLoadConfig.mockResolvedValue(MINIMAL_CONFIG);
   MockSourceHttpClient.mockImplementation(

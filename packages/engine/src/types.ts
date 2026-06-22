@@ -45,6 +45,12 @@ export interface ReportFinding {
 /** The full investigation report — also the persisted shape. */
 export interface InvestigationReport {
   id: string;
+  /**
+   * False when the investigation-store DB was unreachable and the report could not
+   * be saved — the run is display-only and `horus ask <id>` will not resolve it.
+   * Undefined on reports that predate this flag. (HOR-319 DB-resilience.)
+   */
+  persisted?: boolean;
   input: InvestigationInput;
   summary: string;
   /** Symbols that the hint resolved to. */
