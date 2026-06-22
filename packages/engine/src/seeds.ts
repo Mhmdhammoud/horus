@@ -17,6 +17,30 @@ const PREFER =
   /resolver|controller|\bservice\b|route|router|handler|gateway|processor|worker|consumer|repository|usecase|use-case|endpoint/i;
 const DEMOTE =
   /\butil|helper|\bscript|backfill|legacy|migration|seeder|fixture|\bmock\b|\btest\b|\bspec\b/i;
+// Type/DTO/interface declarations are not where a fault ORIGINATES — the fault lives
+// in the method that throws, not the result/input type it returns or the interface it
+// implements. Detect type-declaration naming conventions so a same-named method
+// outranks a `…Result`/`…Input`/interface, and so the engine can re-search for the
+// executable counterpart (HOR-337). (A full kind-based version via Symbol.kind from
+// the graph label is the more complete follow-up; this name heuristic covers the
+// common DTO/result-type collisions seen in practice.)
+const TYPE_SUFFIX = /(Result|Input|Response|Payload|Args|Dto|Props|Edge|Connection)$/;
+const INTERFACE_PREFIX = /^I(?=[A-Z][a-z])/;
+const TYPE_LIKE_NAME = new RegExp(`(?:${TYPE_SUFFIX.source})|(?:${INTERFACE_PREFIX.source})`);
+
+/** True when a symbol NAME follows type/DTO/interface declaration conventions. */
+export function isTypeLikeName(name: string): boolean {
+  return TYPE_LIKE_NAME.test(name);
+}
+
+/**
+ * Derive the executable counterpart name for a type-like name, or null.
+ * e.g. "SyncBrandFulfillmentsResult" -> "SyncBrandFulfillments"; "IOrderService" -> "OrderService".
+ */
+export function executableBaseName(name: string): string | null {
+  const stripped = name.replace(TYPE_SUFFIX, '').replace(INTERFACE_PREFIX, '');
+  return stripped !== name && stripped.length >= 4 ? stripped : null;
+}
 
 /** A coarse architectural role for display. */
 export function seedRole(s: Symbol): string {
@@ -38,6 +62,9 @@ export function scoreSeed(s: Symbol, index: number, hintTokens?: string[]): numb
   let score = 0;
   if (PREFER.test(hay)) score += 3;
   if (DEMOTE.test(hay)) score -= 3;
+  // Demote type/DTO/interface-named symbols so an executable method wins a same-name
+  // collision (HOR-337). Methods are verbs (syncProduct); types are nouns (…Result).
+  if (isTypeLikeName(s.name)) score -= 4;
   // Strong file-suffix signals.
   if (/\.(resolver|controller|service)\.[jt]sx?$/i.test(s.filePath)) score += 2;
   // Scripts/migrations are rarely the incident surface.

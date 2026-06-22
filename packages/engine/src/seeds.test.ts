@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Symbol } from '@horus/core';
-import { rankSeeds, seedRole, scoreSeed } from './seeds.js';
+import { rankSeeds, seedRole, scoreSeed, executableBaseName } from './seeds.js';
 
 function sym(name: string, filePath: string): Symbol {
   return { id: `x:${filePath}:${name}`, name, filePath };
@@ -34,6 +34,22 @@ describe('rankSeeds', () => {
       order.indexOf('inferSupplierScopeFromLegacyOrder'),
     );
     expect(order.indexOf('run')).toBe(order.length - 1); // the backfill script is last
+  });
+
+  it('ranks an executable method above a same-named …Result type (HOR-337)', () => {
+    const method = sym('syncBrandFulfillments', 'src/services/order.service.ts');
+    const resultType = sym('SyncBrandFulfillmentsResult', 'src/services/order.service.ts');
+    expect(scoreSeed(method, 1)).toBeGreaterThan(scoreSeed(resultType, 0));
+    // even when the type comes first in search order, the method should win the rank
+    const ranked = rankSeeds([resultType, method]);
+    expect(ranked[0]?.symbol.name).toBe('syncBrandFulfillments');
+  });
+
+  it('derives the executable counterpart name for type-like names (HOR-337)', () => {
+    expect(executableBaseName('SyncBrandFulfillmentsResult')).toBe('SyncBrandFulfillments');
+    expect(executableBaseName('CreateOrderInput')).toBe('CreateOrder');
+    expect(executableBaseName('IOrderService')).toBe('OrderService');
+    expect(executableBaseName('syncProduct')).toBeNull(); // already executable
   });
 
   it('scores a resolver above a util', () => {

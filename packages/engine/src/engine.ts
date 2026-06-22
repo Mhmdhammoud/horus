@@ -60,7 +60,7 @@ import type {
 } from './types.js';
 import { buildTimeline } from './timeline.js';
 import { correlate } from './correlate.js';
-import { rankSeeds } from './seeds.js';
+import { rankSeeds, isTypeLikeName, executableBaseName } from './seeds.js';
 import { normalizeEvidence } from './normalize.js';
 import { computeWeightedEvidenceConfidence } from './confidence.js';
 import { collectGitChanges } from './git-collector.js';
@@ -384,6 +384,23 @@ export async function investigate(
   let seeds = ranked.map((r) => r.symbol);
   // noUncheckedIndexedAccess: a non-empty array could still index to undefined.
   let top: Symbol | undefined = seeds[0];
+
+  // HOR-337: if the best seed is a TYPE/DTO declaration (e.g. `SyncBrandFulfillmentsResult`),
+  // the fault lives in the same-named EXECUTABLE, not the type. Search often only returns
+  // the type (its name hugs the hint), so demotion alone can't help — derive the base name
+  // and re-search for a method/function counterpart, preferring it when one is found.
+  if (top && code && isTypeLikeName(top.name)) {
+    const base = executableBaseName(top.name);
+    if (base) {
+      const altTop = rankSeeds(await code.searchSymbols(base, 5), hintTokens).find(
+        (r) => !isTypeLikeName(r.symbol.name),
+      )?.symbol;
+      if (altTop && altTop.id !== top.id) {
+        seeds = [altTop, ...seeds.filter((s) => s.id !== altTop.id)];
+        top = altTop;
+      }
+    }
+  }
 
   // HOR-216: a raw error string (e.g. "getaddrinfo ENOTFOUND host") matches no
   // source symbol. Before giving up, search the logs for the hint (across message,
