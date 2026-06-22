@@ -35,6 +35,8 @@ import { MongoStateProvider } from './mongodb/provider.js';
 import type { StateProvider } from './state/provider.js';
 import { PostgresStateClient } from './postgres/client.js';
 import { PostgresStateProvider } from './postgres/provider.js';
+import { SentryClient } from './sentry/client.js';
+import { SentryProvider } from './sentry/provider.js';
 import { BullMQRedisClient } from './bullmq/client.js';
 import { BullMQRuntimeProvider } from './bullmq/provider.js';
 import type { QueueRuntimeProvider } from './bullmq/provider.js';
@@ -199,6 +201,26 @@ export function postgresForEnv(renv: ResolvedEnvironment): StateProvider | null 
       allowlist: p.tables,
     }),
     { database: p.database ?? p.schema ?? 'postgres', collections: p.tables, staleHours: 24 },
+  );
+}
+
+/**
+ * Return a Sentry error-evidence `SentryProvider` for the given resolved environment,
+ * or `null` when no Sentry connector is configured (missing auth token / org / project —
+ * e.g. its token env var is unset). Read-only; surfaces grouped exceptions as ERROR
+ * evidence with a direct code seed (top in-app stack frame).
+ */
+export function sentryForEnv(renv: ResolvedEnvironment): SentryProvider | null {
+  const s = renv.connectors.sentry;
+  if (!s || !s.authToken || !s.org || !s.project) return null;
+  return new SentryProvider(
+    new SentryClient({
+      authToken: s.authToken,
+      org: s.org,
+      project: s.project,
+      ...(s.url !== undefined ? { baseUrl: s.url } : {}),
+    }),
+    { org: s.org, project: s.project },
   );
 }
 

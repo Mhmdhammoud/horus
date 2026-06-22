@@ -61,9 +61,14 @@ export function buildRuntimeSourceStatus(
   evidence: Evidence[],
   connectors: ConnectorFlags,
 ): RuntimeSourceReport {
+  // 'logs' is the runtime ERROR-evidence source — Elasticsearch and/or Sentry both feed
+  // it (Sentry's evidence is `source: 'logs'`). Configured = either is wired up; failed =
+  // a configured collector that did not run to completion and produced no evidence.
   const logsCount = evidence.filter((e) => e.source === 'logs').length;
-  const logsConfigured = !!connectors.elasticsearch;
-  const logsFailed = logsConfigured && !connectors.logsCollected;
+  const logsConfigured = !!(connectors.elasticsearch || connectors.sentry);
+  const esFailed = !!connectors.elasticsearch && !connectors.logsCollected;
+  const sentryFailed = !!connectors.sentry && !connectors.sentryCollected;
+  const logsFailed = logsConfigured && logsCount === 0 && (esFailed || sentryFailed);
 
   const metricsCount = evidence.filter((e) => e.source === 'metrics').length;
   const metricsConfigured = !!connectors.grafana;

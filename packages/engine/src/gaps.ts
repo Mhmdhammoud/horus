@@ -14,6 +14,13 @@ export interface ConnectorFlags {
   grafana?: boolean;
   mongodb?: boolean;
   postgres?: boolean;
+  /**
+   * True when a Sentry error-tracking connector is configured for the env. Sentry is an
+   * error source like Elasticsearch (its evidence is `kind: 'log'`), so a configured
+   * Sentry that returns issues clears the logs gap. A configured-but-empty Sentry is
+   * negative evidence, not a gap.
+   */
+  sentry?: boolean;
   redis?: boolean;
   /**
    * True when a BullMQ/queues runtime connector is configured for the env — i.e. a
@@ -36,6 +43,12 @@ export interface ConnectorFlags {
    * generic "collection failed" gap text.
    */
   logsCompatibilityError?: string;
+  /**
+   * True when Sentry error collection ran to completion (even with zero issues).
+   * False/absent + sentry:true means collection was attempted but failed. Lets the gap
+   * detector distinguish "no open issues" (negative evidence) from "collection failed".
+   */
+  sentryCollected?: boolean;
   /**
    * True when metrics collection ran to completion (even with zero anomalies).
    * False/absent + grafana:true means collection was attempted but failed.
@@ -104,9 +117,19 @@ export function detectMissingEvidence(
   if (!hasLog) {
     let logWhy: string;
     let logNextSource: string;
-    if (!connectors.elasticsearch) {
-      logWhy = 'No Elasticsearch connector configured for this environment — no runtime logs.';
-      logNextSource = 'Add an `elasticsearch` connector to the project/environment';
+    // Sentry is a second ERROR source (its evidence is also `kind: 'log'`). Treat the
+    // "no runtime error evidence" gap as cleared/explained by EITHER source.
+    if (!connectors.elasticsearch && !connectors.sentry) {
+      logWhy = 'No Elasticsearch connector (nor Sentry) configured for this environment — no runtime error evidence.';
+      logNextSource = 'Add an `elasticsearch` and/or `sentry` connector to the project/environment';
+    } else if (!connectors.elasticsearch && connectors.sentry) {
+      // ES absent but Sentry configured — the gap is purely about Sentry.
+      logWhy = connectors.sentryCollected
+        ? 'No open Sentry issues matched in the window — cannot confirm the actual error signatures.'
+        : 'Sentry collection failed or timed out — cannot confirm the actual error signatures.';
+      logNextSource = connectors.sentryCollected
+        ? 'Widen the window (--since) or check the Sentry project for open issues'
+        : 'Check the Sentry auth token / project, then retry';
     } else if (connectors.logsCompatibilityError) {
       logWhy =
         `Elasticsearch field mapping is incompatible with the index — log collection was blocked. ` +

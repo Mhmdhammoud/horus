@@ -16,8 +16,10 @@ import {
   metricsForEnv,
   mongoForEnv,
   postgresForEnv,
+  sentryForEnv,
   redisServerStatus,
   type StateProvider,
+  type SentryProvider,
   type RedisServerStatus,
 } from '@horus/connectors';
 import { checkDatabase } from '@horus/db';
@@ -41,6 +43,7 @@ async function checkEnv(
   deps?: {
     mongoFactory?: (renv: ResolvedEnvironment) => StateProvider | null;
     postgresFactory?: (renv: ResolvedEnvironment) => StateProvider | null;
+    sentryFactory?: (renv: ResolvedEnvironment) => SentryProvider | null;
     redisStatus?: (renv: ResolvedEnvironment) => Promise<RedisServerStatus | null>;
   },
 ): Promise<boolean> {
@@ -224,6 +227,34 @@ async function checkEnv(
     );
   }
 
+  // Sentry (error tracking) — probe reachability against the configured org/project.
+  const sentryCfg = renv.connectors.sentry;
+  if (sentryCfg) {
+    const label = `${sentryCfg.org}/${sentryCfg.project}`;
+    const sentry = (deps?.sentryFactory ?? sentryForEnv)(renv);
+    if (sentry) {
+      const h = await sentry.health();
+      if (!h.ok) {
+        console.log(
+          `    ${mark(false)} ${pc.bold('Sentry')}         ${pc.dim(`unreachable · ${label}`)}`,
+        );
+        allOk = false;
+      } else {
+        console.log(
+          `    ${mark(true)} ${pc.bold('Sentry')}          ${pc.dim(`reachable · ${label}`)}`,
+        );
+      }
+    } else {
+      console.log(
+        `    ${mark(false)} ${pc.bold('Sentry')}         ${pc.dim(`configured (${label}) but auth token not set`)}`,
+      );
+    }
+  } else {
+    console.log(
+      `    ${mark('pending')} ${pc.bold('Sentry')}          ${pc.dim('not configured')}`,
+    );
+  }
+
   // Redis — probe the server and each configured logical DB (HOR-201). Redis is a
   // general runtime connector: one server commonly holds queues in one DB and cache/
   // state in others, so we show a server line plus a per-DB breakdown.
@@ -301,6 +332,8 @@ export async function runStatus(
     _mongoFactory?: (renv: ResolvedEnvironment) => StateProvider | null;
     /** Inject a Postgres provider factory for tests. */
     _postgresFactory?: (renv: ResolvedEnvironment) => StateProvider | null;
+    /** Inject a Sentry provider factory for tests. */
+    _sentryFactory?: (renv: ResolvedEnvironment) => SentryProvider | null;
     /** Inject a Redis server-status prober for tests. */
     _redisStatus?: (renv: ResolvedEnvironment) => Promise<RedisServerStatus | null>;
   },
@@ -362,7 +395,7 @@ export async function runStatus(
       console.error(pc.red((err as Error).message));
       return 1;
     }
-    const ok = await checkEnv(renv, { mongoFactory: opts?._mongoFactory, postgresFactory: opts?._postgresFactory, redisStatus: opts?._redisStatus });
+    const ok = await checkEnv(renv, { mongoFactory: opts?._mongoFactory, postgresFactory: opts?._postgresFactory, sentryFactory: opts?._sentryFactory, redisStatus: opts?._redisStatus });
     return ok ? 0 : 1;
   }
 
@@ -377,7 +410,7 @@ export async function runStatus(
       allHealthy = false;
       continue;
     }
-    const ok = await checkEnv(renv, { mongoFactory: opts?._mongoFactory, postgresFactory: opts?._postgresFactory, redisStatus: opts?._redisStatus });
+    const ok = await checkEnv(renv, { mongoFactory: opts?._mongoFactory, postgresFactory: opts?._postgresFactory, sentryFactory: opts?._sentryFactory, redisStatus: opts?._redisStatus });
     if (!ok) allHealthy = false;
   }
 

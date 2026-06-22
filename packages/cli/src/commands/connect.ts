@@ -31,6 +31,7 @@ import {
   ElasticsearchClient,
   MongoStateClient,
   PostgresStateClient,
+  SentryClient,
   GrafanaClient,
   RedisScanClient,
   probeRedisDatabases,
@@ -80,6 +81,12 @@ export interface ConnectOpts {
   schema?: string;
   /** Postgres tables (comma-separated allowlist; empty = auto-discover all base tables). */
   tables?: string;
+  /** Sentry API auth token (sent as Bearer). */
+  authToken?: string;
+  /** Sentry org slug. */
+  org?: string;
+  /** Sentry project slug. */
+  project?: string;
   dashboard?: string;
   /** Multiple dashboard UIDs selected during interactive discovery. */
   dashboardUids?: string[];
@@ -100,7 +107,7 @@ export interface ConnectOpts {
   redisDatabases?: RedisDatabaseSpec[];
 }
 
-const SUPPORTED = ['elasticsearch', 'mongodb', 'postgres', 'grafana', 'redis'] as const;
+const SUPPORTED = ['elasticsearch', 'mongodb', 'postgres', 'sentry', 'grafana', 'redis'] as const;
 type ConnectorType = (typeof SUPPORTED)[number];
 
 export async function runConnect(type: string, opts: ConnectOpts): Promise<number> {
@@ -142,6 +149,9 @@ export async function runConnect(type: string, opts: ConnectOpts): Promise<numbe
       case 'postgres':
         patch = buildPostgresPatch(filled);
         break;
+      case 'sentry':
+        patch = buildSentryPatch(filled);
+        break;
       case 'grafana':
         patch = buildGrafanaPatch(filled);
         break;
@@ -169,7 +179,8 @@ export async function runConnect(type: string, opts: ConnectOpts): Promise<numbe
     const hasLiteralCredentials =
       filled.url !== undefined ||
       filled.password !== undefined ||
-      filled.username !== undefined;
+      filled.username !== undefined ||
+      filled.authToken !== undefined;
     if (hasLiteralCredentials) {
       if (isGitTracked(configPath, root)) {
         console.error(
@@ -276,6 +287,15 @@ async function fillInteractive(
         ((await ask('Tables (comma-separated, or Enter for all)', '')) || undefined);
       break;
 
+    case 'sentry':
+      filled.org = filled.org ?? (await ask('Org slug', 'my-org'));
+      filled.project = filled.project ?? (await ask('Project slug', 'my-project'));
+      filled.authToken =
+        filled.authToken ?? ((await askPassword('Auth token')) || undefined);
+      filled.url =
+        filled.url ?? ((await ask('Base URL (self-hosted)', 'https://sentry.io', false)) || undefined);
+      break;
+
     case 'grafana':
       filled.url = filled.url ?? (await ask('URL', 'https://grafana.example.com'));
       filled.username =
@@ -342,6 +362,8 @@ function missingRequired(type: ConnectorType, opts: ConnectOpts): boolean {
       return !opts.url || !opts.database;
     case 'postgres':
       return !opts.url;
+    case 'sentry':
+      return !opts.org || !opts.project || !opts.authToken;
     case 'grafana':
       return !opts.url;
     case 'redis':
@@ -454,6 +476,16 @@ function buildPostgresPatch(opts: ConnectOpts): Record<string, unknown> {
       .map((t) => t.trim())
       .filter(Boolean);
   }
+  return patch;
+}
+
+function buildSentryPatch(opts: ConnectOpts): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  if (opts.org) patch['org'] = opts.org;
+  if (opts.project) patch['project'] = opts.project;
+  if (opts.authToken) patch['authToken'] = opts.authToken;
+  // Only persist a non-default base URL (self-hosted Sentry).
+  if (opts.url && opts.url.replace(/\/$/, '') !== 'https://sentry.io') patch['url'] = opts.url;
   return patch;
 }
 
@@ -613,6 +645,18 @@ async function probe(type: ConnectorType, opts: ConnectOpts): Promise<ProbeResul
           await client.close();
         }
       }
+      case 'sentry': {
+        if (!opts.authToken || !opts.org || !opts.project) {
+          return { ok: true, detail: 'skipped (missing org/project/token)' };
+        }
+        const client = new SentryClient({
+          authToken: opts.authToken,
+          org: opts.org,
+          project: opts.project,
+          ...(opts.url ? { baseUrl: opts.url } : {}),
+        });
+        return client.health();
+      }
       case 'grafana': {
         if (!opts.url) return { ok: true, detail: 'skipped (no URL)' };
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -690,6 +734,10 @@ function printSummary(type: ConnectorType, opts: ConnectOpts): void {
   if (opts.service) lines.push(`  service:        ${opts.service}`);
   if (opts.database) lines.push(`  database:       ${opts.database}`);
   if (opts.collections) lines.push(`  collections:    ${opts.collections}`);
+  if (opts.org) lines.push(`  org:            ${opts.org}`);
+  if (opts.project) lines.push(`  project:        ${opts.project}`);
+  if (opts.authToken)
+    lines.push(`  auth-token:     ${'•'.repeat(Math.min(opts.authToken.length, 8))}`);
   if (opts.dashboardUids && opts.dashboardUids.length > 0) {
     lines.push(`  dashboards:     ${opts.dashboardUids.join(', ')}`);
   } else if (opts.dashboard) {

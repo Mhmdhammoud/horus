@@ -193,6 +193,7 @@ export async function runReadiness(opts?: {
     let anyGrafana = false;
     let anyMongo = false;
     let anyPostgres = false;
+    let anySentry = false;
     let anyRedis = false;
 
     for (const project of globalConfig.projects) {
@@ -205,6 +206,7 @@ export async function runReadiness(opts?: {
         if (c.grafana) anyGrafana = true;
         if (c.mongodb) anyMongo = true;
         if (c.postgres) anyPostgres = true;
+        if (c.sentry) anySentry = true;
         if (c.redis) anyRedis = true;
       }
     }
@@ -266,6 +268,18 @@ export async function runReadiness(opts?: {
             blocking: false,
             detail: 'not configured — no database state evidence',
             next: 'run `horus connect postgres`',
+          },
+    );
+
+    checks.push(
+      anySentry
+        ? { label: 'Sentry', status: 'pass', blocking: false, detail: 'configured' }
+        : {
+            label: 'Sentry',
+            status: 'warn',
+            blocking: false,
+            detail: 'not configured — no error-tracking evidence',
+            next: 'run `horus connect sentry`',
           },
     );
 
