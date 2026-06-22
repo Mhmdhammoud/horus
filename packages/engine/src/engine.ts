@@ -1334,11 +1334,16 @@ export async function investigate(
     });
   }
 
-  // Blast-radius cause: offered when a resolved symbol has reach (full run only).
-  if (top && impactEv && seedEv && impact && impact.affected > 0) {
+  // Blast-radius cause: offered only when a resolved symbol has GENUINE reach.
+  // "1 affected" is no fan-out — offering it produced a tautological top cause
+  // ("sits on a high-fan-out path (1 affected)") that led the ranking on pure
+  // topology while real (error/data) signals sat unranked (HOR-340). Require a
+  // real fan-out threshold before this structural observation can be a cause.
+  const MIN_FANOUT_FOR_CAUSE = 3;
+  if (top && impactEv && seedEv && impact && impact.affected >= MIN_FANOUT_FOR_CAUSE) {
     causeInputs.push({
       id: 'cause:blast-radius',
-      title: `${top.name} sits on a high-fan-out path (${impact.affected} affected) and may propagate the fault`,
+      title: `${top.name} has wide code reach (${impact.affected} dependent symbols) and may propagate the fault`,
       category: 'blast-radius',
       sourceEvidenceIds: [impactEv.id, seedEv.id],
       baseScore: clamp01(0.15 + (queueHits.length > 0 ? 0.05 : 0)),

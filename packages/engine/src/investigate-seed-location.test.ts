@@ -125,3 +125,33 @@ describe('investigate() — seed evidence uses real line ranges (HOR-206)', () =
     expect(seedEv?.title).not.toMatch(/:\d/); // no colon-number at all
   });
 });
+
+// ---------------------------------------------------------------------------
+// HOR-340: a trivial blast radius must not become a tautological top cause
+// ("sits on a high-fan-out path (1 affected)"). Require genuine fan-out (>=3).
+// ---------------------------------------------------------------------------
+
+describe('investigate() — blast-radius cause requires genuine fan-out (HOR-340)', () => {
+  const codeWithAffected = (affected: number): CodeProvider => ({
+    ...fakeCode,
+    async impact(): Promise<ImpactResult> {
+      return { target: SEED_SYMBOL, affected, byDepth: [] };
+    },
+  });
+
+  it('offers NO blast-radius cause when fan-out is trivial (1 affected)', async () => {
+    const report = await investigate(
+      { hint: 'getSaleWithLink' },
+      { code: codeWithAffected(1), db: fakeDb },
+    );
+    expect(report.suspectedCauses.some((c) => /fan-out|code reach/i.test(c.title))).toBe(false);
+  });
+
+  it('offers a wide-reach cause when fan-out is genuine (>=3 affected)', async () => {
+    const report = await investigate(
+      { hint: 'getSaleWithLink' },
+      { code: codeWithAffected(8), db: fakeDb },
+    );
+    expect(report.suspectedCauses.some((c) => /code reach/i.test(c.title))).toBe(true);
+  });
+});
