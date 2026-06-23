@@ -672,6 +672,7 @@ export async function investigate(
   const seedIsLowConfidence =
     top !== undefined &&
     logReseed === null &&
+    (top.score ?? 0) < 0.5 && // a strong exact-content/colocated source match is authoritative (gap 6)
     meaningfulHintTokens.length > 0 &&
     !meaningfulHintTokens.some((t) => seedHay.includes(t));
 
