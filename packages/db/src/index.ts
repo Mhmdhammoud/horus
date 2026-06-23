@@ -26,7 +26,15 @@ export type {
   NewQueueEdge,
   ProviderCacheRow,
 } from './schema.js';
-export { createDb, type HorusDb, type DbHandle } from './client.js';
+export {
+  createDb,
+  createLocalDb,
+  openDb,
+  shouldUseEmbeddedDb,
+  localDbPath,
+  type HorusDb,
+  type DbHandle,
+} from './client.js';
 export {
   assertLocalDatabaseUrl,
   looksLikeCloudDatabaseUrl,

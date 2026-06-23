@@ -45,12 +45,12 @@ import {
   waitForHost,
   removeSpawnedHostRecord,
 } from '@horus/connectors';
-import { createDb } from '@horus/db';
+import { openDb } from '@horus/db';
 import { stitch } from '@horus/stitcher';
 
 async function stitchQueueMap(hostUrl: string, dbUrl: string, label: string): Promise<void> {
   const source = new SourceHttpClient({ baseUrl: hostUrl });
-  const { db, sql } = createDb(dbUrl);
+  const { db, sql } = await openDb(dbUrl);
   try {
     const summary = await stitch(source, db, { project: label });
     console.log(

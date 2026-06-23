@@ -1,5 +1,5 @@
 import pc from 'picocolors';
-import { createDb, listInvestigations } from '@horus/db';
+import { openDb, listInvestigations } from '@horus/db';
 import { formatDateTime } from '../lib/format.js';
 import { resolveDbUrl } from '../lib/db-url.js';
 import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
@@ -43,7 +43,7 @@ export async function runInvestigations(opts: {
     return 0;
   }
 
-  const { db, sql } = createDb(await resolveDbUrl(opts.config));
+  const { db, sql } = await openDb(await resolveDbUrl(opts.config));
   try {
     const rows = await listInvestigations(db, opts.limit ?? 20);
     if (rows.length === 0) {

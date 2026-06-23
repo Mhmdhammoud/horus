@@ -1,7 +1,7 @@
 import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
 import { codeForRepo } from '@horus/connectors';
-import { createDb } from '@horus/db';
+import { openDb } from '@horus/db';
 import {
   investigate,
   SCENARIOS,
@@ -52,7 +52,7 @@ export async function runSimulate(
       return 1;
     }
 
-    const { db, sql } = createDb(config.database.url);
+    const { db, sql } = await openDb(config.database.url);
     try {
       const report = await investigate(
         { hint: scenario.hint, repo: renv.project, since: scenario.since },

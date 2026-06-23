@@ -21,6 +21,15 @@ VERSION="${1:-$(node -e "const {version}=JSON.parse(require('fs').readFileSync('
 SOURCE="${2:-$ROOT/apps/horus/dist/index.cjs}"
 OUTDIR="$ROOT/.homebrew-archives"
 
+# pglite (the embedded local database) loads these WASM/FS assets at runtime via
+# `new URL('./pglite.wasm', import.meta.url)`, which resolves relative to the RESOLVED
+# path of the binary. We ship them as siblings of the binary inside the archive so the
+# Homebrew layout (binary in libexec, symlinked from bin) finds them — see the formula's
+# `libexec.install` + `bin.install_symlink`. Without these, the CLI falls back to
+# display-only (openDb's graceful fallback), so a missing asset is not fatal.
+SOURCE_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+PGLITE_ASSETS=(pglite.wasm pglite.data initdb.wasm)
+
 if [ ! -f "$SOURCE" ]; then
   echo "Source executable not found: $SOURCE" >&2
   exit 1
@@ -45,9 +54,20 @@ for platform in darwin-arm64 darwin-x86_64 linux-arm64 linux-x86_64; do
   ARTIFACT_PATH="$OUTDIR/$ARTIFACT"
   TMP=$(mktemp -d)
 
-  mkdir -p "$TMP/horus/bin"
-  cp "$SOURCE" "$TMP/horus/bin/horus"
-  chmod +x "$TMP/horus/bin/horus"
+  # Lay out the binary and its sibling pglite assets together. The formula installs the
+  # whole `libexec/` dir, then symlinks `bin/horus → libexec/horus`. Node resolves the
+  # symlink before evaluating `import.meta.url`, so the binary's resolved path is the
+  # libexec one and the assets sit right next to it.
+  mkdir -p "$TMP/horus/libexec"
+  cp "$SOURCE" "$TMP/horus/libexec/horus"
+  chmod +x "$TMP/horus/libexec/horus"
+  for asset in "${PGLITE_ASSETS[@]}"; do
+    if [ -f "$SOURCE_DIR/$asset" ]; then
+      cp "$SOURCE_DIR/$asset" "$TMP/horus/libexec/$asset"
+    else
+      echo "Warning: pglite asset not found, archive will fall back to display-only: $SOURCE_DIR/$asset" >&2
+    fi
+  done
 
   tar -czf "$ARTIFACT_PATH" -C "$TMP" horus
   rm -rf "$TMP"

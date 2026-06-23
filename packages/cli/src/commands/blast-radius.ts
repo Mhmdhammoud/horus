@@ -1,7 +1,7 @@
 import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
 import { createConnectors } from '@horus/connectors';
-import { createDb } from '@horus/db';
+import { openDb } from '@horus/db';
 import { analyzeBlastRadius, renderBlastRadius, blastRadiusToJSON } from '@horus/engine';
 import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
@@ -58,7 +58,7 @@ export async function runBlastRadius(
       /* unresolvable — leave unscoped */
     }
 
-    const { db, sql } = createDb(config.database.url);
+    const { db, sql } = await openDb(config.database.url);
     try {
       const r = await analyzeBlastRadius(query, { code, db, project }, opts.depth ?? 3);
       if (!r) {

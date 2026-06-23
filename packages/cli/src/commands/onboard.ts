@@ -1,7 +1,7 @@
 import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
 import { codeForRepo } from '@horus/connectors';
-import { createDb } from '@horus/db';
+import { openDb } from '@horus/db';
 import { buildOnboarding, renderOnboarding, onboardingToJSON } from '@horus/engine';
 import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
@@ -64,7 +64,7 @@ export async function runOnboard(
       return 1;
     }
 
-    const { db, sql } = createDb(config.database.url);
+    const { db, sql } = await openDb(config.database.url);
     try {
       const g = await buildOnboarding(
         { area },

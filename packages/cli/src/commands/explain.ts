@@ -3,7 +3,7 @@ import { loadConfig, resolveEnvironment } from '@horus/core';
 import type { HorusConfig, Symbol, SymbolContext, ImpactResult, Flow } from '@horus/core';
 import { codeForRepo } from '@horus/connectors';
 import { symbolDisplayName } from '@horus/engine';
-import { createDb, listQueueEdges } from '@horus/db';
+import { openDb, listQueueEdges } from '@horus/db';
 
 export async function runExplain(
   query: string,
@@ -94,7 +94,7 @@ async function isQueueBoundary(config: HorusConfig, query: string): Promise<bool
     } catch {
       /* unresolvable — leave unscoped */
     }
-    const { db, sql } = createDb(config.database.url);
+    const { db, sql } = await openDb(config.database.url);
     try {
       const edges = await listQueueEdges(db, { queueName: query, project });
       return edges.length > 0;
