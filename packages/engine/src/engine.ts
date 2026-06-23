@@ -435,6 +435,18 @@ export function looksExplanatory(hint: string): boolean {
 }
 
 /**
+ * Gap 4 — does the hint read as a latency/performance question ("everything is slow",
+ * "high latency")? Such a question needs runtime METRICS to answer — without a metrics
+ * connector there is nothing structural to anchor to, so the report should say so rather
+ * than seed an arbitrary symbol.
+ */
+export function looksPerformance(hint: string): boolean {
+  return /\b(slow|slowness|sluggish|laggy|\blag\b|latency|perf|performance|throughput|degraded|degradation|response\s*time|p9[59])\b/i.test(
+    hint,
+  );
+}
+
+/**
  * Gap #5 — build a behavioral "how does X work" walkthrough from the seed's pre-computed
  * execution Flow (or its direct callees as a fallback), plus heuristic detection of the
  * external calls and persistence the path touches. Rendered INSTEAD of the incident
@@ -2222,6 +2234,16 @@ export async function investigate(
     summary =
       `${seedDisclaimer}${banner}"${hint}" reads as a "how does it work" question — here is the code path${noisy}:\n\n` +
       behavioral.narrative;
+  }
+
+  // Gap 4: a latency/performance hint with no metrics connector has nothing structural to
+  // anchor to — say so instead of presenting an arbitrary low-confidence symbol as the finding.
+  if (!explanatoryHint && looksPerformance(hint) && deps.metrics == null && seedIsLowConfidence) {
+    summary =
+      `${banner}"${hint}" reads as a latency/performance question, but no metrics connector ` +
+      `(Grafana) is configured — response-time and error-rate trends can't be assessed from source ` +
+      `structure alone${top ? ` (the closest structural match, ${top.name}, is a low-confidence guess, not a diagnosis)` : ''}. ` +
+      `Connect a metrics source (\`horus connect grafana\`) and re-run, or name the specific slow operation.`;
   }
 
   // i. nextActions

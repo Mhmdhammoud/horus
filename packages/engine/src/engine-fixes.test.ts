@@ -32,7 +32,7 @@ vi.mock('./git-collector.js', async (importOriginal) => {
   return { ...actual, collectGitChanges: vi.fn() };
 });
 
-import { investigate, confidenceCeilingForCause, looksExplanatory, formatRegressionCitation, buildBehavioralWalkthrough } from './engine.js';
+import { investigate, confidenceCeilingForCause, looksExplanatory, looksPerformance, formatRegressionCitation, buildBehavioralWalkthrough } from './engine.js';
 import { collectGitChanges } from './git-collector.js';
 
 const mockCollectGitChanges = vi.mocked(collectGitChanges);
@@ -392,6 +392,17 @@ describe('looksExplanatory — detects interrogative/explanatory hints', () => {
     expect(looksExplanatory('SaleService is throwing 500s')).toBe(false);
     expect(looksExplanatory('checkout latency spike')).toBe(false);
     expect(looksExplanatory('')).toBe(false);
+  });
+});
+
+describe('looksPerformance — detects latency/performance hints (gap 4)', () => {
+  it('matches performance hints, not ordinary incidents', () => {
+    expect(looksPerformance('everything is slow')).toBe(true);
+    expect(looksPerformance('high latency on checkout')).toBe(true);
+    expect(looksPerformance('p99 degraded')).toBe(true);
+    expect(looksPerformance('throughput dropped')).toBe(true);
+    expect(looksPerformance('order creation throwing 500s')).toBe(false);
+    expect(looksPerformance('zoho oauth callback')).toBe(false);
   });
 });
 
