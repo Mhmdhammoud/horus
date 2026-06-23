@@ -1,17 +1,7 @@
 import pc from 'picocolors';
 import { loadConfig, resolveEnvironment, resolveAiSettings, redactContent, redactOrDrop } from '@horus/core';
-import {
-  codeForEnv,
-  logsForEnv,
-  mongoForEnv,
-  postgresForEnv,
-  sentryForEnv,
-  queueForEnv,
-  redisStateForEnv,
-  metricsForEnv,
-} from '@horus/connectors';
-import { openDb, updateInvestigationReport } from '@horus/db';
-import { investigate, renderReport, reportToJSON, reportToMarkdown } from '@horus/engine';
+import { updateInvestigationReport } from '@horus/db';
+import { renderReport, reportToJSON, reportToMarkdown } from '@horus/engine';
 import type { InvestigationReport, StoredAIJudgment } from '@horus/engine';
 import { renderNarrative, AnthropicNarrativeProvider } from '@horus/ai';
 import type { NarrativeInput, NarrativeOutput, NarrativeProvider } from '@horus/ai';
@@ -22,8 +12,16 @@ import { uploadInvestigationToCloud } from '../lib/cloud/investigation-sync.js';
 import { track } from '../lib/telemetry/client.js';
 import { isContentSharingEnabled } from '../lib/telemetry/consent.js';
 import { maybePromptFeedback } from '../lib/telemetry/feedback.js';
-import { ensureSourceHost, ensureHostReasonHint } from '../lib/ensure-host.js';
 import { reportCloudError } from './context.js';
+import {
+  buildInvestigationContext,
+  runOneInvestigation,
+  disposeInvestigationContext,
+  withDeadline,
+} from '../lib/investigation-runner.js';
+
+// Re-exported for back-compat: existing tests import `withDeadline` from this module.
+export { withDeadline };
 
 function extractEvidenceExcerpt(e: Evidence): string | undefined {
   if (!e.payload || typeof e.payload !== 'object') return undefined;
@@ -157,27 +155,6 @@ export function classifyAIFailure(firstError?: string): string {
   return firstError;
 }
 
-/**
- * Resolve `p`, or reject after `ms` with a clear, actionable message. The underlying work is
- * left to be torn down by process exit — this exists so a hung connector (e.g. a dropped
- * tunnel/port-forward, or a stuck source-intelligence query) can never hang the CLI forever.
- */
-export function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout>;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      reject(
-        new Error(
-          `Investigation exceeded ${Math.round(ms / 1000)}s and was aborted. A runtime connector ` +
-            `is likely unreachable (e.g. a dropped SSH tunnel / port-forward) or the source-` +
-            `intelligence host is slow. Re-run, or raise --timeout <seconds>.`,
-        ),
-      );
-    }, ms);
-  });
-  return Promise.race([p, deadline]).finally(() => clearTimeout(timer)) as Promise<T>;
-}
-
 export async function runInvestigate(
   hint: string,
   opts: {
@@ -232,93 +209,38 @@ export async function runInvestigate(
       );
     }
 
-    const code = codeForEnv(renv);
-    if (!code) {
-      console.error(
-        pc.red(
-          `No source-intelligence connector configured for project "${renv.project}" / env "${renv.env}".`,
-        ),
-      );
+    // Build the connector deps + open the DB via the shared runner (HOR-CLI): self-heals a
+    // down source host, degrades to runtime-only when it stays down, and resolves every
+    // runtime connector. `horus watch` reuses the exact same wiring — do not duplicate it.
+    let ctx;
+    try {
+      ctx = await buildInvestigationContext(renv, {
+        databaseUrl: config.database.url,
+        ...(opts.service !== undefined ? { service: opts.service } : {}),
+      });
+    } catch (err) {
+      // No source-intelligence connector configured — same hard requirement as before.
+      console.error(pc.red((err as Error).message));
       return 1;
     }
 
-    const sourceUrl = renv.repositories[0]?.sourceHostUrl;
-    let health = await code.health();
-    if (!health.ok && sourceUrl) {
-      // HOR-319 (Bug 2 / layer-1): don't hard-exit just because the host is down. Try to
-      // restart a previously-indexed host at its configured port, then re-check.
-      console.error(
-        pc.yellow(`Source-intelligence host unreachable (${sourceUrl}) — attempting to start it…`),
-      );
-      const healed = await ensureSourceHost(renv.path, sourceUrl);
-      if (healed.ok) {
-        console.error(pc.green(`Source-intelligence host is up at ${healed.hostUrl}.`));
-        health = await code.health();
-      } else {
-        console.error(pc.dim(`  ${ensureHostReasonHint(healed.reason)}`));
-      }
-    }
-
-    // HOR-319 (layer-2): if self-heal failed, DON'T dead-end. Degrade to a runtime-only
-    // investigation — logs/metrics/state/queues are independent of the source host. The
-    // engine runs without source intelligence and caps confidence accordingly.
-    const runtimeOnly = !health.ok;
-    if (runtimeOnly) {
-      console.error(
-        pc.yellow(
-          `Proceeding in runtime-only mode — no source intelligence. ` +
-            `Run ${pc.bold('horus index')} for a full (code-aware) investigation.`,
-        ),
-      );
-    }
-
-    const logs = logsForEnv(renv);
-    const mongo = mongoForEnv(renv);
-    const postgres = postgresForEnv(renv);
-    const sentry = sentryForEnv(renv);
-    const queue = queueForEnv(renv);
-    const redisState = redisStateForEnv(renv);
-    const metrics = metricsForEnv(renv);
-
-    // Resolve service name: CLI flag > connector default > undefined
-    const service = opts.service ?? renv.connectors.elasticsearch?.serviceName;
-
-    const { db, sql } = await openDb(config.database.url);
     try {
-      const investigation = investigate(
-        { hint, repo: renv.project, since: opts.since, logsSince: opts.logsSince, service },
-        {
-          // Runtime-only degrade (HOR-319 layer-2): pass no source provider so the engine
-          // skips seed resolution + structural evidence and builds from runtime evidence.
-          code: runtimeOnly ? null : code,
-          db,
-          logs,
-          mongo,
-          postgres,
-          sentry,
-          queue,
-          redisState,
-          metrics,
-          repoPath: renv.path,
-          connectors: {
-            elasticsearch: !!renv.connectors.elasticsearch?.url,
-            grafana: !!renv.connectors.grafana?.url,
-            mongodb: !!renv.connectors.mongodb?.url,
-            postgres: !!renv.connectors.postgres?.url,
-            sentry: !!renv.connectors.sentry,
-            redis: !!renv.connectors.redis?.url,
-            // Queue runtime is configured iff a BullMQ provider was built (HOR-205).
-            queue: !!queue,
-          },
-        },
-      );
       // Overall deadline so an unreachable/slow connector (e.g. a dropped tunnel or a stuck
       // source-intelligence query) can never hang the investigation forever (HOR — reliability).
       const timeoutSec =
         (opts.timeout !== undefined ? Number(opts.timeout) : 0) ||
         Number(process.env.HORUS_INVESTIGATE_TIMEOUT_S) ||
         120;
-      const report = await withDeadline(investigation, timeoutSec * 1000);
+      const report = await runOneInvestigation(
+        {
+          hint,
+          ...(opts.since !== undefined ? { since: opts.since } : {}),
+          ...(opts.logsSince !== undefined ? { logsSince: opts.logsSince } : {}),
+        },
+        ctx,
+        { timeoutMs: timeoutSec * 1000 },
+      );
+      const db = ctx.dbHandle.db;
       // --json is back-compat for --format json.
       const format = opts.json ? 'json' : (opts.format ?? 'text');
       const rendered =
@@ -456,13 +378,9 @@ export async function runInvestigate(
         });
       }
     } finally {
-      // Close EVERY connector — an unclosed pg/ioredis handle keeps the Node event loop alive
-      // so the CLI prints its report but never exits (the process lingers indefinitely).
-      await sql.end();
-      if (mongo) await mongo.close();
-      if (postgres) await postgres.close();
-      if (redisState) await redisState.close();
-      if (queue) await queue.close();
+      // Close EVERY connector + the DB — an unclosed pg/ioredis handle keeps the Node event
+      // loop alive so the CLI prints its report but never exits (the process lingers forever).
+      await disposeInvestigationContext(ctx);
     }
 
     return 0;
