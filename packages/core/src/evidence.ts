@@ -103,6 +103,13 @@ export interface Symbol {
   signature?: string;
   language?: string;
   className?: string;
+  /**
+   * Search relevance (0–1) carried from the source provider, when available. A strong
+   * exact-content / colocated-code match (≈1.0) must outweigh a coincidental architectural
+   * match in seed ranking — without this the score was dropped and a service-named weak
+   * semantic hit could outrank the real raise site (dogfood gap 3).
+   */
+  score?: number;
 }
 
 /** A reference to a source-intelligence community cluster. */

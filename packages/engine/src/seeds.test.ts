@@ -103,4 +103,14 @@ describe('rankSeeds', () => {
     const ranked = rankSeeds([brandService, shopifyController], hintTokens);
     expect(ranked[0]?.symbol.name).toBe('ShopifyWebhookRegistrationService');
   });
+
+  it('weights source relevance: a strong exact-content match outranks a coincidental service-named seed (gap 3)', () => {
+    // A code hint (e.g. HTTPFLT001) resolves to its raise site — a filter `catch` — at search
+    // score ~1.0; a coincidental same-named `catch` in a *.service.ts (architectural PREFER +
+    // file-suffix) must NOT win now that source relevance is weighted.
+    const raiseSite: Symbol = { id: 'm1', name: 'catch', filePath: 'src/common/filters/http-exception.filter.ts', score: 1 };
+    const coincidental: Symbol = { id: 'm2', name: 'catch', filePath: 'src/modules/legal/legal.service.ts', score: 0.02 };
+    const ranked = rankSeeds([coincidental, raiseSite], ['httpflt001']);
+    expect(ranked[0]?.symbol.id).toBe('m1');
+  });
 });

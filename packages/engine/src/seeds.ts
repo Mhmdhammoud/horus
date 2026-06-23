@@ -86,6 +86,12 @@ export function scoreSeed(
   if (/(^|\/)scripts?\//i.test(s.filePath)) score -= 2;
   // Mild tie-break toward earlier search rank (search relevance).
   score += Math.max(0, 5 - index) * 0.1;
+  // Source relevance: a strong exact-content / colocated-code match (≈1.0) must decisively
+  // outweigh a coincidental architectural match — without this a service-named weak semantic
+  // hit outranked the real raise site (dogfood gap 3). Architectural signals max ~+5, so +8.
+  if (s.score !== undefined) score += s.score * 8;
+  // A File node is rarely the right seed — prefer the function/method that raises the signal.
+  if (/\.[jt]sx?$/i.test(s.name)) score -= 5;
   // Domain-hint boost: strongly prefer symbols whose name/path contain hint tokens.
   // +2 per matching token, capped at +6 so a 3-token match decisively beats a
   // generic architectural-role match (max architectural score is +5).

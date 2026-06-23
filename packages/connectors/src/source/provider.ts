@@ -111,6 +111,7 @@ export class SourceCodeProvider implements CodeProvider {
       id: String(row[0] ?? ''),
       name: String(row[1] ?? ''),
       filePath: String(row[2] ?? ''),
+      score: 1, // an exact-name Cypher hit is authoritative
     }));
 
     const exactIds = new Set(exactSymbols.map((s) => s.id));
@@ -133,7 +134,7 @@ export class SourceCodeProvider implements CodeProvider {
 
     const combined: Symbol[] = [
       ...exactSymbols,
-      ...semantic.map(({ r }) => ({ id: r.nodeId, name: r.name, filePath: r.filePath })),
+      ...semantic.map(({ r }) => ({ id: r.nodeId, name: r.name, filePath: r.filePath, score: r.score })),
     ];
 
     // Hydrate start/end lines from the graph (HOR-211). The exact-match Cypher and the
