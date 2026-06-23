@@ -66,7 +66,12 @@ export function scoreSeed(
 ): number {
   const hay = `${s.name} ${s.filePath}`.toLowerCase();
   let score = 0;
-  if (PREFER.test(hay)) score += 3;
+  // Architectural-role signals (PREFER and the file-suffix below) are SUPPRESSED for a code hint:
+  // when the hint names a specific code (HTTPFLT001, ERR243_04) the search surfaces its raise site
+  // as an exact-content head match, and that raise site — wherever it lives — must win over a
+  // same-score service-named symbol that merely co-occurs (dogfood gap 9). For a prose hint the
+  // role stays a strong signal.
+  if (PREFER.test(hay)) score += hintHasCode ? 0 : 3;
   if (DEMOTE.test(hay)) score -= 3;
   // Demote type/DTO/interface-named symbols so an executable method wins a same-name
   // collision (HOR-337). Methods are verbs (syncProduct); types are nouns (…Result).
@@ -81,12 +86,13 @@ export function scoreSeed(
   // window is far more likely to be the culprit. Strong boost so the seed follows the diff
   // instead of locking onto an unrelated unchanged function (HOR-328 round-3).
   if (changedFiles !== undefined && changedFiles.has(s.filePath)) score += 5;
-  // Strong file-suffix signals.
-  if (/\.(resolver|controller|service)\.[jt]sx?$/i.test(s.filePath)) score += 2;
+  // Strong file-suffix signals (suppressed for a code hint — see above).
+  if (/\.(resolver|controller|service)\.[jt]sx?$/i.test(s.filePath)) score += hintHasCode ? 0 : 2;
   // Scripts/migrations are rarely the incident surface.
   if (/(^|\/)scripts?\//i.test(s.filePath)) score -= 2;
-  // Mild tie-break toward earlier search rank (search relevance).
-  score += Math.max(0, 5 - index) * 0.1;
+  // Tie-break toward earlier search rank. For a code hint the search's exact-content head IS the
+  // ordered list of raise sites, so trust that order strongly; for prose it's a mild nudge.
+  score += Math.max(0, 5 - index) * (hintHasCode ? 0.8 : 0.1);
   // Source relevance: weighted HEAVILY only for a CODE-shaped hint (HTTPFLT001, E_SYNC_04…),
   // where a high exact-content / colocated score IS the raise site and must outweigh a
   // coincidental architectural match (gap 3). For a prose hint the search score is noisier —

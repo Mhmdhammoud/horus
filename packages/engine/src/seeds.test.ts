@@ -124,4 +124,14 @@ describe('rankSeeds', () => {
     const ranked = rankSeeds([schema, fn], ['fulfillment', 'brand', 'orders'], undefined, false);
     expect(ranked[0]?.symbol.id).toBe('s2');
   });
+
+  it('a code hint follows the exact-content raise site, not a same-score service-named co-occurrence (gap 9)', () => {
+    // ERR243 resolves to its raise site `createCostAwareLink` in lib/ (exact-content head, earlier
+    // in search order); `updateSingleProductQuantity` in a *.service.ts merely co-occurs at the same
+    // score. For a code hint the architectural role is suppressed, so the raise site wins.
+    const raiseSite: Symbol = { id: 'r1', name: 'createCostAwareLink', filePath: 'src/lib/storeclients.ts', score: 1 };
+    const coOccur: Symbol = { id: 'r2', name: 'updateSingleProductQuantity', filePath: 'src/services/product.service.ts', score: 1 };
+    const ranked = rankSeeds([raiseSite, coOccur], ['err243'], undefined, true);
+    expect(ranked[0]?.symbol.id).toBe('r1');
+  });
 });
