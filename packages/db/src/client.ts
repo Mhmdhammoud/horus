@@ -4,8 +4,9 @@ import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
 import { PGlite } from '@electric-sql/pglite';
 import postgres from 'postgres';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { mkdirSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import * as schema from './schema.js';
 import { assertLocalDatabaseUrl } from './guard.js';
 import { EMBEDDED_MIGRATIONS } from './migrations-bundle.js';
@@ -77,13 +78,51 @@ export function shouldUseEmbeddedDb(url: string | undefined): boolean {
 }
 
 /**
+ * A `DbHandle` that does no persistence. Returned when the embedded pglite database
+ * cannot be opened — e.g. a packaging variant that ships the bundle WITHOUT pglite's
+ * WASM/FS assets next to it (the GitHub single-file download), so `new PGlite()` fails.
+ *
+ * The `db` is a `Proxy` that throws `HORUS_DB_UNAVAILABLE` on ANY property access, so
+ * the engine's persistence helpers (`persist` / `recallSimilar` / `storeIncidentMemory`)
+ * — which already swallow DB errors — degrade to display-only rather than crashing the
+ * command. `sql.end()` is a no-op so the normal one-shot shutdown path stays uniform.
+ */
+function unavailableDbHandle(): DbHandle {
+  const db = new Proxy(
+    {},
+    {
+      get() {
+        throw new Error(
+          'HORUS_DB_UNAVAILABLE: the embedded local database is not available in this build ' +
+            '(pglite assets are missing). Install via npm or Homebrew for local persistence, ' +
+            'or set DATABASE_URL to a local Postgres. Results are display-only.',
+        );
+      },
+    },
+  ) as unknown as HorusDb;
+  return { db, sql: { end: async () => {} } };
+}
+
+/**
  * Open the right database for a resolved url: the embedded pglite database when no
  * user-run Postgres is configured (the zero-setup default), otherwise the user's local
  * Postgres via postgres-js. This is the single chokepoint CLI commands should use so the
  * driver choice is consistent everywhere.
+ *
+ * The embedded path is wrapped in try/catch: if pglite can't initialize (its WASM/FS
+ * assets aren't shipped next to the bundle), we return a no-op handle so the command
+ * degrades to display-only instead of crashing. The postgres-js path is left as-is — an
+ * explicitly-configured but unreachable Postgres is a real user error worth surfacing,
+ * and the CLI already has a display-only path for it.
  */
 export async function openDb(url: string | undefined, opts?: { max?: number }): Promise<DbHandle> {
-  if (shouldUseEmbeddedDb(url)) return createLocalDb();
+  if (shouldUseEmbeddedDb(url)) {
+    try {
+      return await createLocalDb();
+    } catch {
+      return unavailableDbHandle();
+    }
+  }
   return createDb(url as string, opts);
 }
 
@@ -139,6 +178,15 @@ export async function createLocalDb(opts?: { path?: string }): Promise<DbHandle>
   } catch {
     // best-effort; pglite will surface a clear error if the path is unusable.
   }
+  // pglite loads its WASM/FS assets (pglite.wasm, pglite.data, initdb.wasm) at runtime,
+  // resolved via `new URL('./<asset>', import.meta.url)` relative to the running module —
+  // i.e. siblings of the bundled binary. When an asset is ABSENT (e.g. the single-file
+  // download that ships only index.cjs), pglite's emscripten loader fails on a deferred
+  // task and surfaces an *unhandled rejection* that escapes `await client.waitReady` —
+  // crashing the process. Pre-check the assets the same way pglite resolves them so a
+  // missing asset becomes a synchronous, catchable error and `openDb` can fall back to a
+  // display-only handle instead of crashing.
+  assertEmbeddedAssetsPresent();
   const client = new PGlite(dataDir);
   await client.waitReady;
   await applyEmbeddedMigrations(client);
@@ -151,4 +199,39 @@ export async function createLocalDb(opts?: { path?: string }): Promise<DbHandle>
       },
     },
   };
+}
+
+/** pglite's runtime assets, resolved relative to this module exactly as pglite does. */
+const EMBEDDED_PGLITE_ASSETS = ['pglite.wasm', 'pglite.data', 'initdb.wasm'] as const;
+
+/**
+ * `true` only in the packaged single-file CLI bundle (tsup injects it via `define`);
+ * `undefined` when running from unbundled source or tests.
+ */
+declare const __HORUS_BUNDLED__: boolean | undefined;
+
+/**
+ * Throw a clear, catchable error if pglite's runtime assets are missing — but ONLY in the
+ * packaged bundle, where it matters.
+ *
+ * pglite resolves its assets via `new URL('./asset', import.meta.url)` relative to ITS OWN
+ * module. Unbundled (dev/tests) pglite is a separate node_modules package that loads the
+ * assets adjacent in its own dist (always present) — nothing to verify, and a check
+ * resolved against THIS module's source dir would be wrong. In the bundle pglite is inlined
+ * alongside this code, so both share the bundle's `import.meta.url` and pglite loads the
+ * assets as siblings of `index.cjs` — exactly where we check. If they're absent (the
+ * single-file download that ships only index.cjs), we fail fast and catchably here so
+ * `openDb` degrades to display-only instead of letting pglite crash the process.
+ */
+function assertEmbeddedAssetsPresent(): void {
+  if (typeof __HORUS_BUNDLED__ === 'undefined' || !__HORUS_BUNDLED__) return;
+  const selfDir = dirname(fileURLToPath(import.meta.url));
+  for (const asset of EMBEDDED_PGLITE_ASSETS) {
+    if (!existsSync(join(selfDir, asset))) {
+      throw new Error(
+        `HORUS_DB_UNAVAILABLE: embedded database asset missing (${asset}). This build does ` +
+          `not ship local persistence — install via npm or Homebrew, or set DATABASE_URL.`,
+      );
+    }
+  }
 }

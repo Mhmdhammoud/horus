@@ -29,7 +29,13 @@ class Horus < Formula
   end
 
   def install
-    bin.install "bin/horus"
+    # The binary loads pglite's WASM/FS assets via `new URL('./pglite.wasm',
+    # import.meta.url)`, which resolves relative to the binary's RESOLVED path. Install
+    # the binary and its sibling assets together in libexec, then symlink into bin —
+    # Node resolves the symlink before evaluating import.meta.url, so it finds the
+    # siblings in libexec. (If the assets are absent, the CLI degrades to display-only.)
+    libexec.install Dir["libexec/*"]
+    bin.install_symlink libexec/"horus"
   end
 
   test do

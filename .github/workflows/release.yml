@@ -124,6 +124,8 @@ jobs:
             "chmod +x horus && sudo mv horus /usr/local/bin/horus" \
             "horus --version" \
             '```' \
+            "" \
+            "> Note: the single-file direct download has no local persistence (incident memory / \`horus ask\` are display-only). Install via npm or brew for those." \
             > /tmp/release-notes.md
 
       - name: Create GitHub Release

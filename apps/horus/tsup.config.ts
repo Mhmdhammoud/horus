@@ -43,6 +43,10 @@ export default defineConfig({
   shims: true,
   define: {
     __HORUS_VERSION__: JSON.stringify(version),
+    // Marks the single-file bundle so runtime code can tell it's packaged (vs. running
+    // from unbundled source/tests). The db layer uses this to decide where pglite's
+    // WASM/FS assets must live — next to this bundle — and to fail gracefully if absent.
+    __HORUS_BUNDLED__: 'true',
   },
   // Bundle all npm + workspace deps — output is self-contained.
   // Node.js built-ins stay external (platform:'node' ensures this).
