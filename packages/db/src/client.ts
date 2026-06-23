@@ -5,7 +5,7 @@ import { PGlite } from '@electric-sql/pglite';
 import postgres from 'postgres';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { mkdirSync, existsSync } from 'node:fs';
+import { mkdirSync, existsSync, openSync, writeSync, closeSync, unlinkSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as schema from './schema.js';
 import { assertLocalDatabaseUrl } from './guard.js';
@@ -187,18 +187,67 @@ export async function createLocalDb(opts?: { path?: string }): Promise<DbHandle>
   // missing asset becomes a synchronous, catchable error and `openDb` can fall back to a
   // display-only handle instead of crashing.
   assertEmbeddedAssetsPresent();
-  const client = new PGlite(dataDir);
-  await client.waitReady;
-  await applyEmbeddedMigrations(client);
-  const db = drizzlePglite(client, { schema });
-  return {
-    db,
-    sql: {
-      end: async () => {
-        await client.close();
+  // Serialise concurrent CLI runs (single-writer file DB — gap 7): overlapping investigations
+  // could otherwise race a write, lose it, and still print an `ask <id>` hint that won't resolve.
+  const releaseLock = await acquireDbLock(dataDir);
+  try {
+    const client = new PGlite(dataDir);
+    await client.waitReady;
+    await applyEmbeddedMigrations(client);
+    const db = drizzlePglite(client, { schema });
+    return {
+      db,
+      sql: {
+        end: async () => {
+          await client.close();
+          releaseLock();
+        },
       },
-    },
-  };
+    };
+  } catch (e) {
+    releaseLock();
+    throw e;
+  }
+}
+
+/**
+ * Acquire a best-effort exclusive cross-process lock on the embedded DB directory so concurrent
+ * CLI runs serialise their pglite writes. Returns a release function. Resilient: a stale lock
+ * left by a crashed run is reclaimed after STALE_MS, and after TIMEOUT_MS we proceed UNLOCKED
+ * rather than hang — so the lock can only improve the concurrent case, never make it worse.
+ */
+async function acquireDbLock(dataDir: string): Promise<() => void> {
+  const lockPath = `${dataDir}.lock`;
+  const STALE_MS = 60_000;
+  const TIMEOUT_MS = 30_000;
+  const start = Date.now();
+  const noop = (): void => {};
+  for (;;) {
+    try {
+      const fd = openSync(lockPath, 'wx'); // O_CREAT | O_EXCL — throws EEXIST if already held
+      writeSync(fd, `${process.pid} ${Date.now()}`);
+      closeSync(fd);
+      return () => {
+        try {
+          unlinkSync(lockPath);
+        } catch {
+          /* already removed */
+        }
+      };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') return noop; // unusable path — proceed unlocked
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs > STALE_MS) {
+          unlinkSync(lockPath); // reclaim a stale lock from a crashed run
+          continue;
+        }
+      } catch {
+        continue; // lock vanished between checks — retry immediately
+      }
+      if (Date.now() - start > TIMEOUT_MS) return noop; // give up waiting — better than hanging
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
 }
 
 /** pglite's runtime assets, resolved relative to this module exactly as pglite does. */

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLocalDb, shouldUseEmbeddedDb } from './client.js';
@@ -100,5 +100,14 @@ describe('createLocalDb (embedded pglite)', () => {
     } finally {
       await second.sql.end();
     }
+  }, 30_000);
+
+  it('gap 7: holds a write-lock for the session and releases it on close', async () => {
+    const path = join(dir, 'horus.db');
+    const lockPath = `${path}.lock`;
+    const h = await createLocalDb({ path });
+    expect(existsSync(lockPath)).toBe(true); // lock held while the session is open
+    await h.sql.end();
+    expect(existsSync(lockPath)).toBe(false); // released on close, so the next run can acquire it
   }, 30_000);
 });
