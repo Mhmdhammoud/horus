@@ -105,6 +105,32 @@ export interface InvestigationReport {
    * Deterministic scoring remains authoritative; this field is an annotation only.
    */
   aiJudgment?: StoredAIJudgment;
+  /**
+   * Gap #5 — when the hint reads as a behavioral "how does X work" question, the report
+   * leads with this flow walkthrough instead of the incident pipeline (seeds/causes/
+   * confidence). Present only for explanatory hints.
+   */
+  behavioral?: BehavioralWalkthrough;
+}
+
+/**
+ * A "how does X work" behavioral walkthrough — the call flow of a code path, built from
+ * the seed's pre-computed execution Flow plus its callees. Rendered instead of the
+ * incident sections when the hint is explanatory.
+ */
+export interface BehavioralWalkthrough {
+  /** The behavioral question (the hint). */
+  question: string;
+  /** The flow entry point (controller/resolver/route/handler), or the seed. */
+  entry: Symbol | null;
+  /** The ordered execution steps (the Flow's steps, or the seed + its callees). */
+  steps: Symbol[];
+  /** Detected external calls — HTTP clients, queues, webhooks. */
+  externalCalls: string[];
+  /** Detected persistence — DB/ORM writes, collections. */
+  persistence: string[];
+  /** Rendered prose walkthrough. */
+  narrative: string;
 }
 
 /**

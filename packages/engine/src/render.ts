@@ -178,6 +178,36 @@ export function renderReport(r: InvestigationReport): string {
   if (r.input.repo) lines.push(`Repo: ${r.input.repo}`);
   if (r.input.service) lines.push(`Service: ${r.input.service}`);
   if (r.input.since) lines.push(`Since: ${r.input.since}`);
+  // Gap #5: a behavioral "how does X work" report renders the flow walkthrough and skips the
+  // incident pipeline entirely (no confidence/causes/hypotheses/similar-incidents — not a fault hunt).
+  if (r.behavioral) {
+    lines.push('');
+    lines.push('## Summary');
+    lines.push(r.summary);
+    lines.push('');
+    lines.push(`## Flow${r.behavioral.entry ? ` — ${r.behavioral.entry.name}` : ''}`);
+    if (r.behavioral.steps.length === 0) {
+      lines.push('(no execution flow could be reconstructed from the source graph)');
+    } else {
+      r.behavioral.steps.slice(0, 20).forEach((s, i) => {
+        lines.push(`  ${i + 1}. ${s.name} (${formatSymbolLocation(s.filePath, s.startLine, s.endLine)})`);
+      });
+      if (r.behavioral.steps.length > 20) lines.push(`  … and ${r.behavioral.steps.length - 20} more`);
+    }
+    if (r.behavioral.externalCalls.length > 0 || r.behavioral.persistence.length > 0) lines.push('');
+    if (r.behavioral.externalCalls.length > 0) lines.push(`External calls: ${r.behavioral.externalCalls.join(', ')}`);
+    if (r.behavioral.persistence.length > 0) lines.push(`Persistence: ${r.behavioral.persistence.join(', ')}`);
+    lines.push('');
+    if (r.nextActions.length > 0) {
+      lines.push('## Next actions');
+      for (const a of r.nextActions) lines.push(`- ${a}`);
+      lines.push('');
+    }
+    lines.push(
+      '— Behavioral walkthrough, not a fault hunt. Phrase it as a symptom (e.g. "X failing") for an incident investigation.',
+    );
+    return lines.join('\n');
+  }
   lines.push(`Confidence: ${r.confidence.toFixed(2)}`);
   const caveat = runtimeSourceCaveat(r);
   if (caveat) lines.push(`  ↳ ${caveat}`);
