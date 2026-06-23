@@ -84,6 +84,47 @@ describe('buildErrorAnalysisBody (Meritt mapping)', () => {
     expect((bySig['terms'] as Record<string, unknown>)['field']).toBe('event_code.keyword');
   });
 
+  it('omits the error-level floor when q.eventCode is set (GAP-1: INFO/WARN codes are visible)', () => {
+    // A specific event_code lookup must match regardless of log level — leadcall's
+    // CLGRES005 is INFO with live occurrences and the error floor made it invisible.
+    const body = buildErrorAnalysisBody(
+      { service: 'leadcall-api-prod', from: '2026-06-07T00:00:00Z', eventCode: 'CLGRES005' },
+      'event_code',
+      MERITT_FIELD_MAPPING,
+    );
+    const bool = (body['query'] as Record<string, unknown>)['bool'] as Record<string, unknown>;
+    const filters = JSON.stringify(bool['filter']);
+    // No error-level floor — the code term keys the lookup on its own.
+    expect(filters).not.toContain('"level":{"gte":50}');
+    // But the event_code term is still present.
+    expect(filters).toContain('"event_code.keyword":"CLGRES005"');
+  });
+
+  it('keeps the error-level floor for the unfiltered top-N aggregation (no eventCode)', () => {
+    const body = buildErrorAnalysisBody(
+      { service: 'leadcall-api-prod', from: '2026-06-07T00:00:00Z' },
+      'event_code',
+      MERITT_FIELD_MAPPING,
+    );
+    const bool = (body['query'] as Record<string, unknown>)['bool'] as Record<string, unknown>;
+    const filters = JSON.stringify(bool['filter']);
+    expect(filters).toContain('"level":{"gte":50}');
+  });
+
+  it('honors an explicit above-error level even on a scoped event_code lookup', () => {
+    // A caller deliberately raising the floor above error (e.g. 'fatal') is a narrowing,
+    // not the implicit error default — keep it.
+    const body = buildErrorAnalysisBody(
+      { service: 'svc', from: '2026-06-07T00:00:00Z', eventCode: 'X_CODE_01', level: 'fatal' },
+      'event_code',
+      MERITT_FIELD_MAPPING,
+    );
+    const bool = (body['query'] as Record<string, unknown>)['bool'] as Record<string, unknown>;
+    const filters = JSON.stringify(bool['filter']);
+    // fatal = 60 → still a level floor present, just above 50.
+    expect(filters).toContain('"level":{"gte":60}');
+  });
+
   it('emits an event.code term filter for the ECS mapping (already keyword-typed)', () => {
     const body = buildErrorAnalysisBody(
       { service: 'my-ecs-svc', from: '2026-06-07T00:00:00Z', eventCode: 'E_SYNC_04' },

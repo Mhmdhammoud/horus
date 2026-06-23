@@ -215,6 +215,11 @@ export class SourceCodeProvider implements CodeProvider {
     const content = node?.[9];
     const snippet =
       typeof content === 'string' ? content.slice(0, 600) : undefined;
+    // Full body for analysis that must scan the whole function (e.g. detecting runtime
+    // error codes RAISED FROM the seed, whose literal often sits near the end — past the
+    // snippet cutoff). Bounded generously so very large symbols don't bloat memory.
+    const sourceBody =
+      typeof content === 'string' ? content.slice(0, 20000) : undefined;
 
     const callees = calleeRows.map((row) => this.cypherRowToSymbol(row, 0, 1, 2, 3, 4));
     const callers = callerRows.map((row) => this.cypherRowToSymbol(row, 0, 1, 2, 3, 4));
@@ -253,6 +258,7 @@ export class SourceCodeProvider implements CodeProvider {
     return {
       symbol,
       snippet,
+      ...(sourceBody !== undefined ? { sourceBody } : {}),
       callers,
       callees,
       imports,

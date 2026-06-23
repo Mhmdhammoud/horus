@@ -74,9 +74,21 @@ export function buildErrorAnalysisBody(
 ): Record<string, unknown> {
   const filters: unknown[] = [];
 
-  const minLevel =
-    q.level !== undefined && levelToValue(q.level) > 50 ? q.level : 'error';
-  filters.push(buildLevelFilter(mapping, minLevel));
+  // The error-level floor (level ≥ 50) scopes the unfiltered top-N aggregation to
+  // error logs. But a SPECIFIC event_code lookup (the cross-signal join) must match
+  // regardless of log level — many diagnostic codes are emitted at INFO/WARN (e.g.
+  // leadcall's CLGRES005 is INFO with ~1959 live occurrences). ANDing such a code
+  // with the error floor made it invisible. So apply the floor ONLY when no specific
+  // event_code is requested; a scoped lookup keys on the code alone.
+  if (q.eventCode === undefined) {
+    const minLevel =
+      q.level !== undefined && levelToValue(q.level) > 50 ? q.level : 'error';
+    filters.push(buildLevelFilter(mapping, minLevel));
+  } else if (q.level !== undefined && levelToValue(q.level) > 50) {
+    // Caller explicitly raised the floor above error — honor that even for a scoped
+    // lookup (it's a deliberate narrowing, not the implicit error default).
+    filters.push(buildLevelFilter(mapping, q.level));
+  }
 
   if (q.from !== undefined || q.to !== undefined) {
     const rangeClause: Record<string, string> = {};
