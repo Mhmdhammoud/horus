@@ -10,7 +10,7 @@ import {
   redisStateForEnv,
   metricsForEnv,
 } from '@horus/connectors';
-import { createDb, updateInvestigationReport } from '@horus/db';
+import { openDb, updateInvestigationReport } from '@horus/db';
 import { investigate, renderReport, reportToJSON, reportToMarkdown } from '@horus/engine';
 import type { InvestigationReport, StoredAIJudgment } from '@horus/engine';
 import { renderNarrative, AnthropicNarrativeProvider } from '@horus/ai';
@@ -283,7 +283,7 @@ export async function runInvestigate(
     // Resolve service name: CLI flag > connector default > undefined
     const service = opts.service ?? renv.connectors.elasticsearch?.serviceName;
 
-    const { db, sql } = createDb(config.database.url);
+    const { db, sql } = await openDb(config.database.url);
     try {
       const investigation = investigate(
         { hint, repo: renv.project, since: opts.since, logsSince: opts.logsSince, service },

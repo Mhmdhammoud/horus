@@ -1,5 +1,5 @@
 import pc from 'picocolors';
-import { createDb, getInvestigation, listInvestigationsWithReports } from '@horus/db';
+import { openDb, getInvestigation, listInvestigationsWithReports } from '@horus/db';
 import { formatDateTime } from '../lib/format.js';
 import { resolveDbUrl } from '../lib/db-url.js';
 import {
@@ -38,7 +38,7 @@ export async function runScore(
     _aiProvider?: InterpretationProvider;
   },
 ): Promise<number> {
-  const { db, sql } = createDb(await resolveDbUrl(opts.config));
+  const { db, sql } = await openDb(await resolveDbUrl(opts.config));
   try {
     const row = await getInvestigation(db, id);
     if (!row) {
@@ -82,7 +82,7 @@ export async function runScores(opts: {
   config?: string;
   limit?: number;
 }): Promise<number> {
-  const { db, sql } = createDb(await resolveDbUrl(opts.config));
+  const { db, sql } = await openDb(await resolveDbUrl(opts.config));
   try {
     const rows = await listInvestigationsWithReports(db, opts.limit ?? 15);
     const scored = rows

@@ -44,7 +44,7 @@ vi.mock('@horus/connectors', () => ({
 }));
 
 vi.mock('@horus/db', () => ({
-  createDb: vi.fn(() => ({ db: {}, sql: { end: mocks.sqlEnd } })),
+  openDb: vi.fn(async () => ({ db: {}, sql: { end: mocks.sqlEnd } })),
   listQueueEdges: mocks.listQueueEdges,
 }));
 
@@ -139,9 +139,9 @@ describe('horus explain — async boundary redirect (HOR-181)', () => {
   it('falls through to fuzzy warning when DB is unavailable', async () => {
     const unrelated = makeSymbol('ShopifyWebhookCatalogFieldsMongo');
     mocks.searchSymbols.mockResolvedValue([unrelated]);
-    // Simulate DB error — createDb itself throws (not listQueueEdges)
-    const { createDb } = await import('@horus/db');
-    vi.mocked(createDb).mockImplementationOnce(() => { throw new Error('DB connection refused'); });
+    // Simulate DB error — openDb itself throws (not listQueueEdges)
+    const { openDb } = await import('@horus/db');
+    vi.mocked(openDb).mockRejectedValueOnce(new Error('DB connection refused'));
 
     const logged: string[] = [];
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation((...args) => { logged.push(String(args[0])); });

@@ -1,5 +1,5 @@
 import pc from 'picocolors';
-import { createDb, getInvestigation } from '@horus/db';
+import { openDb, getInvestigation } from '@horus/db';
 import { resolveDbUrl } from '../lib/db-url.js';
 import {
   refineInvestigation,
@@ -72,7 +72,7 @@ type LocalLookup =
  * (`# Investigation <id>`) is this local id — so the local store is the right first stop.
  */
 async function lookupLocalInvestigation(id: string, configPath?: string): Promise<LocalLookup> {
-  const { db, sql } = createDb(await resolveDbUrl(configPath));
+  const { db, sql } = await openDb(await resolveDbUrl(configPath));
   try {
     const row = await getInvestigation(db, id);
     if (!row) return { kind: 'not-found' };

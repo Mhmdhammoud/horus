@@ -1,6 +1,6 @@
 import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
-import { createDb } from '@horus/db';
+import { openDb } from '@horus/db';
 import { listQueueEdges } from '@horus/db';
 import type { QueueEdge } from '@horus/db';
 import { queueForEnv } from '@horus/connectors';
@@ -45,7 +45,7 @@ export async function runQueues(
 ): Promise<number> {
   try {
     const config = await loadConfig(opts.config, { name: opts.name });
-    const { db, sql } = createDb(config.database.url);
+    const { db, sql } = await openDb(config.database.url);
 
     try {
       // Scope the topology to the ACTIVE project. listQueueEdges with project=undefined

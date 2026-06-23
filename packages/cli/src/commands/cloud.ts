@@ -23,7 +23,7 @@ import {
 } from "../lib/cloud/git.js";
 import { authedClient, repoRootOrCwd } from "../lib/cloud/session.js";
 import { resolveTriple, reportCloudError, syncMetaLines } from "./context.js";
-import { createDb, listInvestigationsWithReports } from "@horus/db";
+import { openDb, listInvestigationsWithReports } from "@horus/db";
 import type { InvestigationReport } from "@horus/engine";
 import { resolveDbUrl } from "../lib/db-url.js";
 import { uploadInvestigationToCloud } from "../lib/cloud/investigation-sync.js";
@@ -205,7 +205,7 @@ export async function runCloudSync(
   }
 
   // Source: local investigations that carry a stored report (others can't be uploaded).
-  const { db, sql } = createDb(await resolveDbUrl(opts.config));
+  const { db, sql } = await openDb(await resolveDbUrl(opts.config));
   const uploadable: { id: string; title: string | null; report: InvestigationReport }[] = [];
   let skippedNoReport = 0;
   try {

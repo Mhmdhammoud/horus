@@ -8,7 +8,7 @@
  *
  * Tests are offline — no live Postgres, no API calls, no source-intelligence host.
  *
- * Pattern: heavy infrastructure (loadConfig, createDb, getInvestigation) is
+ * Pattern: heavy infrastructure (loadConfig, openDb, getInvestigation) is
  * mocked at the module level. File-system calls in `runInit` are real, using
  * temp directories that are cleaned up in afterEach.
  */
@@ -35,7 +35,7 @@ vi.mock('@horus/core', async (importOriginal) => {
 });
 
 vi.mock('@horus/db', () => ({
-  createDb: vi.fn().mockReturnValue({
+  openDb: vi.fn().mockResolvedValue({
     db: {},
     sql: { end: vi.fn().mockResolvedValue(undefined) },
   }),

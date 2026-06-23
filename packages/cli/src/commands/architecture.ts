@@ -1,7 +1,7 @@
 import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
 import { createConnectors } from '@horus/connectors';
-import { createDb } from '@horus/db';
+import { openDb } from '@horus/db';
 import { discoverArchitecture, renderArchitecture, architectureToJSON } from '@horus/engine';
 import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
@@ -59,7 +59,7 @@ export async function runArchitecture(opts: {
       /* unresolvable (multi-project, no cwd match) — leave unscoped */
     }
 
-    const { db, sql } = createDb(config.database.url);
+    const { db, sql } = await openDb(config.database.url);
     try {
       const m = await discoverArchitecture({ code, db, project });
       if (opts.json) {

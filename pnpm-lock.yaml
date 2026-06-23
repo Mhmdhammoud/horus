@@ -35,6 +35,9 @@ importers:
 
   apps/horus:
     devDependencies:
+      '@electric-sql/pglite':
+        specifier: ^0.5.3
+        version: 0.5.3
       '@horus/ai':
         specifier: workspace:*
         version: link:../../packages/ai
@@ -145,12 +148,15 @@ importers:
 
   packages/db:
     dependencies:
+      '@electric-sql/pglite':
+        specifier: ^0.5.3
+        version: 0.5.3
       '@horus/core':
         specifier: workspace:*
         version: link:../core
       drizzle-orm:
         specifier: ^0.38.3
-        version: 0.38.4(@types/pg@8.20.0)(pg@8.22.0)(postgres@3.4.9)
+        version: 0.38.4(@electric-sql/pglite@0.5.3)(@types/pg@8.20.0)(pg@8.22.0)(postgres@3.4.9)
       postgres:
         specifier: ^3.4.5
         version: 3.4.9
@@ -199,6 +205,9 @@ packages:
 
   '@drizzle-team/brocli@0.10.2':
     resolution: {integrity: sha512-z33Il7l5dKjUgGULTqBsQBQwckHh5AbIuxhdsIxDDiZAzBOrZO6q9ogcWC65kU382AfynTfgNumVcNIjuIua6w==}
+
+  '@electric-sql/pglite@0.5.3':
+    resolution: {integrity: sha512-iTTYbA5Uesrl+N7zss0J5LopT7KE4j9aymYo+EZZh+rZbARQCUQOs+n2pay64JRUpc3fCkpfrniTNJnvYzOE+g==}
 
   '@esbuild-kit/core-utils@3.3.2':
     resolution: {integrity: sha512-sPRAnw9CdSsRmEtnsl2WXWdyquogVpB3yZ3dgwJfe8zrOzTsV7cJvmwrKVa+0ma5BoiGJ+BoqkMvawbayKUsqQ==}
@@ -2190,6 +2199,8 @@ snapshots:
 
   '@drizzle-team/brocli@0.10.2': {}
 
+  '@electric-sql/pglite@0.5.3': {}
+
   '@esbuild-kit/core-utils@3.3.2':
     dependencies:
       esbuild: 0.18.20
@@ -2883,8 +2894,9 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  drizzle-orm@0.38.4(@types/pg@8.20.0)(pg@8.22.0)(postgres@3.4.9):
+  drizzle-orm@0.38.4(@electric-sql/pglite@0.5.3)(@types/pg@8.20.0)(pg@8.22.0)(postgres@3.4.9):
     optionalDependencies:
+      '@electric-sql/pglite': 0.5.3
       '@types/pg': 8.20.0
       pg: 8.22.0
       postgres: 3.4.9

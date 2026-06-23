@@ -8,7 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const db = vi.hoisted(() => ({
-  createDb: vi.fn(() => ({ db: {}, sql: { end: vi.fn(async () => {}) } })),
+  openDb: vi.fn(async () => ({ db: {}, sql: { end: vi.fn(async () => {}) } })),
   getInvestigation: vi.fn(),
 }));
 const cloud = vi.hoisted(() => ({
@@ -63,7 +63,7 @@ beforeEach(() => {
   for (const fn of [...Object.values(db), ...Object.values(cloud), ...Object.values(engine)]) {
     if (typeof fn === 'function' && 'mockReset' in fn) (fn as ReturnType<typeof vi.fn>).mockReset();
   }
-  db.createDb.mockReturnValue({ db: {}, sql: { end: vi.fn(async () => {}) } });
+  db.openDb.mockResolvedValue({ db: {}, sql: { end: vi.fn(async () => {}) } });
   cloud.authedClient.mockReturnValue({ client: {} });
   cloud.reportCloudError.mockReturnValue(1);
   engine.answerQuestion.mockReturnValue({ answer: 'because X' });

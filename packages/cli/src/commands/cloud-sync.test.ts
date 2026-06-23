@@ -7,7 +7,7 @@ import { join } from "node:path";
 // real Postgres is needed.
 const h = vi.hoisted(() => ({ rows: [] as Array<{ id: string; title: string | null; report: unknown }> }));
 vi.mock("@horus/db", () => ({
-  createDb: () => ({ db: {}, sql: { end: async () => {} } }),
+  openDb: async () => ({ db: {}, sql: { end: async () => {} } }),
   listInvestigationsWithReports: async () => h.rows,
   assertLocalDatabaseUrl: () => {},
 }));

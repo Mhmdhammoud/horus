@@ -11,9 +11,11 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "generate": "drizzle-kit generate",
+    "gen:migrations": "node scripts/gen-migrations.mjs",
     "migrate": "tsx src/migrate.ts"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.3",
     "@horus/core": "workspace:*",
     "drizzle-orm": "^0.38.3",
     "postgres": "^3.4.5"
