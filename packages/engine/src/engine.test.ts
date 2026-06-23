@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { queueFindingConfidence, logWindowFrom, looksDiffable, classifyLogRelevance } from './engine.js';
+import {
+  queueFindingConfidence,
+  logWindowFrom,
+  looksDiffable,
+  classifyLogRelevance,
+  extractEventCodes,
+} from './engine.js';
 
 // ---------------------------------------------------------------------------
 // logWindowFrom — duration parsing for --since (HOR-86)
@@ -193,5 +199,40 @@ describe('classifyLogRelevance', () => {
       undefined,
     );
     expect(r.relevanceClass).toBe('direct');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractEventCodes — code-shaped token extraction for the cross-signal join
+// ---------------------------------------------------------------------------
+
+describe('extractEventCodes', () => {
+  it('extracts an alphanumeric code with digits (HTTPFLT001)', () => {
+    expect(extractEventCodes('HTTPFLT001 errors in prod')).toEqual(['HTTPFLT001']);
+  });
+
+  it('extracts an UPPER_SNAKE code (E_FULFILLMENT_SYNC_ERROR_04)', () => {
+    expect(extractEventCodes('seeing E_FULFILLMENT_SYNC_ERROR_04 again')).toEqual([
+      'E_FULFILLMENT_SYNC_ERROR_04',
+    ]);
+  });
+
+  it('excludes plain uppercase words with no digit or underscore', () => {
+    // ERROR / FETCH / API have no digit and no underscore — not codes.
+    expect(extractEventCodes('FETCH ERROR from API')).toEqual([]);
+  });
+
+  it('de-duplicates and preserves first-seen order across inputs', () => {
+    expect(
+      extractEventCodes('HTTPFLT001 and DBPOOL02', 'DBPOOL02 again', 'HTTPFLT001'),
+    ).toEqual(['HTTPFLT001', 'DBPOOL02']);
+  });
+
+  it('ignores undefined / empty inputs', () => {
+    expect(extractEventCodes(undefined, '', 'E_SYNC_04')).toEqual(['E_SYNC_04']);
+  });
+
+  it('does not match lowercase tokens', () => {
+    expect(extractEventCodes('httpflt001 lowercase')).toEqual([]);
   });
 });

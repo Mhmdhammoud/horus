@@ -89,11 +89,20 @@ export function buildErrorAnalysisBody(
     filters.push({ term: { [serviceTermField(mapping)]: q.service } });
   }
 
-  const mustClause = buildTextMust(q, mapping);
-
   const svcTerm = serviceTermField(mapping);
   const sigTerm =
     field === mapping.eventCodeField ? signatureTermField(mapping) : `${field}.keyword`;
+
+  // Scope the analysis to a single error signature (event_code) when requested.
+  // Mirrors buildErrorAggBody (HOR-215): the engine's cross-signal event_code join
+  // calls analyzeErrors with q.eventCode set to a SPECIFIC code from the source/hint
+  // so it gets that code's signature/count even when it isn't a top-N aggregation
+  // bucket. Filters on the same keyword-aware term field used for the aggregation.
+  if (q.eventCode !== undefined) {
+    filters.push({ term: { [sigTerm]: q.eventCode } });
+  }
+
+  const mustClause = buildTextMust(q, mapping);
 
   return {
     size: 0,

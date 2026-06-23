@@ -265,6 +265,34 @@ export function classifyLogRelevance(
 }
 
 /**
+ * Extract code-shaped tokens (meritt `event_code` values like HTTPFLT001 or
+ * E_FULFILLMENT_SYNC_ERROR_04) from free text — the hint, a seed name, or seed
+ * source. An event_code is BOTH a source raise-signature (a string literal) AND a
+ * structured Elasticsearch field, so a code named by the seed/hint can be JOINED
+ * to ES even when it isn't a top-N error aggregation bucket (the "no logs" vs 438
+ * HTTPFLT001 errors miss). Match shape: an UPPER_SNAKE/alnum token of length ≥4
+ * that contains at least one digit or underscore (so plain words like "ERROR" or
+ * "FETCH" are excluded but "HTTPFLT001"/"E_SYNC_04" qualify). De-duplicated,
+ * original order preserved.
+ */
+export function extractEventCodes(...texts: (string | undefined)[]): string[] {
+  const RE = /\b(?=[A-Z0-9_]*[0-9_])[A-Z][A-Z0-9_]{3,}\b/g;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const text of texts) {
+    if (text === undefined || text === '') continue;
+    for (const m of text.matchAll(RE)) {
+      const code = m[0];
+      if (!seen.has(code)) {
+        seen.add(code);
+        out.push(code);
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Detect context field names that look like entity identifiers worth aggregating
  * (HOR-215) — brand_id, order_id, userId, etc. Used to surface "16 brands × 50
  * orders affected" instead of only an error-signature count. Returns at most
@@ -875,6 +903,74 @@ export async function investigate(
             directLogEvIds.push(ev.id);
             directSignatures.push({ key: s.key, count: s.count, message: s.sampleMessage ?? '' });
           } else ambientLogEvIds.push(ev.id);
+        }
+
+        // CROSS-SIGNAL event_code JOIN — meritt's `event_code` is BOTH a source
+        // raise-signature (a string literal in code) AND a structured Elasticsearch
+        // field. analyzeErrors above only aggregates the top-N signatures, so a
+        // SPECIFIC code the seed/hint cares about — but that isn't a top bucket — is
+        // missed (the real "no logs" while ES held 438 HTTPFLT001 errors). Here we
+        // pull the exact codes named by the source signal (hint + seed name + seed
+        // source snippet) and query ES for each by its keyword field. A code that
+        // returns count > 0 is an EXACT structured match to the source signal — the
+        // strongest possible runtime link — so it becomes DIRECT, seed-linked
+        // evidence. Best-effort: a logs failure never breaks the investigation.
+        const seedSnippet =
+          ctx?.snippet !== undefined && ctx.snippet !== null ? ctx.snippet : undefined;
+        const sourceCodes = extractEventCodes(input.hint, top?.name, seedSnippet);
+        const joinedCodes = new Set(directSignatures.map((d) => d.key));
+        for (const code of sourceCodes) {
+          if (joinedCodes.has(code)) continue;
+          joinedCodes.add(code);
+          try {
+            const codeAnalysis = await deps.logs.analyzeErrors({
+              service: input.service,
+              from,
+              eventCode: code,
+            });
+            const sig = codeAnalysis.signatures.find((s) => s.key === code);
+            if (sig === undefined || sig.count <= 0) continue;
+            const links: EvidenceLinks =
+              top !== undefined
+                ? top.startLine !== undefined && top.startLine > 0
+                  ? { symbolId: top.id, file: top.filePath, line: top.startLine }
+                  : { symbolId: top.id, file: top.filePath }
+                : {};
+            const ev = mkEv(
+              'log',
+              `event_code ${code}: ${sig.count}x in Elasticsearch (exact structured match to the source signal)`.slice(
+                0,
+                220,
+              ),
+              {
+                signature: code,
+                count: sig.count,
+                firstSeen: sig.firstSeen,
+                lastSeen: sig.lastSeen,
+                services: sig.services,
+                isNew: sig.isNew ?? false,
+                ratio: sig.ratio ?? null,
+                sampleMessage: sig.sampleMessage ?? null,
+                relevanceClass: 'direct',
+                relevanceReason: `exact event_code match to the source signal (${code})`,
+                crossSignalJoin: true,
+              },
+              links,
+              sig.lastSeen || undefined,
+              0.9,
+            );
+            if (sig.isNew) ev.isNew = sig.isNew;
+            if (typeof sig.ratio === 'number' && Number.isFinite(sig.ratio)) ev.ratio = sig.ratio;
+            logEvIds.push(ev.id);
+            directLogEvIds.push(ev.id);
+            directSignatures.push({
+              key: code,
+              count: sig.count,
+              message: sig.sampleMessage ?? '',
+            });
+          } catch {
+            // best-effort per-code; a logs failure must never break the investigation
+          }
         }
 
         // HOR-215: surface the DISTINCT failing entities behind the dominant error

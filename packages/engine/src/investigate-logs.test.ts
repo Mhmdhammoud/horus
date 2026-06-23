@@ -365,6 +365,113 @@ describe('investigate() WITH logs provider (HOR-13)', () => {
     expect(spikeEv?.ratio).toBeCloseTo(2.5, 1);
   });
 
+  // -------------------------------------------------------------------------
+  // Cross-signal event_code JOIN: a code named by the hint that is NOT a top
+  // aggregation bucket, but IS returned by the structured eventCode query, must
+  // still surface as DIRECT evidence (the "no logs" while ES held 438 HTTPFLT001
+  // errors miss).
+  // -------------------------------------------------------------------------
+  it('joins a hint event_code that is absent from the top aggregation but present in ES', async () => {
+    // Top aggregation contains ONLY an unrelated signature — HTTPFLT001 is not a
+    // top-N bucket. The structured eventCode query returns it with 438x.
+    const joinLogs: LogsProvider = {
+      ...fakeLogs,
+      async analyzeErrors(q) {
+        if (q.eventCode === 'HTTPFLT001') {
+          return {
+            window: { from: 'x', to: 'y' },
+            totalErrors: 438,
+            signatures: [
+              {
+                key: 'HTTPFLT001',
+                count: 438,
+                firstSeen: '2026-06-13T10:00:00.000Z',
+                lastSeen: '2026-06-13T15:00:00.000Z',
+                services: ['leadcall-api-prod'],
+                isNew: true,
+                baselineCount: 0,
+                ratio: Infinity,
+                sampleMessage: 'HTTP filter rejected request',
+              },
+            ],
+            newSignatures: ['HTTPFLT001'],
+            affectedServices: ['leadcall-api-prod'],
+          };
+        }
+        // The unscoped (top-N) aggregation never surfaces HTTPFLT001.
+        return {
+          window: { from: 'x', to: 'y' },
+          totalErrors: 5,
+          signatures: [
+            {
+              key: 'DBPOOL02',
+              count: 5,
+              firstSeen: '2026-06-13T09:00:00.000Z',
+              lastSeen: '2026-06-13T14:00:00.000Z',
+              services: ['leadcall-api-prod'],
+              isNew: false,
+              baselineCount: 2,
+              ratio: 2.5,
+            },
+          ],
+          newSignatures: [],
+          affectedServices: ['leadcall-api-prod'],
+        };
+      },
+    };
+
+    const report = await investigate(
+      { hint: 'HTTPFLT001 errors in prod', service: 'leadcall-api-prod' },
+      { code: fakeCode, db: fakeDb, logs: joinLogs },
+    );
+
+    const joinEv = report.evidence.find(
+      (e) =>
+        e.kind === 'log' &&
+        e.title.includes('event_code HTTPFLT001') &&
+        e.title.includes('438x') &&
+        e.title.includes('exact structured match'),
+    );
+    expect(joinEv).toBeDefined();
+    expect(joinEv?.relevance).toBe(0.9);
+    // It must be classified DIRECT so it feeds the seed-linked cause path.
+    const payload = joinEv?.payload as Record<string, unknown> | undefined;
+    expect(payload?.['relevanceClass']).toBe('direct');
+    expect(payload?.['crossSignalJoin']).toBe(true);
+  });
+
+  it('does not re-join an event_code already present as a top signature', async () => {
+    // FAKE_ANALYSIS already returns HTTPFLT001 as a top bucket; the hint names it.
+    // The join must dedupe — exactly one HTTPFLT001 log evidence, not two.
+    const report = await investigate(
+      { hint: 'HTTPFLT001 zoho', service: 'leadcall-api-prod' },
+      { code: fakeCode, db: fakeDb, logs: fakeLogs },
+    );
+    const httpfltEv = report.evidence.filter(
+      (e) => e.kind === 'log' && e.title.includes('HTTPFLT001'),
+    );
+    // Only the original top-signature evidence — no duplicate cross-signal entry.
+    expect(httpfltEv.length).toBe(1);
+    expect(httpfltEv[0]?.title).not.toContain('exact structured match');
+  });
+
+  it('a logs failure inside the event_code join never breaks the investigation', async () => {
+    const throwingJoinLogs: LogsProvider = {
+      ...fakeLogs,
+      async analyzeErrors(q) {
+        if (q.eventCode !== undefined) throw new Error('es timeout on scoped query');
+        return FAKE_ANALYSIS;
+      },
+    };
+    const report = await investigate(
+      { hint: 'BADCODE99 outage', service: 'leadcall-api-prod' },
+      { code: fakeCode, db: fakeDb, logs: throwingJoinLogs },
+    );
+    // The unscoped analysis still produced evidence; the scoped failure was swallowed.
+    expect(report.evidence.filter((e) => e.kind === 'log').length).toBeGreaterThan(0);
+    expect(report.evidence.some((e) => e.title.includes('exact structured match'))).toBe(false);
+  });
+
   it('confidence ceiling is not reduced by the logs gap (since logs are present)', async () => {
     // Run without logs to get the baseline ceiling reduction caused by the logs gap.
     const reportNoLogs = await investigate(
