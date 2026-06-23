@@ -51,6 +51,55 @@ describe('buildErrorAnalysisBody (Meritt mapping)', () => {
     expect(subAggs).toContain('"time"');
     expect(JSON.stringify(aggs['affected_services'])).toContain('service_name.keyword');
   });
+
+  it('omits the event_code term filter when q.eventCode is unset', () => {
+    const body = buildErrorAnalysisBody(
+      { service: 'leadcall-api-prod', from: '2026-06-07T00:00:00Z' },
+      'event_code',
+      MERITT_FIELD_MAPPING,
+    );
+    const bool = (body['query'] as Record<string, unknown>)['bool'] as Record<string, unknown>;
+    const filters = JSON.stringify(bool['filter']);
+    // No term clause on the signature field when the join code isn't requested.
+    expect(filters).not.toContain('"event_code.keyword":"');
+  });
+
+  it('emits an event_code.keyword term filter when q.eventCode is set (cross-signal join)', () => {
+    const body = buildErrorAnalysisBody(
+      { service: 'leadcall-api-prod', from: '2026-06-07T00:00:00Z', eventCode: 'HTTPFLT001' },
+      'event_code',
+      MERITT_FIELD_MAPPING,
+    );
+    const bool = (body['query'] as Record<string, unknown>)['bool'] as Record<string, unknown>;
+    const filters = bool['filter'] as Array<Record<string, unknown>>;
+    const termClause = filters.find(
+      (f) =>
+        f['term'] !== undefined &&
+        (f['term'] as Record<string, unknown>)['event_code.keyword'] === 'HTTPFLT001',
+    );
+    expect(termClause).toBeDefined();
+    // The aggregation still keys on the same keyword field.
+    const aggs = body['aggs'] as Record<string, unknown>;
+    const bySig = aggs['by_sig'] as Record<string, unknown>;
+    expect((bySig['terms'] as Record<string, unknown>)['field']).toBe('event_code.keyword');
+  });
+
+  it('emits an event.code term filter for the ECS mapping (already keyword-typed)', () => {
+    const body = buildErrorAnalysisBody(
+      { service: 'my-ecs-svc', from: '2026-06-07T00:00:00Z', eventCode: 'E_SYNC_04' },
+      'event.code',
+      ECS_FIELD_MAPPING,
+    );
+    const bool = (body['query'] as Record<string, unknown>)['bool'] as Record<string, unknown>;
+    const filters = bool['filter'] as Array<Record<string, unknown>>;
+    // ECS event.code has no .keyword sub-field — filter on the bare field.
+    const termClause = filters.find(
+      (f) =>
+        f['term'] !== undefined &&
+        (f['term'] as Record<string, unknown>)['event.code'] === 'E_SYNC_04',
+    );
+    expect(termClause).toBeDefined();
+  });
 });
 
 describe('buildErrorAnalysisBody (ECS mapping)', () => {
