@@ -19,6 +19,7 @@ import type {
   ProviderKind,
   Symbol,
   SymbolContext,
+  Flow,
 } from '@horus/core';
 import type {
   CodeProvider,
@@ -57,6 +58,7 @@ import { buildRuntimeSourceStatus } from './source-status.js';
 import type {
   InvestigationInput,
   InvestigationReport,
+  BehavioralWalkthrough,
   ReportFinding,
 } from './types.js';
 import { buildTimeline } from './timeline.js';
@@ -430,6 +432,76 @@ export function looksExplanatory(hint: string): boolean {
     return true;
   }
   return false;
+}
+
+/**
+ * Gap #5 — build a behavioral "how does X work" walkthrough from the seed's pre-computed
+ * execution Flow (or its direct callees as a fallback), plus heuristic detection of the
+ * external calls and persistence the path touches. Rendered INSTEAD of the incident
+ * pipeline (seeds/causes/confidence) when the hint is explanatory.
+ */
+export function buildBehavioralWalkthrough(
+  hint: string,
+  top: Symbol | undefined,
+  ctx: SymbolContext | undefined,
+  flows: Flow[],
+): BehavioralWalkthrough {
+  const shortFile = (f: string): string => f.replace(/^.*?((?:src|app|lib|packages)\/.*)$/, '$1');
+  // Loggers / tracers are called by almost everything and tell you nothing about the flow.
+  const isNoise = (s: Symbol): boolean =>
+    /logger|logging|\.log\b|telemetry/i.test(s.filePath) ||
+    /^(forcontext|getlogger|child|debug|info|warn|error|log|trace|tracer)$/i.test(s.name);
+  // The richest pre-computed execution flow the seed participates in — it already starts at
+  // an entry point and lists the ordered steps, so it yields the real entry even when the
+  // seed itself sits mid-flow (e.g. an injected service).
+  const flow = flows.slice().sort((a, b) => b.steps.length - a.steps.length)[0];
+  const rawSteps: Symbol[] =
+    flow && flow.steps.length > 1 ? flow.steps : top ? [top, ...(ctx?.callees ?? [])] : ctx?.callees ?? [];
+  const steps = rawSteps.filter((s) => !isNoise(s));
+  const entry = steps[0] ?? top ?? null;
+
+  const dedup = (xs: Symbol[]): Symbol[] => {
+    const seen = new Set<string>();
+    return xs.filter((s) => {
+      const k = `${s.name}:${s.filePath}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  };
+  // File-anchored where possible; only DB/IO-specific verbs in names (generic verbs like
+  // `create`/`post` are too service-y and over-flag).
+  const PERSIST_RE =
+    /(^|[._])(save|insert|upsert|persist|bulkwrite|find|findone|findmany|aggregate|delete|remove)\b|repositor|\brepo\b|\.model|entity|prisma|mongoose|typeorm|knex|\bdao\b|datasource/i;
+  const EXTERNAL_RE =
+    /(^|[._])(request|publish|enqueue|dispatch|emit|notify)\b|http|axios|\bapi\b|webhook|\bqueue\b|processor|producer|gateway|\.client\b/i;
+  const pool = dedup([...steps, ...(ctx?.callees ?? [])]).filter((s) => !isNoise(s));
+  const persistence = dedup(pool.filter((s) => PERSIST_RE.test(s.name) || PERSIST_RE.test(s.filePath)))
+    .slice(0, 6)
+    .map((s) => `${s.name} (${shortFile(s.filePath)})`);
+  const persistNames = new Set(persistence.map((p) => p.split(' (')[0]));
+  const externalCalls = dedup(
+    pool.filter((s) => (EXTERNAL_RE.test(s.name) || EXTERNAL_RE.test(s.filePath)) && !persistNames.has(s.name)),
+  )
+    .slice(0, 6)
+    .map((s) => `${s.name} (${shortFile(s.filePath)})`);
+
+  const lines: string[] = [];
+  if (entry) {
+    const loc = entry.startLine ? `${shortFile(entry.filePath)}:${entry.startLine}` : shortFile(entry.filePath);
+    lines.push(`Entry point: \`${entry.name}\` (${loc}).`);
+  }
+  if (steps.length > 1) {
+    const chain = steps.slice(0, 12).map((s) => s.name).join(' → ');
+    lines.push(`Flow: ${chain}${steps.length > 12 ? ' → …' : ''}${flow ? ` (${flow.steps.length} steps)` : ''}.`);
+  } else if (entry) {
+    lines.push(`No multi-step execution flow was indexed for \`${entry.name}\` — showing its direct calls.`);
+  }
+  if (externalCalls.length > 0) lines.push(`Calls out to: ${externalCalls.join(', ')}.`);
+  if (persistence.length > 0) lines.push(`Persists via: ${persistence.join(', ')}.`);
+  if (lines.length === 0) lines.push('No execution flow could be reconstructed for this query from the source graph.');
+
+  return { question: hint, entry, steps, externalCalls, persistence, narrative: lines.join('\n') };
 }
 
 /**
@@ -2116,23 +2188,47 @@ export async function investigate(
     queueFailureSignals.length > 0 ||
     findings.some((f) => f.kind === 'anomaly') ||
     headlineCause !== undefined;
-  const explanatoryHint = looksExplanatory(hint) && !hasIncidentSignal;
+  const explanatoryHint = looksExplanatory(hint);
+  let behavioral: BehavioralWalkthrough | undefined;
   if (explanatoryHint) {
-    const explainTarget = top?.name ?? input.service ?? hint;
+    // Gap #5: a "how does X work" hint is a request for an explanation, not a fault hunt —
+    // route to a flow walkthrough REGARDLESS of ambient incident noise. (Previously this was
+    // gated on `!hasIncidentSignal`, but a prod graph always carries SOME error signals, so the
+    // branch never fired and behavioral hints got the full incident treatment on a wrong seed.)
+    // Prefer the richest execution flow: the seed's own, else — when it sits mid-flow (an
+    // injected service or a bare class) — the flow of an entry-point-like caller, so the
+    // walkthrough roots at the controller/route rather than the service in the middle.
+    let flowPool = flows;
+    const richestSeedFlow = flows.slice().sort((a, b) => b.steps.length - a.steps.length)[0];
+    if (code && (richestSeedFlow === undefined || richestSeedFlow.steps.length <= 1) && ctx?.callers?.length) {
+      const ENTRY_RE =
+        /controller|resolver|route|handler|command|consumer|listener|gateway|cron|scheduler|webhook|middleware/i;
+      const entryCallers = ctx.callers
+        .filter((c) => ENTRY_RE.test(c.name) || ENTRY_RE.test(c.filePath))
+        .slice(0, 3);
+      for (const c of entryCallers) {
+        try {
+          flowPool = flowPool.concat(await code.flowsFor(c.id));
+        } catch {
+          /* best-effort — a missing caller flow must not break the walkthrough */
+        }
+      }
+    }
+    behavioral = buildBehavioralWalkthrough(hint, top, ctx ?? undefined, flowPool);
+    const noisy = hasIncidentSignal
+      ? ' (note: live error signals also exist in this codebase — rephrase as a symptom like "X failing" for a fault hunt)'
+      : '';
     summary =
-      `${seedDisclaimer}${banner}"${hint}" reads as a "how does it work" question and no incident signal was found ` +
-      `(no error signatures, anomalies, or failing queues). For a focused answer, run \`horus explain ${explainTarget}\`. ` +
-      `${top ? `Investigated ${label} (${area}); the` : 'The'} incident sections below are empty by design — this is not a fault hunt.`;
+      `${seedDisclaimer}${banner}"${hint}" reads as a "how does it work" question — here is the code path${noisy}:\n\n` +
+      behavioral.narrative;
   }
 
   // i. nextActions
   const nextActions = buildNextActions(top, ctx, impact, queueHits, changes, input);
-  // HOR-334: for an explanatory hint with no incident signal, lead with the focused
-  // `horus explain` action so the user is steered to the right tool first.
-  if (explanatoryHint) {
-    const explainTarget = top?.name ?? input.service ?? hint;
+  // Gap #5: for a behavioral hint, point the user at the entry point for a deeper structural trace.
+  if (explanatoryHint && behavioral?.entry) {
     nextActions.unshift(
-      `This looks like a behavioral question — run \`horus explain ${explainTarget}\` for a focused walkthrough of how it works.`,
+      `Trace the full call graph of the entry point: \`horus explain ${behavioral.entry.name}\`.`,
     );
   }
   if (degradedNoSource) {
@@ -2168,6 +2264,7 @@ export async function investigate(
     ownership: ownershipEstimate,
     causeChains: causeChains.length > 0 ? causeChains : undefined,
     ...(recentChanges !== undefined ? { recentChanges } : {}),
+    ...(behavioral !== undefined ? { behavioral } : {}),
     ...(degradedNoSource
       ? { degraded: { sourceIntelligence: false, reason: 'source-intelligence host unreachable' } }
       : {}),

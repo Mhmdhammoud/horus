@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import type { Symbol, SymbolContext, ImpactResult, ChangeSet, CypherResult, Evidence } from '@horus/core';
+import type { Symbol, SymbolContext, Flow, ImpactResult, ChangeSet, CypherResult, Evidence } from '@horus/core';
 import type {
   CodeProvider,
   GitCommit,
@@ -32,7 +32,7 @@ vi.mock('./git-collector.js', async (importOriginal) => {
   return { ...actual, collectGitChanges: vi.fn() };
 });
 
-import { investigate, confidenceCeilingForCause, looksExplanatory, formatRegressionCitation } from './engine.js';
+import { investigate, confidenceCeilingForCause, looksExplanatory, formatRegressionCitation, buildBehavioralWalkthrough } from './engine.js';
 import { collectGitChanges } from './git-collector.js';
 
 const mockCollectGitChanges = vi.mocked(collectGitChanges);
@@ -395,21 +395,22 @@ describe('looksExplanatory — detects interrogative/explanatory hints', () => {
   });
 });
 
-describe('investigate() — behavioral hint with no incident signal routes to explain (HOR-334)', () => {
-  it('adds an explain note to the summary and a next action, instead of an incident headline', async () => {
+describe('investigate() — behavioral "how does X work" hint routes to a flow walkthrough (gap #5)', () => {
+  it('produces a flow walkthrough instead of an incident headline', async () => {
     const report = await investigate(
       { hint: 'how does SaleService work' },
       { code: baseCode, db: fakeDb },
     );
-    expect(report.summary).toContain('horus explain');
+    expect(report.behavioral).toBeDefined();
     expect(report.summary.toLowerCase()).toContain('how does it work');
     expect(report.summary).not.toContain('Top suspected cause');
     expect(report.nextActions.some((a) => a.includes('horus explain'))).toBe(true);
   });
 
-  it('does NOT route to explain when a real incident signal is present', async () => {
-    // A failing queue is a genuine incident signal — even with a question-shaped hint
-    // the normal investigation must proceed.
+  it('routes to the walkthrough even when incident signals are present, with a noisy-signal note', async () => {
+    // gap #5: ambient incident noise (a failing queue) must NOT suppress an explanatory hint —
+    // the old gate did, so the behavioral branch never fired in production. The walkthrough still
+    // flags the live error signals so the user can pivot to a fault hunt.
     const failingQueue = {
       async discoverQueues() { return ['SaleQueue']; },
       async analyzeQueues() {
@@ -436,7 +437,51 @@ describe('investigate() — behavioral hint with no incident signal routes to ex
       { hint: 'how does SaleService work' },
       { code: baseCode, db: fakeDb, queue: failingQueue },
     );
-    expect(report.summary).not.toContain('this is not a fault hunt');
-    expect(report.summary).not.toContain('horus explain');
+    expect(report.behavioral).toBeDefined();
+    expect(report.summary).toMatch(/error signals|fault hunt/i);
+    expect(report.summary).not.toContain('Top suspected cause');
+  });
+});
+
+describe('buildBehavioralWalkthrough (gap #5)', () => {
+  const sym = (name: string, filePath: string): Symbol => ({ id: `${name}:${filePath}`, name, filePath, startLine: 1 });
+
+  it('renders the richest flow, filters logger noise, and detects persistence + external calls', () => {
+    const flows: Flow[] = [
+      {
+        id: 'f1',
+        name: 'order-create',
+        steps: [
+          sym('OrderController', 'src/order/order.controller.ts'),
+          sym('createOrder', 'src/order/order.service.ts'),
+          sym('forContext', 'src/common/logging/logger.service.ts'), // logger — must be filtered out
+          sym('save', 'src/order/order.repository.ts'), // persistence
+          sym('postWebhook', 'src/shopify/shopify.client.ts'), // external call
+        ],
+      },
+    ];
+    const w = buildBehavioralWalkthrough(
+      'how does order creation work',
+      sym('createOrder', 'src/order/order.service.ts'),
+      undefined,
+      flows,
+    );
+    expect(w.entry?.name).toBe('OrderController'); // roots at the flow entry, not the mid-flow seed
+    expect(w.steps.map((s) => s.name)).not.toContain('forContext'); // logger filtered
+    expect(w.persistence.join(' ')).toContain('save');
+    expect(w.persistence.join(' ')).not.toContain('createOrder'); // generic service verb not over-flagged
+    expect(w.externalCalls.join(' ')).toContain('postWebhook');
+    expect(w.narrative).toContain('Flow:');
+  });
+
+  it('falls back to the seed + its de-noised callees when no multi-step flow exists', () => {
+    const seed = sym('handleThing', 'src/x.service.ts');
+    const ctx = {
+      callees: [sym('doWork', 'src/y.service.ts'), sym('forContext', 'src/common/logger.service.ts')],
+    } as unknown as SymbolContext;
+    const w = buildBehavioralWalkthrough('how does X work', seed, ctx, []);
+    expect(w.entry?.name).toBe('handleThing');
+    expect(w.steps.map((s) => s.name)).toContain('doWork');
+    expect(w.steps.map((s) => s.name)).not.toContain('forContext');
   });
 });
