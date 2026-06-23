@@ -110,7 +110,18 @@ describe('rankSeeds', () => {
     // file-suffix) must NOT win now that source relevance is weighted.
     const raiseSite: Symbol = { id: 'm1', name: 'catch', filePath: 'src/common/filters/http-exception.filter.ts', score: 1 };
     const coincidental: Symbol = { id: 'm2', name: 'catch', filePath: 'src/modules/legal/legal.service.ts', score: 0.02 };
-    const ranked = rankSeeds([coincidental, raiseSite], ['httpflt001']);
+    // hintHasCode=true: a code hint makes the exact-content score authoritative.
+    const ranked = rankSeeds([coincidental, raiseSite], ['httpflt001'], undefined, true);
     expect(ranked[0]?.symbol.id).toBe('m1');
+  });
+
+  it('does NOT let a high-score generic match beat a hint-relevant function for a PROSE hint (gap 3 must not regress seed-emitted cases)', () => {
+    // "fulfillment failing for brand orders": the `Brand` schema scores 1.0 (matches "brand")
+    // but the real raise site `checkBrandOrderFulfillment` scores 0.03. With no code token the
+    // raw score is weighted MILDLY, so hint-tokens + role pick the function.
+    const schema: Symbol = { id: 's1', name: 'Brand', filePath: 'src/schemas/brand.schema.ts', score: 1 };
+    const fn: Symbol = { id: 's2', name: 'checkBrandOrderFulfillment', filePath: 'src/services/order.service.ts', score: 0.03 };
+    const ranked = rankSeeds([schema, fn], ['fulfillment', 'brand', 'orders'], undefined, false);
+    expect(ranked[0]?.symbol.id).toBe('s2');
   });
 });

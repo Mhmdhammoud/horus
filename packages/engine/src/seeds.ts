@@ -62,6 +62,7 @@ export function scoreSeed(
   index: number,
   hintTokens?: string[],
   changedFiles?: Set<string>,
+  hintHasCode?: boolean,
 ): number {
   const hay = `${s.name} ${s.filePath}`.toLowerCase();
   let score = 0;
@@ -86,10 +87,13 @@ export function scoreSeed(
   if (/(^|\/)scripts?\//i.test(s.filePath)) score -= 2;
   // Mild tie-break toward earlier search rank (search relevance).
   score += Math.max(0, 5 - index) * 0.1;
-  // Source relevance: a strong exact-content / colocated-code match (≈1.0) must decisively
-  // outweigh a coincidental architectural match — without this a service-named weak semantic
-  // hit outranked the real raise site (dogfood gap 3). Architectural signals max ~+5, so +8.
-  if (s.score !== undefined) score += s.score * 8;
+  // Source relevance: weighted HEAVILY only for a CODE-shaped hint (HTTPFLT001, E_SYNC_04…),
+  // where a high exact-content / colocated score IS the raise site and must outweigh a
+  // coincidental architectural match (gap 3). For a prose hint the search score is noisier —
+  // a schema named `Brand` scores 1.0 for "brand orders" while the real `checkBrand…` function
+  // scores 0.03 — so weight it MILDLY and let hint-tokens + role decide (so the gap-3 fix does
+  // not regress the seed-emitted-error cases; caught by the dogfood re-run).
+  if (s.score !== undefined) score += s.score * (hintHasCode ? 8 : 1.5);
   // A File node is rarely the right seed — prefer the function/method that raises the signal.
   if (/\.[jt]sx?$/i.test(s.name)) score -= 5;
   // Domain-hint boost: strongly prefer symbols whose name/path contain hint tokens.
@@ -113,11 +117,12 @@ export function rankSeeds(
   seeds: Symbol[],
   hintTokens?: string[],
   changedFiles?: Set<string>,
+  hintHasCode?: boolean,
 ): RankedSeed[] {
   return seeds
     .map((symbol, i) => ({
       symbol,
-      score: scoreSeed(symbol, i, hintTokens, changedFiles),
+      score: scoreSeed(symbol, i, hintTokens, changedFiles, hintHasCode),
       role: seedRole(symbol),
       i,
     }))

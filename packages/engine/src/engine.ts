@@ -630,7 +630,11 @@ export async function investigate(
       : undefined;
   const rawSeeds = code ? await code.searchSymbols(hint, 5) : [];
   const hintTokens = [...new Set(tokenize(hint))];
-  const ranked = rankSeeds(rawSeeds, hintTokens, changedFilePaths);
+  // gap-3 rebalance: a CODE-shaped hint (HTTPFLT001, E_SYNC_04…) makes the search's exact-content/
+  // colocated score authoritative; a prose hint does not (a `Brand` schema must not beat the real
+  // fulfillment function on raw score alone — caught by the dogfood re-run).
+  const hintHasCode = /\b(?=[A-Z0-9_]*[0-9_])[A-Z][A-Z0-9_]{3,}\b/.test(hint);
+  const ranked = rankSeeds(rawSeeds, hintTokens, changedFilePaths, hintHasCode);
   let seeds = ranked.map((r) => r.symbol);
   // noUncheckedIndexedAccess: a non-empty array could still index to undefined.
   let top: Symbol | undefined = seeds[0];
@@ -642,7 +646,7 @@ export async function investigate(
   if (top && code && isTypeLikeName(top.name)) {
     const base = executableBaseName(top.name);
     if (base) {
-      const altTop = rankSeeds(await code.searchSymbols(base, 5), hintTokens).find(
+      const altTop = rankSeeds(await code.searchSymbols(base, 5), hintTokens, undefined, hintHasCode).find(
         (r) => !isTypeLikeName(r.symbol.name),
       )?.symbol;
       if (altTop && altTop.id !== top.id) {
