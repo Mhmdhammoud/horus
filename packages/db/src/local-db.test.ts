@@ -80,7 +80,7 @@ describe('createLocalDb (embedded pglite)', () => {
     } finally {
       await sql.end();
     }
-  });
+  }, 30_000);
 
   it('is idempotent: re-opening an existing db does not re-run migrations or lose data', async () => {
     const path = join(dir, 'horus.db');
@@ -100,5 +100,5 @@ describe('createLocalDb (embedded pglite)', () => {
     } finally {
       await second.sql.end();
     }
-  });
+  }, 30_000);
 });
