@@ -141,7 +141,14 @@ export interface ChangeSet {
 /** Callers + callees of a symbol, enriched with source-intelligence graph neighbours. */
 export interface SymbolContext {
   symbol: Symbol;
-  snippet?: string; // short excerpt of the symbol's source
+  snippet?: string; // short excerpt of the symbol's source (display)
+  /**
+   * The symbol's FULL source body, for analysis that must scan the whole function —
+   * not just the display excerpt. Used by the cross-signal event_code join to detect
+   * runtime error codes RAISED FROM the seed (their literal lives anywhere in the body,
+   * often near the end, beyond the snippet cutoff). Optional; falls back to snippet.
+   */
+  sourceBody?: string;
   callers: Symbol[];
   callees: Symbol[];
   imports: string[]; // file paths the symbol's defining file imports

@@ -787,6 +787,23 @@ export async function investigate(
   // the global top error, which co-occurrence would otherwise cross-wire onto an
   // unrelated path (e.g. a scheduler error narrated onto a webhook worker).
   const directSignatures: { key: string; count: number; message: string }[] = [];
+  // HOR-341: signature key → its DIRECT log evidence id, so a seed-emitted code that
+  // is ALSO a top signature (deduped by the join) can still be linked to its existing
+  // evidence when promoted to a headline cause.
+  const directEvIdByKey = new Map<string, string>();
+  // HOR-341: a runtime error EMITTED FROM THE SEED FUNCTION (its literal appears in the
+  // seed's own source body) that also has live Elasticsearch occurrences is the strongest
+  // possible link — the seed RAISES this recurring error. Track those joined codes (with
+  // the evidence id that backs them) so a dedicated headline cause can be formed and the
+  // "#1/#2 no cause structurally linked" reframing yields to them. Hint-only codes are NOT
+  // recorded here — they stay direct evidence but are not promoted to a cause.
+  const seedEmittedJoins: {
+    code: string;
+    count: number;
+    message: string;
+    evId: string;
+    isNew: boolean;
+  }[] = [];
   // HOR-215: distinct-failing-entity evidence (e.g. "16 brand_id, 50 order_id").
   const entityEvIds: string[] = [];
   const entitySummaries: string[] = [];
@@ -902,6 +919,7 @@ export async function investigate(
           if (relevanceClass === 'direct') {
             directLogEvIds.push(ev.id);
             directSignatures.push({ key: s.key, count: s.count, message: s.sampleMessage ?? '' });
+            if (!directEvIdByKey.has(s.key)) directEvIdByKey.set(s.key, ev.id);
           } else ambientLogEvIds.push(ev.id);
         }
 
@@ -915,12 +933,27 @@ export async function investigate(
         // returns count > 0 is an EXACT structured match to the source signal — the
         // strongest possible runtime link — so it becomes DIRECT, seed-linked
         // evidence. Best-effort: a logs failure never breaks the investigation.
+        // Prefer the FULL seed body (sourceBody) over the bounded display snippet: a
+        // runtime error RAISED FROM the seed has its code literal anywhere in the body,
+        // often near the end — past the snippet cutoff (the maison
+        // `E_FULFILLMENT_SYNC_ERROR_04` at order.service.ts:613 lives ~110 lines into the
+        // function). Fall back to snippet when no full body is available.
         const seedSnippet =
-          ctx?.snippet !== undefined && ctx.snippet !== null ? ctx.snippet : undefined;
+          (ctx?.sourceBody !== undefined && ctx.sourceBody !== null
+            ? ctx.sourceBody
+            : undefined) ??
+          (ctx?.snippet !== undefined && ctx.snippet !== null ? ctx.snippet : undefined);
         const sourceCodes = extractEventCodes(input.hint, top?.name, seedSnippet);
+        // HOR-341: codes whose LITERAL appears in the seed's own source body are
+        // seed-EMITTED — the seed RAISES them. A seed-emitted code with live ES
+        // occurrences is the strongest possible link (not just a co-occurring code the
+        // hint mentioned), so it is promoted to a dedicated headline cause below.
+        const seedEmittedCodes = new Set(
+          seedSnippet !== undefined ? extractEventCodes(seedSnippet) : [],
+        );
         const joinedCodes = new Set(directSignatures.map((d) => d.key));
         for (const code of sourceCodes) {
-          if (joinedCodes.has(code)) continue;
+          const alreadyJoined = joinedCodes.has(code);
           joinedCodes.add(code);
           try {
             const codeAnalysis = await deps.logs.analyzeErrors({
@@ -930,6 +963,26 @@ export async function investigate(
             });
             const sig = codeAnalysis.signatures.find((s) => s.key === code);
             if (sig === undefined || sig.count <= 0) continue;
+
+            // Dedup: a code already surfaced as a top signature is not re-added as
+            // evidence — but if it is SEED-EMITTED it must still be promoted to a cause.
+            // Reuse its existing direct evidence id when one exists.
+            if (alreadyJoined) {
+              if (seedEmittedCodes.has(code)) {
+                const existingEvId = directEvIdByKey.get(code);
+                if (existingEvId !== undefined) {
+                  seedEmittedJoins.push({
+                    code,
+                    count: sig.count,
+                    message: sig.sampleMessage ?? '',
+                    evId: existingEvId,
+                    isNew: sig.isNew ?? false,
+                  });
+                }
+              }
+              continue;
+            }
+
             const links: EvidenceLinks =
               top !== undefined
                 ? top.startLine !== undefined && top.startLine > 0
@@ -954,6 +1007,7 @@ export async function investigate(
                 relevanceClass: 'direct',
                 relevanceReason: `exact event_code match to the source signal (${code})`,
                 crossSignalJoin: true,
+                seedEmitted: seedEmittedCodes.has(code),
               },
               links,
               sig.lastSeen || undefined,
@@ -968,6 +1022,16 @@ export async function investigate(
               count: sig.count,
               message: sig.sampleMessage ?? '',
             });
+            if (!directEvIdByKey.has(code)) directEvIdByKey.set(code, ev.id);
+            if (seedEmittedCodes.has(code)) {
+              seedEmittedJoins.push({
+                code,
+                count: sig.count,
+                message: sig.sampleMessage ?? '',
+                evId: ev.id,
+                isNew: sig.isNew ?? false,
+              });
+            }
           } catch {
             // best-effort per-code; a logs failure must never break the investigation
           }
@@ -1812,6 +1876,45 @@ export async function investigate(
       baseScore: clamp01(0.15 + (queueHits.length > 0 ? 0.05 : 0)),
       metadata: { blastRadius },
     });
+  }
+
+  // HOR-341: SEED-EMITTED runtime-error cause — the strongest possible link. When a
+  // runtime error's literal is RAISED FROM the seed's own source body (e.g. maison's
+  // `E_FULFILLMENT_SYNC_ERROR_04` thrown inside `checkBrandOrderFulfillment`) AND that
+  // exact code has live Elasticsearch occurrences, the seed is observably failing in
+  // production — not merely co-occurring. The cross-signal join surfaced it as direct
+  // evidence but it never became a CAUSE (and when the code was also a top signature the
+  // dedup buried it as a "lead to verify"). Promote it to a dedicated headline cause that
+  // cites BOTH the join evidence and the seed symbol, so the #1/#2 structural-link gate
+  // treats it LINKED and the "no cause is structurally linked" reframing yields to it.
+  if (seedEmittedJoins.length > 0 && top && seedEv) {
+    // Headline the highest-volume seed-emitted error; cite each as supporting evidence.
+    const ordered = [...seedEmittedJoins].sort((a, b) => b.count - a.count);
+    const lead = ordered[0];
+    if (lead !== undefined) {
+      const sourceEvidenceIds = [
+        ...new Set([...ordered.map((j) => j.evId), seedEv.id]),
+      ];
+      // Strong prior so it headlines (~0.6–0.7), scaled up by occurrence volume: a
+      // recurring raise (thousands of hits) is more certainly THE failure than a handful.
+      const volumeBoost = Math.min(0.1, Math.log10(Math.max(1, lead.count)) * 0.025);
+      const baseScore = clamp01(0.6 + volumeBoost);
+      const msgClause = lead.message
+        ? ` — "${lead.message.replace(/\s+/g, ' ').trim().slice(0, 90)}"`
+        : '';
+      causeInputs.push({
+        id: 'cause:seed-emitted-error',
+        title:
+          `Runtime error ${lead.code} (${lead.count}x in Elasticsearch) is raised by ${top.name} — the likely failure${msgClause}`.slice(
+            0,
+            220,
+          ),
+        category: 'error-correlation',
+        sourceEvidenceIds,
+        baseScore,
+        metadata: { blastRadius, seedEmitted: true, code: lead.code, count: lead.count },
+      });
+    }
   }
 
   // Runtime-errors + queue-path cause: only when we have DIRECT error evidence AND a queue path.

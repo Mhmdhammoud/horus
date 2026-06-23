@@ -472,6 +472,199 @@ describe('investigate() WITH logs provider (HOR-13)', () => {
     expect(report.evidence.some((e) => e.title.includes('exact structured match'))).toBe(false);
   });
 
+  // -------------------------------------------------------------------------
+  // HOR-341: a runtime error EMITTED FROM THE SEED FUNCTION (its literal is in the
+  // seed's source body) that also has live ES occurrences is the strongest possible
+  // link — it must form a dedicated headline cause, not be demoted to a "lead to verify".
+  // -------------------------------------------------------------------------
+
+  // A code provider whose seed context returns a SNIPPET that raises a code literal —
+  // i.e. the seed function itself emits `E_FULFILLMENT_SYNC_ERROR_04`.
+  const seedEmittingCode: CodeProvider = {
+    ...fakeCode,
+    async context(_symbolId: string): Promise<SymbolContext> {
+      return {
+        ...FAKE_CTX,
+        snippet:
+          'async checkBrandOrderFulfillment(order) {\n' +
+          '  if (!synced) {\n' +
+          "    throw new FulfillmentError('E_FULFILLMENT_SYNC_ERROR_04', order.id);\n" +
+          '  }\n}',
+      };
+    },
+  };
+
+  // Logs where the seed-emitted code is NOT a top bucket but the structured eventCode
+  // query returns it with thousands of live occurrences.
+  const seedEmittedLogs: LogsProvider = {
+    ...fakeLogs,
+    async analyzeErrors(q) {
+      if (q.eventCode === 'E_FULFILLMENT_SYNC_ERROR_04') {
+        return {
+          window: { from: 'x', to: 'y' },
+          totalErrors: 2153,
+          signatures: [
+            {
+              key: 'E_FULFILLMENT_SYNC_ERROR_04',
+              count: 2153,
+              firstSeen: '2026-06-13T10:00:00.000Z',
+              lastSeen: '2026-06-13T15:00:00.000Z',
+              services: ['maison-safqa-prod'],
+              isNew: false,
+              baselineCount: 1800,
+              ratio: 1.2,
+              sampleMessage: 'Error checking brand order fulfillment',
+            },
+          ],
+          newSignatures: [],
+          affectedServices: ['maison-safqa-prod'],
+        };
+      }
+      // The unscoped top-N aggregation surfaces only an unrelated signature.
+      return {
+        window: { from: 'x', to: 'y' },
+        totalErrors: 5,
+        signatures: [
+          {
+            key: 'DBPOOL02',
+            count: 5,
+            firstSeen: '2026-06-13T09:00:00.000Z',
+            lastSeen: '2026-06-13T14:00:00.000Z',
+            services: ['maison-safqa-prod'],
+            isNew: false,
+            baselineCount: 2,
+            ratio: 2.5,
+          },
+        ],
+        newSignatures: [],
+        affectedServices: ['maison-safqa-prod'],
+      };
+    },
+  };
+
+  it('forms a cause:seed-emitted-error headline when the seed snippet raises a code with ES occurrences', async () => {
+    const report = await investigate(
+      { hint: 'fulfillment failing for brand orders', service: 'maison-safqa-prod' },
+      { code: seedEmittingCode, db: fakeDb, logs: seedEmittedLogs },
+    );
+    const seedCause = report.suspectedCauses.find((c) => c.id === 'cause:seed-emitted-error');
+    expect(seedCause).toBeDefined();
+    expect(seedCause?.title).toContain('E_FULFILLMENT_SYNC_ERROR_04');
+    expect(seedCause?.title).toContain('2153x');
+    expect(seedCause?.title).toContain('is raised by');
+    // It must HEADLINE — and as a structurally LINKED diagnosis, not a co-occurring lead.
+    expect(report.suspectedCauses[0]?.id).toBe('cause:seed-emitted-error');
+    expect(report.summary).not.toContain('No cause is structurally linked');
+    expect(report.summary).toContain('Top suspected cause');
+  });
+
+  it('promotes a seed-emitted code even when it is ALSO a top error signature (un-buries the dedup)', async () => {
+    // The seed raises E_FULFILLMENT_SYNC_ERROR_04 AND it is the dominant top signature.
+    const topAndSeedEmittedLogs: LogsProvider = {
+      ...fakeLogs,
+      async analyzeErrors() {
+        return {
+          window: { from: 'x', to: 'y' },
+          totalErrors: 2153,
+          signatures: [
+            {
+              key: 'E_FULFILLMENT_SYNC_ERROR_04',
+              count: 2153,
+              firstSeen: '2026-06-13T10:00:00.000Z',
+              lastSeen: '2026-06-13T15:00:00.000Z',
+              services: ['maison-safqa-prod'],
+              isNew: false,
+              baselineCount: 1800,
+              ratio: 1.2,
+              sampleMessage: 'Error checking brand order fulfillment',
+            },
+          ],
+          newSignatures: [],
+          affectedServices: ['maison-safqa-prod'],
+        };
+      },
+    };
+    const report = await investigate(
+      { hint: 'fulfillment failing for brand orders', service: 'maison-safqa-prod' },
+      { code: seedEmittingCode, db: fakeDb, logs: topAndSeedEmittedLogs },
+    );
+    const seedCause = report.suspectedCauses.find((c) => c.id === 'cause:seed-emitted-error');
+    expect(seedCause).toBeDefined();
+    expect(report.suspectedCauses[0]?.id).toBe('cause:seed-emitted-error');
+    expect(report.summary).not.toContain('No cause is structurally linked');
+  });
+
+  it('does NOT promote a HINT-ONLY code (not in the seed snippet) to a cause', async () => {
+    // The hint names HTTPFLT001 and the join surfaces it as DIRECT evidence, but the
+    // seed (fakeCode — no snippet that raises it) does NOT emit it, so it must stay a
+    // direct-evidence "lead", NOT a promoted seed-emitted cause.
+    const hintCodeLogs: LogsProvider = {
+      ...fakeLogs,
+      async analyzeErrors(q) {
+        if (q.eventCode === 'HTTPFLT001') {
+          return {
+            window: { from: 'x', to: 'y' },
+            totalErrors: 438,
+            signatures: [
+              {
+                key: 'HTTPFLT001',
+                count: 438,
+                firstSeen: '2026-06-13T10:00:00.000Z',
+                lastSeen: '2026-06-13T15:00:00.000Z',
+                services: ['leadcall-api-prod'],
+                isNew: true,
+                baselineCount: 0,
+                ratio: Infinity,
+                sampleMessage: 'HTTP filter rejected request',
+              },
+            ],
+            newSignatures: ['HTTPFLT001'],
+            affectedServices: ['leadcall-api-prod'],
+          };
+        }
+        return {
+          window: { from: 'x', to: 'y' },
+          totalErrors: 5,
+          signatures: [
+            {
+              key: 'DBPOOL02',
+              count: 5,
+              firstSeen: '2026-06-13T09:00:00.000Z',
+              lastSeen: '2026-06-13T14:00:00.000Z',
+              services: ['leadcall-api-prod'],
+              isNew: false,
+              baselineCount: 2,
+              ratio: 2.5,
+            },
+          ],
+          newSignatures: [],
+          affectedServices: ['leadcall-api-prod'],
+        };
+      },
+    };
+    const report = await investigate(
+      { hint: 'HTTPFLT001 outage in prod', service: 'leadcall-api-prod' },
+      { code: fakeCode, db: fakeDb, logs: hintCodeLogs },
+    );
+    // The join still surfaced HTTPFLT001 as direct evidence …
+    expect(
+      report.evidence.some((e) => e.title.includes('event_code HTTPFLT001')),
+    ).toBe(true);
+    // … but NO seed-emitted cause is formed (the seed does not raise it).
+    expect(report.suspectedCauses.some((c) => c.id === 'cause:seed-emitted-error')).toBe(false);
+  });
+
+  it('keeps the #1/#2 co-occurring reframing when there is no seed-emitted linked cause', async () => {
+    // A loud, seed-UNLINKED data-state anomaly: no seed-emitted code, so the honest
+    // "no cause is structurally linked / lead to verify" reframing must still apply.
+    const report = await investigate(
+      { hint: 'fulfillment failing for brand orders', service: 'maison-safqa-prod' },
+      { code: fakeCode, db: fakeDb, logs: seedEmittedLogs },
+    );
+    // fakeCode's seed has no snippet → no seed-emitted cause is formed.
+    expect(report.suspectedCauses.some((c) => c.id === 'cause:seed-emitted-error')).toBe(false);
+  });
+
   it('confidence ceiling is not reduced by the logs gap (since logs are present)', async () => {
     // Run without logs to get the baseline ceiling reduction caused by the logs gap.
     const reportNoLogs = await investigate(
