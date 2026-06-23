@@ -19,6 +19,8 @@ import {
 } from './commands/knowledge-cloud.js';
 import { runQueues } from './commands/queues.js';
 import { runInvestigate } from './commands/investigate.js';
+import { runWatch } from './commands/watch.js';
+import type { WatchSource } from './commands/watch.js';
 import { runChanges } from './commands/changes.js';
 import { runTimeline } from './commands/timeline.js';
 import { runWhatChanged } from './commands/what-changed.js';
@@ -486,6 +488,45 @@ Examples:
   horus investigate --project atlas-payments --env production "checkout timeout"
   horus investigate --name atlas-payments "queue backlog"
   horus investigate --ai "payment failures"
+`);
+
+  program
+    .command('watch')
+    .description('Proactively monitor a source (Sentry/Elasticsearch) and auto-investigate each new incident')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--name <name>', 'registered project name (resolves via the registry)')
+    .option('--project <name>', 'project name to scope to')
+    .option('--env <name>', 'environment name (e.g. production)')
+    .option('--source <source>', 'sentry | elasticsearch | auto (default: auto — whichever is configured)', 'auto')
+    .option('--interval <seconds>', 'poll interval in seconds (default 60)', '60')
+    .option('--once', 'poll a single cycle then exit (for cron/testing)')
+    .action(
+      async (opts: {
+        config?: string;
+        name?: string;
+        project?: string;
+        env?: string;
+        source?: string;
+        interval?: string;
+        once?: boolean;
+      }) => {
+        process.exitCode = await runWatch({
+          config: opts.config,
+          name: opts.name,
+          project: opts.project,
+          env: opts.env,
+          source: opts.source as WatchSource | undefined,
+          interval: opts.interval,
+          once: opts.once,
+        });
+      },
+    )
+    .addHelpText('after', `
+Examples:
+  horus watch                                  # auto source, poll every 60s until Ctrl-C
+  horus watch --source sentry --once           # one sweep over current Sentry issues
+  horus watch --source elasticsearch --interval 30
+  horus watch --project atlas-payments --env production --once
 `);
 
   program
