@@ -32,7 +32,7 @@ vi.mock('./git-collector.js', async (importOriginal) => {
   return { ...actual, collectGitChanges: vi.fn() };
 });
 
-import { investigate, confidenceCeilingForCause, looksExplanatory, looksPerformance, formatRegressionCitation, buildBehavioralWalkthrough } from './engine.js';
+import { investigate, confidenceCeilingForCause, looksExplanatory, looksPerformance, formatRegressionCitation, buildBehavioralWalkthrough, seedEmittedSeverityTier } from './engine.js';
 import { collectGitChanges } from './git-collector.js';
 
 const mockCollectGitChanges = vi.mocked(collectGitChanges);
@@ -494,5 +494,54 @@ describe('buildBehavioralWalkthrough (gap #5)', () => {
     expect(w.entry?.name).toBe('handleThing');
     expect(w.steps.map((s) => s.name)).toContain('doWork');
     expect(w.steps.map((s) => s.name)).not.toContain('forContext');
+  });
+
+  it('gap C: lists a class seed\'s methods as the entry points instead of collapsing to the class', () => {
+    const cls: Symbol = {
+      id: 'class:src/zoho/oauth.service.ts:ZohoOAuthService',
+      name: 'ZohoOAuthService',
+      filePath: 'src/zoho/oauth.service.ts',
+      startLine: 10,
+    };
+    const methods = [
+      sym('exchangeCodeForTokens', 'src/zoho/oauth.service.ts'),
+      sym('refreshAccessToken', 'src/zoho/oauth.service.ts'),
+    ];
+    const w = buildBehavioralWalkthrough('how does zoho oauth work', cls, undefined, [], methods);
+    expect(w.narrative).toContain('is a class');
+    expect(w.narrative).toContain('exchangeCodeForTokens');
+    expect(w.narrative).toContain('refreshAccessToken');
+    expect(w.narrative).not.toContain('showing its direct calls');
+  });
+});
+
+describe('seedEmittedSeverityTier (gap A — severity-aware cross-signal join)', () => {
+  const ERROR = 2;
+  const WARN = 1;
+  const INFO = 0;
+
+  it('uses the ES log level when present (level overrides the code prefix)', () => {
+    expect(seedEmittedSeverityTier('error', 'W_FOO', 'x')).toBe(ERROR);
+    expect(seedEmittedSeverityTier('fatal', 'D_FOO', 'x')).toBe(ERROR);
+    expect(seedEmittedSeverityTier('warn', 'E_FOO', 'x')).toBe(WARN);
+    expect(seedEmittedSeverityTier('debug', 'E_FOO', 'x')).toBe(INFO);
+    expect(seedEmittedSeverityTier('info', 'X', '')).toBe(INFO);
+  });
+
+  it('falls back to the event_code prefix convention when no level', () => {
+    expect(seedEmittedSeverityTier(null, 'E_FULFILLMENT_SYNC_ERROR_04', 'Error during sync')).toBe(ERROR);
+    expect(seedEmittedSeverityTier(null, 'W_FULFILLMENT_SYNC_SKIP_02', 'Order not found, skipping')).toBe(WARN);
+    expect(seedEmittedSeverityTier(null, 'D_FULFILLMENT_SYNC_ORDER_02', 'Processing order')).toBe(INFO);
+  });
+
+  it('treats unclassifiable codes as error — never silently downgrades a real failure', () => {
+    // leadcall's HTTP_FLT_001 is logged via logger.error but has no E_/W_/D_ prefix.
+    expect(seedEmittedSeverityTier(null, 'HTTP_FLT_001', 'request failed')).toBe(ERROR);
+    expect(seedEmittedSeverityTier(undefined, 'SOMECODE', '')).toBe(ERROR);
+  });
+
+  it('downgrades on positive keyword evidence only (no prefix/level)', () => {
+    expect(seedEmittedSeverityTier(null, 'SOMECODE', 'skipping sync, nothing to do')).toBe(INFO);
+    expect(seedEmittedSeverityTier(null, 'SOMECODE', 'a warning about config')).toBe(WARN);
   });
 });

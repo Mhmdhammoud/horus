@@ -130,7 +130,12 @@ export class ElasticsearchLogsProvider implements LogsProvider {
       this.resolveIndex(q),
       buildErrorAnalysisBody(current, sigField, this.mapping),
     );
-    const analysis = parseErrorAnalysis(curRes, { from, to }, this.mapping.messageField);
+    const analysis = parseErrorAnalysis(
+      curRes,
+      { from, to },
+      this.mapping.messageField,
+      this.mapping.levelField,
+    );
 
     // Baseline = the immediately preceding window of equal length, so we can flag
     // NEW signatures and spikes. Best-effort: skip if the window can't be parsed.

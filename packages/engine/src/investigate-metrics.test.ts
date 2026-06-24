@@ -205,6 +205,37 @@ describe('investigate() WITH metrics provider — anomalies present', () => {
 // Tests: metrics gap cleared on healthy collection
 // ---------------------------------------------------------------------------
 
+describe('investigate() — gap B: perf hint prefers latency metrics for the headline', () => {
+  // A latency PANEL ("GraphQL p95 latency") rarely shares a token with a generic perf hint
+  // ("everything is slow"), so the old token-match left the spike unranked and the headline
+  // fell to an unrelated signal. A performance-flavored hint must promote the latency spike
+  // and let it headline.
+  const nonMatchingLatency: MetricFinding = {
+    ...makeLatencyFinding('graphql'),
+    panelTitle: 'GraphQL p95 latency',
+    labels: { service: 'graphql' },
+  };
+
+  it('promotes a non-token-matching latency spike to a cause and headlines it', async () => {
+    const metrics = makeMetricsProvider([nonMatchingLatency]);
+    const report = await investigate(
+      { hint: 'everything is slow for customers' }, // perf hint, NO --service
+      { code: fakeCode, db: fakeDb, metrics },
+    );
+    expect(report.suspectedCauses.some((c) => c.id === 'cause:metric-latency')).toBe(true);
+    expect(report.summary.toLowerCase()).toMatch(/metric anomal|latency/);
+  });
+
+  it('does NOT promote an unrelated latency panel for a non-performance hint', async () => {
+    const metrics = makeMetricsProvider([nonMatchingLatency]);
+    const report = await investigate(
+      { hint: 'duplicate leads are not flagged' }, // not perf-flavored, no token overlap
+      { code: fakeCode, db: fakeDb, metrics },
+    );
+    expect(report.suspectedCauses.some((c) => c.id === 'cause:metric-latency')).toBe(false);
+  });
+});
+
 describe('investigate() WITH metrics provider — healthy collection (no anomalies)', () => {
   it('clears the metrics gap when collection succeeds with no anomalies', async () => {
     const metrics = makeMetricsProvider([]); // no findings

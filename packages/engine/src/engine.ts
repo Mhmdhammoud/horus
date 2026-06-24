@@ -132,6 +132,46 @@ function clamp01(n: number): number {
   return n;
 }
 
+// Severity tiers for a seed-emitted runtime signal, highest first. Used to rank and label
+// cross-signal joins by SEVERITY rather than raw count, so a frequent warning/debug code
+// is never presented as "the likely failure" over a real error (dogfood GAP A).
+const SEV_ERROR = 2;
+const SEV_WARN = 1;
+const SEV_INFO = 0;
+
+/**
+ * Classify a seed-emitted code's severity. Prefers the captured ES log `level` (authoritative
+ * and cross-repo), then the event_code prefix convention (E_/F_ = error, W_ = warn, D_/I_/T_
+ * = debug/info), then message keywords. Returns {@link SEV_ERROR} for anything we cannot
+ * positively classify as lower — so unprefixed real errors (e.g. `HTTP_FLT_001`, logged via
+ * `logger.error`) keep their failure framing and only KNOWN warn/info codes are downgraded.
+ */
+export function seedEmittedSeverityTier(
+  level: string | null | undefined,
+  code: string,
+  message: string | undefined,
+): number {
+  const lv = level?.toLowerCase();
+  if (lv === 'error' || lv === 'fatal' || lv === 'critical') return SEV_ERROR;
+  if (lv === 'warn' || lv === 'warning') return SEV_WARN;
+  if (lv === 'info' || lv === 'debug' || lv === 'trace') return SEV_INFO;
+
+  // No usable level — fall back to the event_code prefix convention.
+  const m = /^([A-Z])_/.exec(code);
+  const prefix = m?.[1];
+  if (prefix === 'W') return SEV_WARN;
+  if (prefix === 'D' || prefix === 'I' || prefix === 'T') return SEV_INFO;
+  if (prefix === 'E' || prefix === 'F' || prefix === 'C') return SEV_ERROR;
+
+  // No prefix — last-resort message keywords; positive-evidence downgrade only.
+  const text = `${code} ${message ?? ''}`.toLowerCase();
+  if (/\b(skip|skipping|skipped|deprecat|info|debug|trace|notice)\b/.test(text)) return SEV_INFO;
+  if (/\bwarn(ing)?\b/.test(text)) return SEV_WARN;
+
+  // Unknown — treat as an error so we never silently downgrade a real failure.
+  return SEV_ERROR;
+}
+
 /**
  * Bind the overall-confidence CEILING to the headline suspected cause's finalScore
  * (HOR-336 extended). Overall confidence must track DIAGNOSIS strength: a weak
@@ -457,6 +497,12 @@ export function buildBehavioralWalkthrough(
   top: Symbol | undefined,
   ctx: SymbolContext | undefined,
   flows: Flow[],
+  /**
+   * Methods of the seed when it resolves to a CLASS (dogfood GAP C). A class node has no
+   * outgoing calls of its own, so without this the walkthrough collapses to just the class
+   * name. Its methods ARE the entry points a "how does X work" answer should list.
+   */
+  classMethods: Symbol[] = [],
 ): BehavioralWalkthrough {
   const shortFile = (f: string): string => f.replace(/^.*?((?:src|app|lib|packages)\/.*)$/, '$1');
   // Loggers / tracers are called by almost everything and tell you nothing about the flow.
@@ -487,7 +533,7 @@ export function buildBehavioralWalkthrough(
     /(^|[._])(save|insert|upsert|persist|bulkwrite|find|findone|findmany|aggregate|delete|remove)\b|repositor|\brepo\b|\.model|entity|prisma|mongoose|typeorm|knex|\bdao\b|datasource/i;
   const EXTERNAL_RE =
     /(^|[._])(request|publish|enqueue|dispatch|emit|notify)\b|http|axios|\bapi\b|webhook|\bqueue\b|processor|producer|gateway|\.client\b/i;
-  const pool = dedup([...steps, ...(ctx?.callees ?? [])]).filter((s) => !isNoise(s));
+  const pool = dedup([...steps, ...(ctx?.callees ?? []), ...classMethods]).filter((s) => !isNoise(s));
   const persistence = dedup(pool.filter((s) => PERSIST_RE.test(s.name) || PERSIST_RE.test(s.filePath)))
     .slice(0, 6)
     .map((s) => `${s.name} (${shortFile(s.filePath)})`);
@@ -503,9 +549,16 @@ export function buildBehavioralWalkthrough(
     const loc = entry.startLine ? `${shortFile(entry.filePath)}:${entry.startLine}` : shortFile(entry.filePath);
     lines.push(`Entry point: \`${entry.name}\` (${loc}).`);
   }
+  const methodList = dedup(classMethods.filter((s) => !isNoise(s)));
   if (steps.length > 1) {
     const chain = steps.slice(0, 12).map((s) => s.name).join(' → ');
     lines.push(`Flow: ${chain}${steps.length > 12 ? ' → …' : ''}${flow ? ` (${flow.steps.length} steps)` : ''}.`);
+  } else if (entry && methodList.length > 0) {
+    // The seed is a class: its methods are the entry points, not a single call chain.
+    const names = methodList.slice(0, 12).map((s) => s.name).join(', ');
+    lines.push(
+      `\`${entry.name}\` is a class — its methods are the entry points: ${names}${methodList.length > 12 ? ', …' : ''}. Trace one with \`horus explain <method>\`.`,
+    );
   } else if (entry) {
     lines.push(`No multi-step execution flow was indexed for \`${entry.name}\` — showing its direct calls.`);
   }
@@ -514,6 +567,41 @@ export function buildBehavioralWalkthrough(
   if (lines.length === 0) lines.push('No execution flow could be reconstructed for this query from the source graph.');
 
   return { question: hint, entry, steps, externalCalls, persistence, narrative: lines.join('\n') };
+}
+
+/** True when a symbol id resolves to a CLASS node (ids are prefixed by their graph label). */
+function isClassSymbol(sym: Symbol | undefined): boolean {
+  return sym !== undefined && sym.id.split(':', 1)[0]?.toLowerCase() === 'class';
+}
+
+/**
+ * Fetch the methods of a class symbol from the source graph (dogfood GAP C). A class node
+ * has no outgoing calls, so a behavioral walkthrough rooted at a class needs its methods to
+ * be useful. Best-effort: returns [] on any error. The class name/file are graph
+ * identifiers, but quotes/backslashes are stripped defensively before interpolation.
+ */
+async function fetchClassMethods(code: CodeProvider, cls: Symbol): Promise<Symbol[]> {
+  const safe = (s: string): string => s.replace(/["\\]/g, '');
+  const name = safe(cls.name);
+  if (!name) return [];
+  const file = safe(cls.filePath);
+  try {
+    const res = await code.cypher(
+      `MATCH (m:Method) WHERE m.class_name = "${name}"` +
+        (file ? ` AND m.file_path = "${file}"` : '') +
+        ' RETURN m.id, m.name, m.file_path, m.start_line ORDER BY m.start_line LIMIT 40',
+    );
+    return res.rows
+      .map((r) => ({
+        id: String(r[0] ?? ''),
+        name: String(r[1] ?? ''),
+        filePath: String(r[2] ?? ''),
+        ...(typeof r[3] === 'number' ? { startLine: r[3] } : {}),
+      }))
+      .filter((s) => s.id !== '' && s.name !== '');
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -892,6 +980,8 @@ export async function investigate(
     message: string;
     evId: string;
     isNew: boolean;
+    /** Log level of a representative occurrence, when known — drives severity-aware ranking. */
+    level: string | null;
   }[] = [];
   // HOR-215: distinct-failing-entity evidence (e.g. "16 brand_id, 50 order_id").
   const entityEvIds: string[] = [];
@@ -1066,6 +1156,7 @@ export async function investigate(
                     message: sig.sampleMessage ?? '',
                     evId: existingEvId,
                     isNew: sig.isNew ?? false,
+                    level: sig.level ?? null,
                   });
                 }
               }
@@ -1119,6 +1210,7 @@ export async function investigate(
                 message: sig.sampleMessage ?? '',
                 evId: ev.id,
                 isNew: sig.isNew ?? false,
+                level: sig.level ?? null,
               });
             }
           } catch {
@@ -1516,7 +1608,15 @@ export async function investigate(
             hintTokens.some(
               (t) => t.length >= 4 && (panelLower.includes(t) || labelVals.some((v) => v.includes(t))),
             );
-          if (matchesService || matchesHint) latencyMetricEvIds.push(ev.id);
+          // GAP B: a generic latency hint ("checkout is slow") rarely shares a token with a
+          // latency PANEL ("GraphQL p95 Latency"), so the token match above misses and the
+          // latency spike never becomes a cause — leaving the headline to fall to an unrelated
+          // log code. For an explicitly performance-flavored hint with no --service, a
+          // latency-spike anomaly IS the relevant evidence; promote it. Scoped to latency
+          // spikes (not error-rate) and gated on hintIsPerf so non-perf hints never over-fire.
+          const genericPerf =
+            serviceFilter.length === 0 && hintIsPerf && f.anomaly === 'latency-spike';
+          if (matchesService || matchesHint || genericPerf) latencyMetricEvIds.push(ev.id);
         } else if (f.anomaly === 'queue-growth') {
           // Attribute each queue-growth anomaly to the specific queue(s) it matches.
           // Match using normalized panel/label strings with word-boundary checks so
@@ -1977,31 +2077,57 @@ export async function investigate(
   // cites BOTH the join evidence and the seed symbol, so the #1/#2 structural-link gate
   // treats it LINKED and the "no cause is structurally linked" reframing yields to it.
   if (seedEmittedJoins.length > 0 && top && seedEv) {
-    // Headline the highest-volume seed-emitted error; cite each as supporting evidence.
-    const ordered = [...seedEmittedJoins].sort((a, b) => b.count - a.count);
+    // Rank by SEVERITY first, then volume — a high-count warn/debug code (e.g. maison's
+    // `W_FULFILLMENT_SYNC_SKIP_02` "Order not found → skip" at 168x, or a `logger.debug`
+    // "Processing order" at 338x) must NOT outrank or be mislabelled as the actual error
+    // (`E_FULFILLMENT_SYNC_ERROR_04`). Severity comes from the ES log level when captured,
+    // else the event_code prefix (E_/W_/D_…) or message keywords. Codes we cannot classify
+    // default to error tier, preserving prior behaviour for unprefixed codes (e.g.
+    // leadcall's `HTTP_FLT_001`, which IS a logger.error).
+    const ordered = [...seedEmittedJoins].sort((a, b) => {
+      const ta = seedEmittedSeverityTier(a.level, a.code, a.message);
+      const tb = seedEmittedSeverityTier(b.level, b.code, b.message);
+      if (ta !== tb) return tb - ta; // higher severity tier first
+      return b.count - a.count; // then by volume
+    });
     const lead = ordered[0];
     if (lead !== undefined) {
       const sourceEvidenceIds = [
         ...new Set([...ordered.map((j) => j.evId), seedEv.id]),
       ];
-      // Strong prior so it headlines (~0.6–0.7), scaled up by occurrence volume: a
-      // recurring raise (thousands of hits) is more certainly THE failure than a handful.
+      const tier = seedEmittedSeverityTier(lead.level, lead.code, lead.message);
       const volumeBoost = Math.min(0.1, Math.log10(Math.max(1, lead.count)) * 0.025);
-      const baseScore = clamp01(0.6 + volumeBoost);
       const msgClause = lead.message
         ? ` — "${lead.message.replace(/\s+/g, ' ').trim().slice(0, 90)}"`
         : '';
+      // Label and weight HONESTLY by severity. An error is "the likely failure"; a warning
+      // is a frequent warning (not asserted as the failure); a debug/info code is a
+      // diagnostic signal. Only an error-tier code gets the strong failure prior.
+      let title: string;
+      let baseScore: number;
+      if (tier === SEV_ERROR) {
+        title = `Runtime error ${lead.code} (${lead.count}x in Elasticsearch) is raised by ${top.name} — the likely failure${msgClause}`;
+        baseScore = clamp01(0.6 + volumeBoost);
+      } else if (tier === SEV_WARN) {
+        title = `Warning ${lead.code} (${lead.count}x in Elasticsearch) is raised by ${top.name}${msgClause}`;
+        baseScore = clamp01(0.42 + volumeBoost);
+      } else {
+        title = `Diagnostic signal ${lead.code} (${lead.count}x in Elasticsearch) is logged by ${top.name} — informational, not an error${msgClause}`;
+        baseScore = clamp01(0.3 + volumeBoost);
+      }
       causeInputs.push({
         id: 'cause:seed-emitted-error',
-        title:
-          `Runtime error ${lead.code} (${lead.count}x in Elasticsearch) is raised by ${top.name} — the likely failure${msgClause}`.slice(
-            0,
-            220,
-          ),
+        title: title.slice(0, 220),
         category: 'error-correlation',
         sourceEvidenceIds,
         baseScore,
-        metadata: { blastRadius, seedEmitted: true, code: lead.code, count: lead.count },
+        metadata: {
+          blastRadius,
+          seedEmitted: true,
+          code: lead.code,
+          count: lead.count,
+          severity: tier === SEV_ERROR ? 'error' : tier === SEV_WARN ? 'warn' : 'info',
+        },
       });
     }
   }
@@ -2164,6 +2290,10 @@ export async function investigate(
     ...directLogEvIds,
     ...(seedEv ? [seedEv.id] : []),
     ...(impactEv ? [impactEv.id] : []),
+    // GAP B: for a performance hint, a latency/error-rate anomaly is the structural answer,
+    // not co-occurring noise — let the metric-latency cause headline rather than yielding to
+    // a higher-volume but lower-severity log code.
+    ...(looksPerformance(hint) ? latencyMetricEvIds : []),
   ]);
   const isLinkedToSeed = (ids: string[]): boolean => ids.some((id) => seedLinkedEvIds.has(id));
   // HOR-340/336: a sub-threshold cause (e.g. a weak blast-radius ~0.09) must not headline as a
@@ -2231,7 +2361,16 @@ export async function investigate(
         }
       }
     }
-    behavioral = buildBehavioralWalkthrough(hint, top, ctx ?? undefined, flowPool);
+    // GAP C: when the seed resolves to a CLASS with no rich flow, its methods are the entry
+    // points — fetch them so the walkthrough lists them instead of collapsing to the class.
+    let classMethods: Symbol[] = [];
+    if (code && isClassSymbol(top)) {
+      const richest = flowPool.slice().sort((a, b) => b.steps.length - a.steps.length)[0];
+      if (richest === undefined || richest.steps.length <= 1) {
+        classMethods = await fetchClassMethods(code, top as Symbol);
+      }
+    }
+    behavioral = buildBehavioralWalkthrough(hint, top, ctx ?? undefined, flowPool, classMethods);
     const noisy = hasIncidentSignal
       ? ' (note: live error signals also exist in this codebase — rephrase as a symptom like "X failing" for a fault hunt)'
       : '';

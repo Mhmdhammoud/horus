@@ -11,6 +11,7 @@ import type { Evidence } from '@horus/core';
 import { redactSecrets } from '@horus/core';
 import {
   levelToValue,
+  valueToLevel,
   buildLevelFilter,
   buildTextMust,
   getField,
@@ -18,6 +19,7 @@ import {
   signatureTermField,
   MERITT_FIELD_MAPPING,
   type ElasticsearchFieldMapping,
+  type LogLevel,
   type LogQuery,
 } from './normalize.js';
 
@@ -31,6 +33,13 @@ export interface ErrorSignature {
   lastSeen: string;
   /** Services that emitted this signature. */
   services: string[];
+  /**
+   * Log level of a representative occurrence ('error'/'warn'/'info'/'debug'/…), when the
+   * level field is captured. Lets consumers rank/label by SEVERITY rather than count alone
+   * — many diagnostic event_codes are emitted at warn/info/debug and must not be presented
+   * as errors. Undefined when the level could not be read.
+   */
+  level?: LogLevel;
   sampleMessage?: string;
   sampleComponent?: string;
   /**
@@ -130,7 +139,14 @@ export function buildErrorAnalysisBody(
           sample: {
             top_hits: {
               size: 1,
-              _source: [mapping.messageField, 'component', 'log_logger', 'context', 'detail'],
+              _source: [
+                mapping.messageField,
+                mapping.levelField,
+                'component',
+                'log_logger',
+                'context',
+                'detail',
+              ],
               sort: [{ [mapping.timestampField]: { order: 'desc' } }],
             },
           },
@@ -150,10 +166,31 @@ function bucketsOf(node: unknown): Array<Record<string, unknown>> {
  * Parse an error-analysis aggregation response into a LogAnalysis (no baseline).
  * `messageField` must match the field requested in the sample top_hits _source.
  */
+/**
+ * Read a log level from a representative doc's source. Handles both Pino numeric levels
+ * (50 → 'error') and string labels ('Error'/'warn' → normalized lowercase). Returns
+ * undefined when the field is absent or unrecognised.
+ */
+function readLevel(src: Record<string, unknown>, levelField: string): LogLevel | undefined {
+  const raw = getField(src, levelField) ?? src[levelField];
+  if (typeof raw === 'number' && Number.isFinite(raw)) return valueToLevel(raw);
+  if (typeof raw === 'string') {
+    const v = raw.trim().toLowerCase();
+    if (v === 'fatal' || v === 'error' || v === 'warn' || v === 'info' || v === 'debug' || v === 'trace') {
+      return v;
+    }
+    if (v === 'warning') return 'warn';
+    const n = Number(v);
+    if (Number.isFinite(n)) return valueToLevel(n);
+  }
+  return undefined;
+}
+
 export function parseErrorAnalysis(
   resp: unknown,
   window: { from?: string; to?: string },
   messageField = 'message',
+  levelField?: string,
 ): LogAnalysis {
   const res = resp as Record<string, unknown>;
   const aggs = (res['aggregations'] ?? {}) as Record<string, unknown>;
@@ -196,12 +233,15 @@ export function parseErrorAnalysis(
         ? (ctx as Record<string, unknown>)
         : undefined;
 
+    const level = levelField !== undefined ? readLevel(sampleSrc, levelField) : undefined;
+
     return {
       key: String(b['key'] ?? '') || '(none)',
       count: typeof b['doc_count'] === 'number' ? b['doc_count'] : 0,
       firstSeen: typeof first === 'string' ? first : '',
       lastSeen: typeof last === 'string' ? last : '',
       services,
+      ...(level !== undefined ? { level } : {}),
       sampleMessage,
       sampleComponent:
         typeof sampleSrc['component'] === 'string'
