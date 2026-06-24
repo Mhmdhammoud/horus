@@ -45,6 +45,7 @@ import {
   startHost,
   waitForHost,
   removeSpawnedHostRecord,
+  reconcileSpawnedHostPid,
 } from '@horus/connectors';
 import { openDb } from '@horus/db';
 import { stitch } from '@horus/stitcher';
@@ -252,6 +253,9 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
         );
         return 1;
       }
+      // Point the ownership record at the backend's real server pid (host.json), so
+      // `horus stop` later signals the process that actually holds the port + Kùzu lock.
+      reconcileSpawnedHostPid(root, port);
     }
 
     // Build the queue map.

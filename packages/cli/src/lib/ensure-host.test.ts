@@ -15,6 +15,7 @@ const connectors = vi.hoisted(() => ({
   startHost: vi.fn(),
   waitForHost: vi.fn(),
   removeSpawnedHostRecord: vi.fn(),
+  reconcileSpawnedHostPid: vi.fn(),
 }));
 
 vi.mock('@horus/connectors', () => connectors);
@@ -108,6 +109,8 @@ describe('ensureSourceHost', () => {
     expect(res).toEqual({ ok: true, hostUrl: URL_8420 });
     expect(connectors.startHost).toHaveBeenCalledWith('/repo', 8420);
     expect(connectors.removeSpawnedHostRecord).not.toHaveBeenCalled();
+    // Ownership record is reconciled to the backend's real server pid on success.
+    expect(connectors.reconcileSpawnedHostPid).toHaveBeenCalledWith('/repo', 8420);
   });
 
   it('cleans up the ownership record when the restart never goes healthy', async () => {
@@ -117,5 +120,6 @@ describe('ensureSourceHost', () => {
     expect(res).toEqual({ ok: false, reason: 'unhealthy' });
     expect(connectors.startHost).toHaveBeenCalledWith('/repo', 8420);
     expect(connectors.removeSpawnedHostRecord).toHaveBeenCalledWith('/repo');
+    expect(connectors.reconcileSpawnedHostPid).not.toHaveBeenCalled();
   });
 });

@@ -84,7 +84,11 @@ describe('source-intelligence schema contract', () => {
 
   it('hybrid search resolves a synonym query (semantic delegated to source backend)', async (ctx) => {
     if (!hostUp) return ctx.skip();
-    const res = await client.search('deduplicate incoming leads', 5);
+    // A natural-language description (no shared token with the symbol) must reach the
+    // symbol via embeddings. Requires the nomic search_query/search_document task prefixes
+    // and identifier humanization in the backend (horus-source >= 1.5.0); without them the
+    // model never connects this phrasing to markDuplicateLead and search falls back to FTS.
+    const res = await client.search('mark a lead as a duplicate in the crm', 5);
     expect(res.map((x) => x.name)).toContain('markDuplicateLead');
   });
 });

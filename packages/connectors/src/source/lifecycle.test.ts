@@ -4,6 +4,9 @@
  * rebuild, so we must refuse to launch it rather than fail silently.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdirSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { PINNED_SOURCE_VERSION } from '@horus/core';
 
 vi.mock('node:child_process', () => ({
@@ -16,6 +19,8 @@ import {
   assertSourceVersionPinned,
   SourceVersionMismatchError,
   getSourceVersion,
+  reconcileSpawnedHostPid,
+  readSpawnedHost,
 } from './lifecycle.js';
 
 const mockExecFile = vi.mocked(childProcess.execFile);
@@ -67,5 +72,63 @@ describe('assertSourceVersionPinned', () => {
   it('allows an unreadable version through (treated as unknown, like `horus status`)', async () => {
     stubVersion(null);
     await expect(assertSourceVersionPinned()).resolves.toBeUndefined();
+  });
+});
+
+describe('reconcileSpawnedHostPid', () => {
+  function makeRoot(): string {
+    const root = mkdtempSync(join(tmpdir(), 'horus-recon-'));
+    mkdirSync(join(root, '.horus', 'source'), { recursive: true });
+    return root;
+  }
+  function writeSpawned(root: string, pid: number, port = 8420): void {
+    writeFileSync(
+      join(root, '.horus', 'spawned-host.json'),
+      JSON.stringify({ pid, port, root, startedAt: new Date(Date.now() - 1000).toISOString() }),
+    );
+  }
+  function writeHostJson(root: string, pid: number, port = 8420): void {
+    writeFileSync(
+      join(root, '.horus', 'source', 'host.json'),
+      JSON.stringify({ pid, port, repo_path: root, host_url: `http://127.0.0.1:${port}` }),
+    );
+  }
+
+  it('rewrites the ownership pid to the backend server pid (preserving port/root)', () => {
+    const root = makeRoot();
+    try {
+      writeSpawned(root, 1111);
+      writeHostJson(root, 2222);
+      reconcileSpawnedHostPid(root, 8420);
+      const rec = readSpawnedHost(root)!;
+      expect(rec.pid).toBe(2222);
+      expect(rec.port).toBe(8420);
+      expect(rec.root).toBe(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not adopt a backend record for a different port', () => {
+    const root = makeRoot();
+    try {
+      writeSpawned(root, 1111, 8420);
+      writeHostJson(root, 2222, 9999); // stale: different port
+      reconcileSpawnedHostPid(root, 8420);
+      expect(readSpawnedHost(root)?.pid).toBe(1111); // unchanged
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('is a no-op when there is no ownership record to refine', () => {
+    const root = makeRoot();
+    try {
+      writeHostJson(root, 2222);
+      reconcileSpawnedHostPid(root, 8420); // must not throw, must not create a record
+      expect(readSpawnedHost(root)).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

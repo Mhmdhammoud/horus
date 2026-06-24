@@ -250,6 +250,34 @@ export function removeSpawnedHostRecord(root: string): void {
   }
 }
 
+/**
+ * Point the ownership record (`spawned-host.json`) at the backend's ACTUAL server pid once
+ * the host is healthy. `startHost` can only record the pid of the `horus-source host`
+ * process it spawned, but the backend may run its real HTTP server under a different,
+ * longer-lived pid which it writes to `source/host.json`. Reconciling here makes the
+ * ownership record authoritative so `horus stop` signals the process that truly holds the
+ * port + Kùzu lock — instead of a wrapper pid that can exit while the server lives on.
+ *
+ * Only refines an existing record, and only when the backend's record is for THIS port
+ * (so a stale host.json from another launch is never adopted). Best-effort: never throws.
+ */
+export function reconcileSpawnedHostPid(root: string, port: number): void {
+  try {
+    const backend = readSourceHostPid(root);
+    if (!backend || !Number.isInteger(backend.pid) || backend.pid <= 0) return;
+    if (Number.isFinite(backend.port) && backend.port !== port) return;
+    const spawned = readSpawnedHost(root);
+    if (!spawned || spawned.pid === backend.pid) return;
+    const updated: SpawnedHostRecord = { ...spawned, pid: backend.pid };
+    writeFileSync(
+      join(root, '.horus', SPAWNED_HOST_FILE),
+      JSON.stringify(updated, null, 2) + '\n',
+    );
+  } catch {
+    // Reconciliation is an optimisation; teardown still has the host.json fallback.
+  }
+}
+
 /** Poll a host's health until it responds or the timeout elapses. */
 export async function waitForHost(hostUrl: string, timeoutMs = 45_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;

@@ -17,6 +17,7 @@ import {
   startHost,
   waitForHost,
   removeSpawnedHostRecord,
+  reconcileSpawnedHostPid,
 } from '@horus/connectors';
 
 export type EnsureHostReason =
@@ -89,7 +90,12 @@ export async function ensureSourceHost(
   if (port === null) return { ok: false, reason: 'bad-url' };
 
   startHost(root, port);
-  if (await waitForHost(hostUrl, opts.timeoutMs ?? 20_000)) return { ok: true, hostUrl };
+  if (await waitForHost(hostUrl, opts.timeoutMs ?? 20_000)) {
+    // Make the ownership record point at the backend's real server pid (host.json) so a
+    // later `horus stop` signals the process that actually holds the port + Kùzu lock.
+    reconcileSpawnedHostPid(root, port);
+    return { ok: true, hostUrl };
+  }
 
   // Never became healthy — drop the ownership record so `horus stop` doesn't chase a
   // dead PID (mirrors index-repo's behaviour on a failed spawn).
