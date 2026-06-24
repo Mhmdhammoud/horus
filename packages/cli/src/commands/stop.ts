@@ -399,29 +399,54 @@ interface ProcessInfo {
 
 /**
  * Read the full argument string and elapsed time (in seconds) for a PID.
- * Returns null if the process does not exist or ps fails.
+ * Returns null ONLY when the process does not exist (no argv) — liveness is determined by
+ * `args` alone, never by elapsed time, so a still-running process is never mistaken for
+ * dead just because its age could not be read.
  *
- * Uses `ps -p <pid> -o args=,etimes=`:
- *  - `args=`  — full argv joined by spaces; handles Python-backed CLI wrappers
- *               where `comm=` would return the interpreter name.
- *  - `etimes=` — process age in seconds; used to detect PID reuse against the
- *                recorded startedAt timestamp.
+ *  - `args=`  — full argv joined by spaces; handles Python-backed CLI wrappers where
+ *               `comm=` would return the interpreter name.
+ *  - `etime=` — process age, used to detect PID reuse against the recorded startedAt.
+ *               We use `etime` (formatted), NOT `etimes` (raw seconds): `etimes` is a
+ *               Linux/procps keyword that ERRORS on macOS ("etimes: keyword not found"),
+ *               which previously made every lookup fail and `horus stop` wrongly report a
+ *               live host as "already stopped". `etime` is portable across macOS and Linux.
  */
 async function getProcessInfo(pid: number): Promise<ProcessInfo | null> {
+  let args: string;
   try {
-    // Two separate ps calls so we can parse each field unambiguously
-    // (args= can contain spaces; mixing with etimes= in one call risks misparse).
-    const [argsResult, etimeResult] = await Promise.all([
-      execFileAsync('ps', ['-p', String(pid), '-o', 'args='], { timeout: 3000 }),
-      execFileAsync('ps', ['-p', String(pid), '-o', 'etimes='], { timeout: 3000 }),
-    ]);
-    const args = argsResult.stdout.trim();
-    const etimeSeconds = parseInt(etimeResult.stdout.trim(), 10);
-    if (!args || isNaN(etimeSeconds)) return null;
-    return { args, etimeSeconds };
+    const argsResult = await execFileAsync('ps', ['-p', String(pid), '-o', 'args='], {
+      timeout: 3000,
+    });
+    args = argsResult.stdout.trim();
   } catch {
-    return null;
+    return null; // `ps -p` exits non-zero when the pid does not exist
   }
+  if (!args) return null;
+
+  // Elapsed time is best-effort: the process is already proven alive by `args`. A parse
+  // failure leaves etimeSeconds NaN, which callers treat as "can't verify age" (and abort
+  // for safety) rather than "process gone".
+  let etimeSeconds = Number.NaN;
+  try {
+    const etimeResult = await execFileAsync('ps', ['-p', String(pid), '-o', 'etime='], {
+      timeout: 3000,
+    });
+    etimeSeconds = parseEtimeSeconds(etimeResult.stdout.trim());
+  } catch {
+    // leave NaN — process is still alive (args present)
+  }
+  return { args, etimeSeconds };
+}
+
+/** Parse a ps `etime` field (`[[dd-]hh:]mm:ss`) to seconds, or NaN if it does not match. */
+function parseEtimeSeconds(etime: string): number {
+  const m = etime.match(/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/);
+  if (!m) return Number.NaN;
+  const days = m[1] ? Number(m[1]) : 0;
+  const hours = m[2] ? Number(m[2]) : 0;
+  const minutes = Number(m[3]);
+  const seconds = Number(m[4]);
+  return days * 86400 + hours * 3600 + minutes * 60 + seconds;
 }
 
 function extractPort(hostUrl: string): number | null {

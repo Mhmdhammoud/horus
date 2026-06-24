@@ -119,11 +119,11 @@ describe('horus stop — post-SIGTERM confirmation loop', () => {
       (_cmd: unknown, args: string[], _opts: unknown, cb: ExecFileCb) => {
         callCount++;
         const key = (args as string[]).join(' ');
-        if (key.includes('args=') || key.includes('etimes=')) {
+        if (key.includes('args=') || key.includes('etime=')) {
           if (callCount <= 4) {
-            // First two calls (args + etimes for identity check) — process found
+            // First two calls (args + etime for identity check) — process found
             cb(null, {
-              stdout: key.includes('etimes=') ? '30' : `horus-source host --port 8420`,
+              stdout: key.includes('etime=') ? '00:30' : `horus-source host --port 8420`,
               stderr: '',
             });
           } else {
@@ -152,7 +152,7 @@ describe('horus stop — post-SIGTERM confirmation loop', () => {
     // Process always found (never exits)
     stubExecWith({
       'args=': `horus-source host --port 8420`,
-      'etimes=': '30',
+      'etime=': '00:30',
     });
 
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
@@ -191,8 +191,8 @@ describe('horus stop — unreachable but still-alive host (zombie) is terminated
     (mockExecFile as any).mockImplementation(
       (_cmd: unknown, args: string[], _opts: unknown, cb: ExecFileCb) => {
         const key = args.join(' ');
-        if (key.includes('etimes=')) {
-          cb(null, { stdout: '30', stderr: '' });
+        if (key.includes('etime=')) {
+          cb(null, { stdout: '00:30', stderr: '' });
         } else if (key.includes('args=')) {
           argsCalls++;
           if (argsCalls <= 2) {
@@ -235,8 +235,8 @@ describe('horus stop — detached backend server outliving the spawn wrapper', (
         if (key.includes('61283')) {
           cb(new Error('no such process'), undefined); // wrapper pid is dead
         } else if (key.includes('59176')) {
-          if (key.includes('etimes=')) {
-            cb(null, { stdout: '120', stderr: '' });
+          if (key.includes('etime=')) {
+            cb(null, { stdout: '02:00', stderr: '' });
           } else {
             serverArgsCalls++;
             if (serverArgsCalls <= 1) {
