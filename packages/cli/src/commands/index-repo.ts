@@ -36,6 +36,7 @@ import {
 import {
   SourceHttpClient,
   sourceAvailable,
+  assertSourceVersionPinned,
   isAnalyzed,
   analyzeRepo,
   isHostHealthy,
@@ -217,6 +218,14 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
       console.log(pc.bold(`Indexing ${label}`) + pc.dim(`  (${root})`));
       if (!(await sourceAvailable())) {
         console.error(pc.red('horus-source not found on PATH. Install it: pip install horus-source'));
+        return 1;
+      }
+      // Refuse to analyze or host with a drifted backend — a version mismatch corrupts
+      // the Kùzu graph identically on every rebuild, so a plain reindex can never recover.
+      try {
+        await assertSourceVersionPinned();
+      } catch (err) {
+        console.error(pc.red(`  ${(err as Error).message}`));
         return 1;
       }
       if (!isAnalyzed(root)) {

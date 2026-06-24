@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const connectors = vi.hoisted(() => ({
   isHostHealthy: vi.fn(),
   sourceAvailable: vi.fn(),
+  assertSourceVersionPinned: vi.fn(),
   isAnalyzed: vi.fn(),
   startHost: vi.fn(),
   waitForHost: vi.fn(),
@@ -28,8 +29,10 @@ const URL_8420 = 'http://127.0.0.1:8420';
 
 beforeEach(() => {
   for (const fn of Object.values(connectors)) fn.mockReset();
-  // Sensible defaults: backend present and repo analyzed unless a test says otherwise.
+  // Sensible defaults: backend present, version pinned, and repo analyzed unless a test
+  // says otherwise.
   connectors.sourceAvailable.mockResolvedValue(true);
+  connectors.assertSourceVersionPinned.mockResolvedValue(undefined);
   connectors.isAnalyzed.mockReturnValue(true);
 });
 
@@ -49,6 +52,7 @@ describe('parseHostPort', () => {
 describe('ensureHostReasonHint', () => {
   it('maps each reason to an actionable hint', () => {
     expect(ensureHostReasonHint('source-unavailable')).toMatch(/pip install horus-source/);
+    expect(ensureHostReasonHint('version-mismatch')).toMatch(/pinned/);
     expect(ensureHostReasonHint('not-analyzed')).toMatch(/horus index/);
     expect(ensureHostReasonHint('bad-url')).toMatch(/valid URL/);
     expect(ensureHostReasonHint('unhealthy')).toMatch(/horus index/);
@@ -69,6 +73,16 @@ describe('ensureSourceHost', () => {
     connectors.sourceAvailable.mockResolvedValue(false);
     const res = await ensureSourceHost('/repo', URL_8420);
     expect(res).toEqual({ ok: false, reason: 'source-unavailable' });
+    expect(connectors.startHost).not.toHaveBeenCalled();
+  });
+
+  it('reports version-mismatch when the installed backend is drifted', async () => {
+    connectors.isHostHealthy.mockResolvedValue(false);
+    connectors.assertSourceVersionPinned.mockRejectedValue(
+      new Error('horus-source 1.4.0 is installed but Horus is pinned to 1.0.7'),
+    );
+    const res = await ensureSourceHost('/repo', URL_8420);
+    expect(res).toEqual({ ok: false, reason: 'version-mismatch' });
     expect(connectors.startHost).not.toHaveBeenCalled();
   });
 

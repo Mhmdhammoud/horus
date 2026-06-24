@@ -12,13 +12,19 @@
 import {
   isHostHealthy,
   sourceAvailable,
+  assertSourceVersionPinned,
   isAnalyzed,
   startHost,
   waitForHost,
   removeSpawnedHostRecord,
 } from '@horus/connectors';
 
-export type EnsureHostReason = 'source-unavailable' | 'not-analyzed' | 'bad-url' | 'unhealthy';
+export type EnsureHostReason =
+  | 'source-unavailable'
+  | 'version-mismatch'
+  | 'not-analyzed'
+  | 'bad-url'
+  | 'unhealthy';
 
 export interface EnsureHostResult {
   ok: boolean;
@@ -43,6 +49,8 @@ export function ensureHostReasonHint(reason: EnsureHostReason | undefined): stri
   switch (reason) {
     case 'source-unavailable':
       return 'horus-source is not installed — install it: pip install horus-source';
+    case 'version-mismatch':
+      return 'the installed horus-source backend does not match the version Horus is pinned to — reinstall the pinned version (run `horus status` to see it)';
     case 'not-analyzed':
       return 'this repo has not been indexed yet — run: horus index';
     case 'bad-url':
@@ -68,6 +76,13 @@ export async function ensureSourceHost(
 
   // We can only restart a real, analyzed repo with the source backend installed.
   if (!(await sourceAvailable())) return { ok: false, reason: 'source-unavailable' };
+  // Never restart a host with a drifted backend — it would re-corrupt the graph the same
+  // way `horus index` would. Mirror that guard here so self-heal can't smuggle one in.
+  try {
+    await assertSourceVersionPinned();
+  } catch {
+    return { ok: false, reason: 'version-mismatch' };
+  }
   if (!isAnalyzed(root)) return { ok: false, reason: 'not-analyzed' };
 
   const port = parseHostPort(hostUrl);

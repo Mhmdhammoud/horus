@@ -13,6 +13,7 @@ import { promisify } from 'node:util';
 import { existsSync, openSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
+import { PINNED_SOURCE_VERSION } from '@horus/core';
 
 const exec = promisify(execFile);
 
@@ -52,6 +53,43 @@ export async function getSourceVersion(): Promise<string | null> {
   }
 }
 
+/**
+ * Thrown when the installed `horus-source` backend does not match {@link PINNED_SOURCE_VERSION}.
+ * Carries both versions so callers can render an actionable, copy-pasteable remediation.
+ */
+export class SourceVersionMismatchError extends Error {
+  constructor(
+    public readonly installed: string,
+    public readonly pinned: string,
+  ) {
+    super(
+      `horus-source ${installed} is installed but Horus is pinned to ${pinned}. ` +
+        `A drifted backend builds a graph this CLI cannot map and can corrupt the index ` +
+        `(e.g. duplicate-primary-key failures during "Running initial index"). ` +
+        `Install the pinned version: pip install 'horus-source==${pinned}'`,
+    );
+    this.name = 'SourceVersionMismatchError';
+  }
+}
+
+/**
+ * Assert the installed backend matches the pinned version BEFORE we let it analyze a repo
+ * or host its graph (architecture.md §1, risk R4). A drifted build (an installed version
+ * other than the pin) can build a Kùzu graph this CLI's query mapping does not expect, so
+ * we refuse to launch it — failing loudly here instead of silently mis-mapping results.
+ *
+ * A version that cannot be read/parsed is allowed through (treated as "unknown", matching
+ * how `horus status` reports it) — we only block on a *known* mismatch.
+ *
+ * @throws {SourceVersionMismatchError} when the installed version is known and differs.
+ */
+export async function assertSourceVersionPinned(): Promise<void> {
+  const installed = await getSourceVersion();
+  if (installed !== null && installed !== PINNED_SOURCE_VERSION) {
+    throw new SourceVersionMismatchError(installed, PINNED_SOURCE_VERSION);
+  }
+}
+
 /** Has the repo been analyzed? Checks `.horus/source/`. */
 export function isAnalyzed(root: string): boolean {
   return existsSync(join(root, '.horus', 'source'));
@@ -81,6 +119,41 @@ export function readSourceHostUrl(root: string): string | null {
   try {
     const j = JSON.parse(readFileSync(p, 'utf8')) as { host_url?: unknown };
     return typeof j.host_url === 'string' ? j.host_url : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The backend's own record of the host process it is running for `root`, read from
+ * `.horus/source/host.json` (written by `horus-source host`). The `pid` here is the ACTUAL
+ * listening server — which can differ from, and outlive, the spawn-wrapper pid Horus
+ * records in `spawned-host.json`. Teardown needs this to signal the real process rather
+ * than a stale wrapper pid. Returns null if the file is absent or malformed.
+ */
+export interface SourceHostRecord {
+  pid: number;
+  /** Port the backend reports it is serving on, or NaN if absent/invalid. */
+  port: number;
+  /** Repo the backend reports it is hosting, or '' if absent. */
+  repoPath: string;
+}
+
+export function readSourceHostPid(root: string): SourceHostRecord | null {
+  const p = join(root, '.horus', 'source', 'host.json');
+  if (!existsSync(p)) return null;
+  try {
+    const j = JSON.parse(readFileSync(p, 'utf8')) as {
+      pid?: unknown;
+      port?: unknown;
+      repo_path?: unknown;
+    };
+    if (typeof j.pid !== 'number' || !Number.isInteger(j.pid) || j.pid <= 0) return null;
+    return {
+      pid: j.pid,
+      port: typeof j.port === 'number' ? j.port : NaN,
+      repoPath: typeof j.repo_path === 'string' ? j.repo_path : '',
+    };
   } catch {
     return null;
   }

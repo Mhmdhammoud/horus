@@ -22,7 +22,13 @@ import { promisify } from 'node:util';
 import { join } from 'node:path';
 import pc from 'picocolors';
 import { findRepoRoot, readRegistry, HORUS_DIR } from '@horus/core';
-import { readSourceHostUrl, isHostHealthy, readSpawnedHost, type SpawnedHostRecord } from '@horus/connectors';
+import {
+  readSourceHostUrl,
+  isHostHealthy,
+  readSpawnedHost,
+  readSourceHostPid,
+  type SpawnedHostRecord,
+} from '@horus/connectors';
 
 const execFileAsync = promisify(execFile);
 const unlinkAsync = promisify(unlink);
@@ -61,16 +67,39 @@ export async function runStop(opts: StopOpts): Promise<number> {
 }
 
 async function stopHost(root: string, hostUrl: string): Promise<number> {
-  const alive = await isHostHealthy(hostUrl);
-  if (!alive) {
-    console.log(pc.dim(`Host ${hostUrl} is already stopped.`));
-    return 0;
-  }
-
   const port = extractPort(hostUrl);
   if (port === null) {
     console.error(pc.red(`Cannot determine port from host URL: ${hostUrl}`));
     return 1;
+  }
+
+  const healthy = await isHostHealthy(hostUrl);
+  if (!healthy) {
+    // A failing /api/health does NOT prove the process is gone. A host can crash mid-index
+    // yet keep its port bound and hold the Kùzu single-writer lock — in which case the next
+    // `horus index` can't acquire it and keeps re-using the broken host. So only declare
+    // "already stopped" when we own no still-running process; otherwise fall through and
+    // terminate the stuck host (its identity is still verified before we signal it).
+    const owned = readSpawnedHost(root);
+    const wrapperAlive = owned !== null && (await getProcessInfo(owned.pid)) !== null;
+    if (!wrapperAlive) {
+      // The spawn-wrapper pid Horus recorded is gone — but `horus-source host` detaches the
+      // real server under a DIFFERENT pid (recorded by the backend in source/host.json) that
+      // can outlive the wrapper and keep the port + Kùzu lock held. Stop that server before
+      // concluding the host is down — otherwise `horus stop` reports success while the host
+      // is still listening (the exact zombie that blocks the next `horus index`).
+      const res = await stopBackendServerPid(root, port);
+      if (res === 'failed') return 1;
+      if (res !== 'stopped') console.log(pc.dim(`Host ${hostUrl} is already stopped.`));
+      await cleanupSpawnedRecord(root);
+      return 0;
+    }
+    console.log(
+      pc.dim(
+        `Host ${hostUrl} is unreachable but pid ${owned!.pid} is still running — ` +
+          `terminating a stuck host.`,
+      ),
+    );
   }
 
   const spawned = readSpawnedHost(root);
@@ -114,27 +143,22 @@ async function stopHost(root: string, hostUrl: string): Promise<number> {
   // --- verify process identity ---
   const info = await getProcessInfo(spawned.pid);
   if (info === null) {
-    // Process already exited — this is the desired outcome (race between the health
-    // check and the PID lookup). Clean up the record and report success.
-    console.log(pc.dim(`Process pid ${spawned.pid} is no longer running — already stopped.`));
-    try { await unlinkAsync(join(root, HORUS_DIR, SPAWNED_HOST_FILE)); } catch { /* not fatal */ }
+    // The wrapper pid exited between the health check and here (a race) — but the detached
+    // backend server (source/host.json) may still be alive, so try it before reporting
+    // success.
+    const res = await stopBackendServerPid(root, port);
+    if (res === 'failed') return 1;
+    if (res !== 'stopped') {
+      console.log(pc.dim(`Process pid ${spawned.pid} is no longer running — already stopped.`));
+    }
+    await cleanupSpawnedRecord(root);
     return 0;
   }
 
-  // Match `horus-source host --port <port>`.
-  // Requirements for the pattern:
-  //  - Optional path prefix: handles /home/user/.local/bin/horus-source (Python entrypoint)
-  //  - binary then `host` then `--port` in that ORDER (not independent substrings)
-  //  - Port must be followed by \s or EOL so 8420 does not match 84200
-  //  - port comes from parseInt so it has no regex metacharacters
-  const portStr = String(port);
-  const hostPortRe = new RegExp(
-    `(?:^|\\s)(?:\\S*/)?horus-source\\s+host\\s+--port(?:=|\\s+)${portStr}(?=\\s|$)`,
-  );
-  if (!hostPortRe.test(info.args)) {
+  if (!hostArgvRegex(port).test(info.args)) {
     console.error(
       pc.red(
-        `Pid ${spawned.pid} args do not match "horus-source host --port ${portStr}". ` +
+        `Pid ${spawned.pid} args do not match "horus-source host --port ${port}". ` +
           `Got: "${info.args.slice(0, 120)}". Aborting for safety.`,
       ),
     );
@@ -200,14 +224,96 @@ async function stopHost(root: string, hostUrl: string): Promise<number> {
     );
   }
 
-  // Remove ownership record so stale entries don't confuse future runs.
+  // The wrapper we recorded is down — but the detached backend server can be a separate,
+  // still-listening pid. Reap it too so the port + Kùzu lock are actually released.
+  if (await stopBackendServerPid(root, port) === 'failed') return 1;
+
+  await cleanupSpawnedRecord(root);
+  return 0;
+}
+
+/**
+ * Build the argv matcher for a horus-source host on `port`. Requirements:
+ *  - optional path prefix (handles /home/user/.local/bin/horus-source, a Python entrypoint)
+ *  - binary then `host` then `--port` in that ORDER (not independent substrings)
+ *  - port followed by whitespace or EOL so 8420 does not match 84200
+ *  - `port` is an integer, so it carries no regex metacharacters
+ */
+function hostArgvRegex(port: number): RegExp {
+  return new RegExp(
+    `(?:^|\\s)(?:\\S*/)?horus-source\\s+host\\s+--port(?:=|\\s+)${String(port)}(?=\\s|$)`,
+  );
+}
+
+/** Remove the spawn-wrapper ownership record. Best-effort; a missing file is benign. */
+async function cleanupSpawnedRecord(root: string): Promise<void> {
   try {
     await unlinkAsync(join(root, HORUS_DIR, SPAWNED_HOST_FILE));
   } catch {
     // Not fatal — missing record is benign on the next invocation.
   }
+}
 
-  return 0;
+/**
+ * Stop the detached backend host server recorded in `.horus/source/host.json` for this
+ * repo+port, if one is still alive. This is the process that actually holds the TCP port
+ * and the Kùzu single-writer lock, and it can outlive the spawn-wrapper pid Horus tracks.
+ *
+ * Ownership is proven before signalling: the pid's argv must match
+ * `horus-source host --port <port>`, and the record's port/repo must match what we are
+ * stopping. Returns 'stopped' (we signalled it and it exited), 'failed' (signalled but it
+ * would not die, or the record's identity could not be trusted), or 'none' (nothing alive
+ * and owned to stop).
+ */
+type BackendStopResult = 'stopped' | 'failed' | 'none';
+
+async function stopBackendServerPid(root: string, port: number): Promise<BackendStopResult> {
+  const rec = readSourceHostPid(root);
+  if (!rec) return 'none';
+  // Only act when the backend's own record agrees on port and repo — otherwise it is a
+  // stale or unrelated record and we must not signal off it.
+  if (Number.isFinite(rec.port) && rec.port !== port) return 'none';
+  if (rec.repoPath && rec.repoPath !== root) return 'none';
+
+  const info = await getProcessInfo(rec.pid);
+  if (info === null) return 'none'; // already gone
+
+  if (!hostArgvRegex(port).test(info.args)) {
+    // The pid is alive but is NOT our host (pid reuse / mismatched record). Refuse to
+    // signal an unverified process — treat as nothing we own to stop.
+    console.error(
+      pc.red(
+        `Backend host pid ${rec.pid} args do not match "horus-source host --port ${port}". ` +
+          `Not signalling — possible stale source/host.json or PID reuse.`,
+      ),
+    );
+    return 'failed';
+  }
+
+  try {
+    process.kill(rec.pid, 'SIGTERM');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return 'stopped';
+    console.error(pc.red(`Failed to signal pid ${rec.pid}: ${(err as Error).message}`));
+    return 'failed';
+  }
+
+  const deadline = Date.now() + STOP_WAIT_MS;
+  while (Date.now() < deadline) {
+    await sleep(STOP_POLL_MS);
+    if ((await getProcessInfo(rec.pid)) === null) {
+      console.log(
+        `${pc.green('✓')} Stopped source-intelligence host ` +
+          pc.dim(`(pid ${rec.pid}, port ${port})`) +
+          ` for ${root}`,
+      );
+      return 'stopped';
+    }
+  }
+  console.error(
+    pc.red(`Host pid ${rec.pid} did not exit within ${STOP_WAIT_MS / 1000}s after SIGTERM.`),
+  );
+  return 'failed';
 }
 
 async function stopAll(): Promise<number> {
@@ -223,8 +329,18 @@ async function stopAll(): Promise<number> {
   for (const [name, entry] of projects) {
     const hostUrl = readSourceHostUrl(entry.root);
     if (!hostUrl) continue;
-    const alive = await isHostHealthy(hostUrl);
-    if (!alive) continue;
+    // Something to stop if the host is healthy OR we still hold a record for it — either
+    // the spawn-wrapper record or the backend's own host.json (a crashed host fails the
+    // health check but may be alive and holding the port; stopHost sorts out which). Skip
+    // only when none of these is present.
+    const healthy = await isHostHealthy(hostUrl);
+    if (
+      !healthy &&
+      readSpawnedHost(entry.root) === null &&
+      readSourceHostPid(entry.root) === null
+    ) {
+      continue;
+    }
     console.log(`  Stopping ${pc.bold(name)} ${pc.dim(`(${hostUrl})`)}`);
     const code = await stopHost(entry.root, hostUrl);
     if (code === 0) stopped++;

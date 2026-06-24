@@ -27,6 +27,7 @@ vi.mock('@horus/connectors', () => ({
   readSourceHostUrl: vi.fn().mockReturnValue('http://127.0.0.1:8420'),
   isHostHealthy: vi.fn().mockResolvedValue(true),
   readSpawnedHost: vi.fn(),
+  readSourceHostPid: vi.fn(),
 }));
 
 vi.mock('node:child_process', () => ({
@@ -43,6 +44,7 @@ import { runStop } from './stop.js';
 
 const mockIsHostHealthy = vi.mocked(connectors.isHostHealthy);
 const mockReadSpawnedHost = vi.mocked(connectors.readSpawnedHost);
+const mockReadSourceHostPid = vi.mocked(connectors.readSourceHostPid);
 const mockExecFile = vi.mocked(childProcess.execFile);
 
 type ExecFileCb = (err: Error | null, result?: { stdout: string; stderr: string }) => void;
@@ -168,9 +170,97 @@ describe('horus stop — post-SIGTERM confirmation loop', () => {
 describe('horus stop — already-stopped host is idempotent', () => {
   it('returns 0 and does not error when host is already not running', async () => {
     mockIsHostHealthy.mockResolvedValue(false);
+    mockReadSpawnedHost.mockReturnValue(null); // no owned process → genuinely stopped
 
     const code = await runStop({});
     expect(code).toBe(0);
+  });
+});
+
+describe('horus stop — unreachable but still-alive host (zombie) is terminated', () => {
+  it('signals an owned pid that is still running even though /api/health fails', async () => {
+    // The host crashed mid-index: health check fails, but the process is alive and
+    // holding the port/Kùzu lock. stop must NOT report "already stopped" — it must kill it.
+    mockIsHostHealthy.mockResolvedValue(false);
+    mockReadSpawnedHost.mockReturnValue(VALID_RECORD);
+
+    // The process must survive two getProcessInfo calls — the unreachable-branch liveness
+    // probe and the identity check — then disappear once SIGTERM has been sent.
+    let argsCalls = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (mockExecFile as any).mockImplementation(
+      (_cmd: unknown, args: string[], _opts: unknown, cb: ExecFileCb) => {
+        const key = args.join(' ');
+        if (key.includes('etimes=')) {
+          cb(null, { stdout: '30', stderr: '' });
+        } else if (key.includes('args=')) {
+          argsCalls++;
+          if (argsCalls <= 2) {
+            cb(null, { stdout: 'horus-source host --port 8420', stderr: '' });
+          } else {
+            cb(new Error('no such process'), undefined); // exited after SIGTERM
+          }
+        } else {
+          cb(new Error('unknown'), undefined);
+        }
+      },
+    );
+
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+
+    const promise = runStop({});
+    await drainTimers();
+    const code = await promise;
+    expect(code).toBe(0);
+    expect(killSpy).toHaveBeenCalledWith(VALID_RECORD.pid, 'SIGTERM');
+
+    killSpy.mockRestore();
+  });
+});
+
+describe('horus stop — detached backend server outliving the spawn wrapper', () => {
+  it('terminates the source/host.json server pid when the recorded wrapper pid is dead', async () => {
+    // Real-world zombie: Horus recorded the spawn-wrapper pid (61283), which has since died,
+    // but `horus-source host` detached the actual server under a different pid (59176) that
+    // is still listening and holding the Kùzu lock. stop must reap the backend pid.
+    mockIsHostHealthy.mockResolvedValue(false);
+    mockReadSpawnedHost.mockReturnValue({ ...VALID_RECORD, pid: 61283 });
+    mockReadSourceHostPid.mockReturnValue({ pid: 59176, port: 8420, repoPath: '/repo/root' });
+
+    let serverArgsCalls = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (mockExecFile as any).mockImplementation(
+      (_cmd: unknown, args: string[], _opts: unknown, cb: ExecFileCb) => {
+        const key = args.join(' ');
+        if (key.includes('61283')) {
+          cb(new Error('no such process'), undefined); // wrapper pid is dead
+        } else if (key.includes('59176')) {
+          if (key.includes('etimes=')) {
+            cb(null, { stdout: '120', stderr: '' });
+          } else {
+            serverArgsCalls++;
+            if (serverArgsCalls <= 1) {
+              cb(null, { stdout: 'horus-source host --port 8420', stderr: '' });
+            } else {
+              cb(new Error('no such process'), undefined); // exits after SIGTERM
+            }
+          }
+        } else {
+          cb(new Error('unknown'), undefined);
+        }
+      },
+    );
+
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+
+    const promise = runStop({});
+    await drainTimers();
+    const code = await promise;
+    expect(code).toBe(0);
+    expect(killSpy).toHaveBeenCalledWith(59176, 'SIGTERM');
+    expect(killSpy).not.toHaveBeenCalledWith(61283, 'SIGTERM');
+
+    killSpy.mockRestore();
   });
 });
 
