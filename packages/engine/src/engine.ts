@@ -2265,12 +2265,20 @@ export async function investigate(
     // else the event_code prefix (E_/W_/D_…) or message keywords. Codes we cannot classify
     // default to error tier, preserving prior behaviour for unprefixed codes (e.g.
     // leadcall's `HTTP_FLT_001`, which IS a logger.error).
+    // dogfood GAP I: when the hint NAMES specific code(s), prefer them — the user asked about
+    // that code, so a tie among equally-seed-raised errors should headline the named one (e.g.
+    // hint "EMODA_017D errors reserving products" must headline EMODA_017D, not a same-count
+    // sibling error from the same function).
+    const hintNamedCodes = new Set(extractEventCodes(hint));
     const ordered = [...seedEmittedJoins].sort((a, b) => {
       // dogfood GAP F: prefer a code raised by the SEED ITSELF over one raised by a CALLEE —
       // a generic error from a shared infra dependency (e.g. ERR243_05 "Store client error"
       // from the `maisonAxios` transport) must not outrank the seed's own error (e.g.
       // `draftProductsForSale`'s SALE_015_02 "Error drafting sale products").
       if (a.raisedBySeed !== b.raisedBySeed) return a.raisedBySeed ? -1 : 1;
+      const ha = hintNamedCodes.has(a.code);
+      const hb = hintNamedCodes.has(b.code);
+      if (ha !== hb) return ha ? -1 : 1; // GAP I: a hint-named code wins among equal-altitude codes
       const ta = seedEmittedSeverityTier(a.level, a.code, a.message);
       const tb = seedEmittedSeverityTier(b.level, b.code, b.message);
       if (ta !== tb) return tb - ta; // higher severity tier first

@@ -794,6 +794,48 @@ describe('investigate() WITH logs provider (HOR-13)', () => {
     expect(seedCause?.title).not.toMatch(/GENERIC_500/);
   });
 
+  it('gap I: a HINT-NAMED code wins the tie among equally seed-raised errors', async () => {
+    // Both EMODA_017D and EMODA_015_02_02 are raised by the seed at the same count/severity;
+    // the hint NAMES EMODA_017D, so it must headline (the user asked about that code).
+    const code: CodeProvider = {
+      ...fakeCode,
+      async searchSymbols(q: string): Promise<Symbol[]> {
+        if (q.trim() === 'EMODA_017D' || q.trim() === 'EMODA_015_02_02') return [FAKE_SYMBOL];
+        if (/^[A-Z][A-Z0-9_]{3,}$/.test(q.trim())) return [OTHER_RAISER];
+        return [FAKE_SYMBOL];
+      },
+    };
+    const logs: LogsProvider = {
+      ...fakeLogs,
+      async analyzeErrors() {
+        const base = {
+          firstSeen: 'x',
+          lastSeen: 'y',
+          services: ['s'],
+          isNew: false,
+          level: 'error' as const,
+        };
+        return {
+          window: { from: 'x', to: 'y' },
+          totalErrors: 4,
+          signatures: [
+            { key: 'EMODA_015_02_02', count: 2, ...base, sampleMessage: 'Reserving products' },
+            { key: 'EMODA_017D', count: 2, ...base, sampleMessage: 'Reserve products API error' },
+          ],
+          newSignatures: [],
+          affectedServices: ['s'],
+        };
+      },
+    };
+    const report = await investigate(
+      { hint: 'EMODA_017D errors reserving products', service: 's' },
+      { code, db: fakeDb, logs },
+    );
+    const seedCause = report.suspectedCauses.find((c) => c.id === 'cause:seed-emitted-error');
+    expect(seedCause?.title).toMatch(/EMODA_017D/);
+    expect(seedCause?.title).not.toMatch(/EMODA_015_02_02/);
+  });
+
   it('keeps the #1/#2 co-occurring reframing when there is no seed-emitted linked cause', async () => {
     // A loud, seed-UNLINKED data-state anomaly: no seed-emitted code, so the honest
     // "no cause is structurally linked / lead to verify" reframing must still apply.
