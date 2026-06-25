@@ -34,6 +34,15 @@ const FAKE_CTX: SymbolContext = {
   coupledWith: [],
 };
 
+// The raise site of an arbitrary observed event_code — a DIFFERENT symbol than the seed, so
+// GAP D (code→raise-site resolution) does not promote codes that aren't raised by the seed.
+const OTHER_RAISER: Symbol = {
+  id: 'sym:other:someOtherFn',
+  name: 'someOtherFn',
+  filePath: 'src/other/other.service.ts',
+  startLine: 5,
+};
+
 const FAKE_IMPACT: ImpactResult = {
   target: FAKE_SYMBOL,
   affected: 0,
@@ -53,7 +62,13 @@ const fakeCode: CodeProvider = {
   async health() {
     return { ok: true, detail: 'fake code provider' };
   },
-  async searchSymbols(_query: string, _limit?: number): Promise<Symbol[]> {
+  async searchSymbols(query: string, _limit?: number): Promise<Symbol[]> {
+    // Realistic code→raise-site resolution (for GAP D): a BARE event_code resolves to ITS
+    // raise site — a DIFFERENT symbol than the seed in these scenarios — while a hint phrase
+    // resolves to the seed. A permissive "always the seed" fake would make GAP D over-promote
+    // every observed ES code as seed-emitted. Tests that DO want a code promoted supply it in
+    // the seed's sourceBody (the literal-scan path), independent of this.
+    if (/^[A-Z][A-Z0-9_]{3,}$/.test(query.trim())) return [OTHER_RAISER];
     return [FAKE_SYMBOL];
   },
   async context(_symbolId: string): Promise<SymbolContext> {
@@ -652,6 +667,65 @@ describe('investigate() WITH logs provider (HOR-13)', () => {
     ).toBe(true);
     // … but NO seed-emitted cause is formed (the seed does not raise it).
     expect(report.suspectedCauses.some((c) => c.id === 'cause:seed-emitted-error')).toBe(false);
+  });
+
+  it('gap D: promotes a code whose RAISE SITE is the seed even when its literal is not in the body', async () => {
+    // The seed has no sourceBody literal for ERR4624 (it is referenced by a constant KEY
+    // that differs from the logged code, or raised in a callee), but the backend resolves
+    // the code's raise site to the seed → GAP D treats it as seed-emitted and headlines it.
+    const codeRaisedBySeed: CodeProvider = {
+      ...fakeCode,
+      async searchSymbols(q: string): Promise<Symbol[]> {
+        if (q.trim() === 'ERR4624') return [FAKE_SYMBOL]; // raise site IS the seed
+        if (/^[A-Z][A-Z0-9_]{3,}$/.test(q.trim())) return [OTHER_RAISER]; // raised elsewhere
+        return [FAKE_SYMBOL]; // hint phrase → seed
+      },
+    };
+    const errLogs: LogsProvider = {
+      ...fakeLogs,
+      async analyzeErrors() {
+        return {
+          window: { from: 'x', to: 'y' },
+          totalErrors: 19,
+          signatures: [
+            {
+              key: 'ERR4624',
+              count: 19,
+              firstSeen: '2026-06-24T10:00:00.000Z',
+              lastSeen: '2026-06-24T16:22:00.000Z',
+              services: ['maison-safqa-prod'],
+              isNew: true,
+              level: 'error',
+              sampleMessage: 'Error updating existing synced product in database during syncProduct',
+            },
+            // A second code raised ELSEWHERE must NOT be promoted as seed-emitted.
+            {
+              key: 'DBPOOL02',
+              count: 50,
+              firstSeen: '2026-06-24T10:00:00.000Z',
+              lastSeen: '2026-06-24T16:22:00.000Z',
+              services: ['maison-safqa-prod'],
+              isNew: false,
+              level: 'error',
+              sampleMessage: 'pool exhausted',
+            },
+          ],
+          newSignatures: ['ERR4624'],
+          affectedServices: ['maison-safqa-prod'],
+        };
+      },
+    };
+    const report = await investigate(
+      { hint: 'syncing a product fails', service: 'maison-safqa-prod' },
+      { code: codeRaisedBySeed, db: fakeDb, logs: errLogs },
+    );
+    const seedCause = report.suspectedCauses.find((c) => c.id === 'cause:seed-emitted-error');
+    expect(seedCause).toBeDefined();
+    // Headlines the seed-raised ERROR (not the louder DBPOOL02 raised elsewhere), labelled
+    // honestly as a runtime error (GAP A severity).
+    expect(seedCause?.title).toMatch(/ERR4624/);
+    expect(seedCause?.title).not.toMatch(/DBPOOL02/);
+    expect(seedCause?.title.toLowerCase()).toMatch(/runtime error|likely failure/);
   });
 
   it('keeps the #1/#2 co-occurring reframing when there is no seed-emitted linked cause', async () => {

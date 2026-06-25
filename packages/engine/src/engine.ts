@@ -1218,6 +1218,88 @@ export async function investigate(
           }
         }
 
+        // GAP D (dogfood): a runtime error RAISED FROM the seed — or a direct callee — is
+        // seed-emitted even when its literal is NOT in the seed's own body. The literal scan
+        // above misses two real cases: (1) the code is referenced by a constant KEY that
+        // differs from the logged CODE value (`Logs.E_SYNC_PRODUCT_UPDATE_EXISTING` ↔ ES
+        // `ERR4624`), and (2) it is raised in a callee (syncProduct → EmodaService.fetchProducts
+        // → `EMODA_011`). Here we INVERT: for each observed ES code, resolve its raise-site
+        // symbol via the backend (searchSymbols runs HOR-329 code→raise-site resolution, which
+        // already handles the key↔code colocation) and treat the code as seed-emitted when its
+        // raiser IS the seed or one of the seed's direct callees. The id match against the seed
+        // scope is the precision guard; bounded by count + a hard cap to keep it cheap.
+        if (top !== undefined && typeof deps.code?.searchSymbols === 'function') {
+          const GAP_D_MAX_RESOLVE = 12;
+          const seedScope = new Set<string>([top.id, ...(ctx?.callees ?? []).map((c) => c.id)]);
+          const alreadyEmitted = new Set(seedEmittedJoins.map((j) => j.code));
+          const candidates = analysis.signatures
+            .filter(
+              (s) => s.key !== '' && s.key !== '(none)' && s.count > 0 && !alreadyEmitted.has(s.key),
+            )
+            .sort((a, b) => b.count - a.count)
+            .slice(0, GAP_D_MAX_RESOLVE);
+          for (const sig of candidates) {
+            let raiser: Symbol | undefined;
+            try {
+              raiser = (await deps.code.searchSymbols(sig.key, 1))[0];
+            } catch {
+              continue; // best-effort — a search failure must never break the investigation
+            }
+            if (raiser === undefined || !seedScope.has(raiser.id)) continue;
+
+            // Reuse the code's existing direct evidence if it already surfaced; otherwise
+            // synthesize one tying the code to its raise site so the join cites real,
+            // seed-linked evidence.
+            let evId = directEvIdByKey.get(sig.key);
+            if (evId === undefined) {
+              const where = raiser.id === top.id ? 'the seed' : 'a callee of the seed';
+              const links: EvidenceLinks =
+                raiser.startLine !== undefined && raiser.startLine > 0
+                  ? { symbolId: raiser.id, file: raiser.filePath, line: raiser.startLine }
+                  : { symbolId: raiser.id, file: raiser.filePath };
+              const ev = mkEv(
+                'log',
+                `event_code ${sig.key}: ${sig.count}x in Elasticsearch — raised by ${raiser.name} (${where})`.slice(
+                  0,
+                  220,
+                ),
+                {
+                  signature: sig.key,
+                  count: sig.count,
+                  firstSeen: sig.firstSeen,
+                  lastSeen: sig.lastSeen,
+                  services: sig.services,
+                  isNew: sig.isNew ?? false,
+                  ratio: sig.ratio ?? null,
+                  sampleMessage: sig.sampleMessage ?? null,
+                  relevanceClass: 'direct',
+                  relevanceReason: `event_code ${sig.key} is raised by ${raiser.name} (${where})`,
+                  crossSignalJoin: true,
+                  seedEmitted: true,
+                },
+                links,
+                sig.lastSeen || undefined,
+                0.9,
+              );
+              if (sig.isNew) ev.isNew = sig.isNew;
+              if (typeof sig.ratio === 'number' && Number.isFinite(sig.ratio)) ev.ratio = sig.ratio;
+              logEvIds.push(ev.id);
+              directLogEvIds.push(ev.id);
+              directSignatures.push({ key: sig.key, count: sig.count, message: sig.sampleMessage ?? '' });
+              directEvIdByKey.set(sig.key, ev.id);
+              evId = ev.id;
+            }
+            seedEmittedJoins.push({
+              code: sig.key,
+              count: sig.count,
+              message: sig.sampleMessage ?? '',
+              evId,
+              isNew: sig.isNew ?? false,
+              level: sig.level ?? null,
+            });
+          }
+        }
+
         // HOR-215: surface the DISTINCT failing entities behind the dominant error
         // signature (e.g. "16 brands × 50 orders") instead of only a signature count.
         // Pick the top signature that carries id-like context fields and aggregate

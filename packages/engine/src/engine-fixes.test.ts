@@ -67,11 +67,22 @@ function makeChangedSymbol(name: string): Symbol {
   return { id: `sym:services:${name}`, name, filePath: 'src/services/sale.service.ts', startLine: 50, endLine: 60 };
 }
 
+// Raise site of an arbitrary observed event_code — a DIFFERENT symbol than the seed, so
+// GAP D (code→raise-site resolution) does not promote codes the seed doesn't raise.
+const OTHER_RAISER: Symbol = {
+  id: 'sym:other:someOtherFn',
+  name: 'someOtherFn',
+  filePath: 'src/other/other.service.ts',
+  startLine: 5,
+};
+
 const baseCode: CodeProvider = {
   id: 'fake-code',
   kind: 'code',
   async health() { return { ok: true, detail: 'fake' }; },
-  async searchSymbols() { return [SEED_SYMBOL]; },
+  // Realistic code→raise-site resolution (GAP D): a bare event_code resolves to its raise
+  // site (a non-seed symbol here); a hint phrase resolves to the seed.
+  async searchSymbols(query = '') { return /^[A-Z][A-Z0-9_]{3,}$/.test(query.trim()) ? [OTHER_RAISER] : [SEED_SYMBOL]; },
   async context() { return fakeCtx; },
   async impact(): Promise<ImpactResult> { return { target: SEED_SYMBOL, affected: 0, byDepth: [] }; },
   async flowsFor() { return []; },
