@@ -17,6 +17,16 @@ const PREFER =
   /resolver|controller|\bservice\b|route|router|handler|gateway|processor|worker|consumer|repository|usecase|use-case|endpoint/i;
 const DEMOTE =
   /\butil|helper|\bscript|backfill|legacy|migration|seeder|fixture|\bmock\b|\btest\b|\bspec\b/i;
+// dogfood GAP H: a PRESENTATION/format helper builds a display artifact — it neither performs
+// the hinted action nor fails meaningfully, so it must not outrank the symbol that does the
+// work (e.g. `buildDuplicateLeadMessage` must lose to `isDuplicateLeadSet`/`markDuplicateLead`
+// for "duplicate leads not being detected").
+const PRESENTATION_NAME =
+  /^(build|format|render|compose|serialize)[A-Z].*(Message|Markup|Html|Text|Label|Summary|Notification|String)$/;
+// A boolean PREDICATE (isX/hasX/canX/shouldX) is a DECISION point, not a thin passthrough —
+// it must be EXEMPT from the short-symbol getter penalty (dogfood GAP H): `isDuplicateLeadSet`
+// is only 2 lines but is exactly the detection logic the incident is about.
+const PREDICATE_NAME = /^(is|has|can|should|was|were|are|does|did|needs|allows?|must)[A-Z]/;
 // Type/DTO/interface declarations are not where a fault ORIGINATES — the fault lives
 // in the method that throws, not the result/input type it returns or the interface it
 // implements. Detect type-declaration naming conventions so a same-named method
@@ -73,13 +83,20 @@ export function scoreSeed(
   // role stays a strong signal.
   if (PREFER.test(hay)) score += hintHasCode ? 0 : 3;
   if (DEMOTE.test(hay)) score -= 3;
+  // GAP H: a presentation/format helper is not the failing actor.
+  if (PRESENTATION_NAME.test(s.name)) score -= 3;
   // Demote type/DTO/interface-named symbols so an executable method wins a same-name
   // collision (HOR-337). Methods are verbs (syncProduct); types are nouns (…Result).
   if (isTypeLikeName(s.name)) score -= 4;
   // Demote thin getters/passthroughs (a few lines): the fault lives in the substantive
   // method they delegate to, not a 4-line field-resolver/getter that merely string-matches
   // the hint (HOR-337 follow-up — a getter must not outrank the real service).
-  if (s.startLine !== undefined && s.endLine !== undefined && s.endLine - s.startLine <= 3) {
+  if (
+    s.startLine !== undefined &&
+    s.endLine !== undefined &&
+    s.endLine - s.startLine <= 3 &&
+    !PREDICATE_NAME.test(s.name) // GAP H: a thin boolean predicate is a decision, not a getter
+  ) {
     score -= 3;
   }
   // Regression investigations (--since): a candidate that lives in a file changed in the

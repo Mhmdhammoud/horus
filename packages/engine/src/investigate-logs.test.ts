@@ -728,6 +728,72 @@ describe('investigate() WITH logs provider (HOR-13)', () => {
     expect(seedCause?.title.toLowerCase()).toMatch(/runtime error|likely failure/);
   });
 
+  it('gap F: prefers the SEED-raised error over a generic error from a shared CALLEE', async () => {
+    // The seed raises its own SALE_LOCAL_02 (5x); a shared transport callee raises the louder
+    // generic GENERIC_500 (50x). The headline must be the seed-local error, NOT the callee's
+    // generic one — and the callee error must be attributed to the callee, not the seed.
+    const CALLEE: Symbol = {
+      id: 'sym:lib:httpClient',
+      name: 'httpClient',
+      filePath: 'src/lib/http-client.ts',
+      startLine: 5,
+    };
+    const code: CodeProvider = {
+      ...fakeCode,
+      async context(): Promise<SymbolContext> {
+        return { ...(await fakeCode.context('x')), callees: [CALLEE] };
+      },
+      async searchSymbols(q: string): Promise<Symbol[]> {
+        if (q.trim() === 'SALE_LOCAL_02') return [FAKE_SYMBOL]; // raised by the seed itself
+        if (q.trim() === 'GENERIC_500') return [CALLEE]; // raised by the shared callee
+        if (/^[A-Z][A-Z0-9_]{3,}$/.test(q.trim())) return [OTHER_RAISER];
+        return [FAKE_SYMBOL];
+      },
+    };
+    const logs: LogsProvider = {
+      ...fakeLogs,
+      async analyzeErrors() {
+        return {
+          window: { from: 'x', to: 'y' },
+          totalErrors: 55,
+          signatures: [
+            {
+              key: 'GENERIC_500',
+              count: 50,
+              firstSeen: 'x',
+              lastSeen: 'y',
+              services: ['s'],
+              isNew: false,
+              level: 'error',
+              sampleMessage: 'Store client error',
+            },
+            {
+              key: 'SALE_LOCAL_02',
+              count: 5,
+              firstSeen: 'x',
+              lastSeen: 'y',
+              services: ['s'],
+              isNew: true,
+              level: 'error',
+              sampleMessage: 'Error drafting sale products',
+            },
+          ],
+          newSignatures: ['SALE_LOCAL_02'],
+          affectedServices: ['s'],
+        };
+      },
+    };
+    const report = await investigate(
+      { hint: 'drafting sale products keeps erroring', service: 's' },
+      { code, db: fakeDb, logs },
+    );
+    const seedCause = report.suspectedCauses.find((c) => c.id === 'cause:seed-emitted-error');
+    expect(seedCause).toBeDefined();
+    expect(seedCause?.title).toMatch(/SALE_LOCAL_02/);
+    expect(seedCause?.title).toMatch(/is raised by .* — the likely failure/);
+    expect(seedCause?.title).not.toMatch(/GENERIC_500/);
+  });
+
   it('keeps the #1/#2 co-occurring reframing when there is no seed-emitted linked cause', async () => {
     // A loud, seed-UNLINKED data-state anomaly: no seed-emitted code, so the honest
     // "no cause is structurally linked / lead to verify" reframing must still apply.

@@ -134,4 +134,27 @@ describe('rankSeeds', () => {
     const ranked = rankSeeds([raiseSite, coOccur], ['err243'], undefined, true);
     expect(ranked[0]?.symbol.id).toBe('r1');
   });
+
+  it('gap H: a thin boolean predicate (the decision) outranks a presentation builder', () => {
+    // "duplicate leads not being detected before pushing" — the detection lives in the 2-line
+    // predicate `isDuplicateLeadSet`, but it used to lose to `buildDuplicateLeadMessage` (a Cliq
+    // string formatter) because the predicate got the short-symbol getter penalty and the
+    // formatter did not. Now the formatter is demoted and the predicate is exempt.
+    const formatter: Symbol = {
+      id: 'f',
+      name: 'buildDuplicateLeadMessage',
+      filePath: 'src/modules/zoho/zoho-cliq.service.ts',
+      startLine: 155,
+      endLine: 178,
+    };
+    const predicate: Symbol = {
+      id: 'p',
+      name: 'isDuplicateLeadSet',
+      filePath: 'src/modules/zoho/zoho-pusher.service.ts',
+      startLine: 673,
+      endLine: 675,
+    };
+    const ranked = rankSeeds([formatter, predicate], ['duplicate', 'leads', 'detected']);
+    expect(ranked[0]?.symbol.name).toBe('isDuplicateLeadSet');
+  });
 });

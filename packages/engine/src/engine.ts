@@ -139,6 +139,19 @@ const SEV_ERROR = 2;
 const SEV_WARN = 1;
 const SEV_INFO = 0;
 
+// Symbol names too generic to identify a specific function — they must not be used to match
+// queue-edge producers/workers (dogfood GAP G), or a foreign edge keyed by "constructor"
+// matches any seed that has one.
+const GENERIC_SYMBOL_NAMES = new Set<string>([
+  '',
+  'constructor',
+  'unknown',
+  'unknown-producer',
+  'unknown-worker',
+  'anonymous',
+  'default',
+]);
+
 /**
  * Classify a seed-emitted code's severity. Prefers the captured ES log `level` (authoritative
  * and cross-repo), then the event_code prefix convention (E_/F_ = error, W_ = warn, D_/I_/T_
@@ -875,11 +888,15 @@ export async function investigate(
       edges = [];
     }
 
-    const symbolNames = new Set<string>([
-      top.name,
-      ...ctx.callers.map((s) => s.name),
-      ...ctx.callees.map((s) => s.name),
-    ]);
+    // dogfood GAP G: do NOT match queue edges on GENERIC symbol names. "constructor" (every
+    // class has one) and "unknown" let a foreign edge — e.g. a stale/cross-project queue in a
+    // shared investigation DB (producer "constructor" -> worker "ZohoBatchProcessor") — match
+    // any seed that merely has a constructor, leaking another repo's topology into the report.
+    const symbolNames = new Set<string>(
+      [top.name, ...ctx.callers.map((s) => s.name), ...ctx.callees.map((s) => s.name)].filter(
+        (n) => n && !GENERIC_SYMBOL_NAMES.has(n),
+      ),
+    );
     queueHits = edges.filter((e) => {
       const bySymbol =
         (e.producerSymbol !== null && symbolNames.has(e.producerSymbol)) ||
@@ -888,6 +905,28 @@ export async function investigate(
         e.producerFile === top.filePath || e.workerFile === top.filePath;
       return bySymbol || byFile;
     });
+
+    // GAP G: drop any matched edge whose cited symbols don't RESOLVE in THIS repo's source
+    // graph — a stale or cross-project edge (e.g. ZohoBatchProcessor, which exists in another
+    // repo) must never be presented as a boundary crossing here. Best-effort; on a search
+    // failure we keep the edge rather than silently dropping real evidence.
+    if (queueHits.length > 0 && typeof code.searchSymbols === 'function') {
+      const resolvesInRepo = async (name: string | null): Promise<boolean> => {
+        if (!name || GENERIC_SYMBOL_NAMES.has(name)) return false;
+        try {
+          return (await code.searchSymbols(name, 3)).some((s) => s.name === name);
+        } catch {
+          return true; // can't verify → don't drop
+        }
+      };
+      const validated: QueueEdge[] = [];
+      for (const e of queueHits) {
+        if ((await resolvesInRepo(e.producerSymbol)) || (await resolvesInRepo(e.workerSymbol))) {
+          validated.push(e);
+        }
+      }
+      queueHits = validated;
+    }
 
     if (input.since !== undefined && looksDiffable(input.since)) {
       try {
@@ -1004,6 +1043,17 @@ export async function investigate(
     isNew: boolean;
     /** Log level of a representative occurrence, when known — drives severity-aware ranking. */
     level: string | null;
+    /**
+     * True when the code is raised by the SEED ITSELF (its literal is in the seed body, or
+     * its raise-site resolves to the seed). False when it is raised by a CALLEE. A seed-local
+     * error is preferred over a generic error from a shared callee (dogfood GAP F): e.g.
+     * `draftProductsForSale` raises its own `E_DRAFT_SALE_PRODUCTS_02`, while the generic
+     * `ERR243_05` "Store client error" is raised by the shared `maisonAxios` transport — the
+     * latter must not headline as the seed's "likely failure".
+     */
+    raisedBySeed: boolean;
+    /** The actual raising symbol's name (the seed, or the callee when raisedBySeed is false). */
+    raiserName: string;
   }[] = [];
   // HOR-215: distinct-failing-entity evidence (e.g. "16 brand_id, 50 order_id").
   const entityEvIds: string[] = [];
@@ -1179,6 +1229,8 @@ export async function investigate(
                     evId: existingEvId,
                     isNew: sig.isNew ?? false,
                     level: sig.level ?? null,
+                    raisedBySeed: true, // literal is in the seed's own body
+                    raiserName: top?.name ?? '',
                   });
                 }
               }
@@ -1233,6 +1285,8 @@ export async function investigate(
                 evId: ev.id,
                 isNew: sig.isNew ?? false,
                 level: sig.level ?? null,
+                raisedBySeed: true, // literal is in the seed's own body
+                raiserName: top?.name ?? '',
               });
             }
           } catch {
@@ -1275,13 +1329,20 @@ export async function investigate(
             ]),
           ].slice(0, GAP_D_MAX_RESOLVE * 2);
           for (const sig of candidates) {
-            let raiser: Symbol | undefined;
+            let raisers: Symbol[] = [];
             try {
-              raiser = (await deps.code.searchSymbols(sig.key, 1))[0];
+              raisers = await deps.code.searchSymbols(sig.key, 3);
             } catch {
               continue; // best-effort — a search failure must never break the investigation
             }
-            if (raiser === undefined || !seedScope.has(raiser.id)) continue;
+            // Prefer the SEED itself among the resolved raise sites, then a direct callee.
+            // A code's search can rank a co-referencing function above its true raise site
+            // (e.g. SALE_015_02's raise site `draftProductsForSale` is the 3rd hit), so check
+            // the top few rather than only [0] — otherwise the seed's OWN error is missed and
+            // a generic callee error headlines instead (dogfood GAP F).
+            const raiser =
+              raisers.find((r) => r.id === top.id) ?? raisers.find((r) => seedScope.has(r.id));
+            if (raiser === undefined) continue;
 
             // Reuse the code's existing direct evidence if it already surfaced; otherwise
             // synthesize one tying the code to its raise site so the join cites real,
@@ -1332,6 +1393,8 @@ export async function investigate(
               evId,
               isNew: sig.isNew ?? false,
               level: sig.level ?? null,
+              raisedBySeed: raiser.id === top.id,
+              raiserName: raiser.name,
             });
           }
         }
@@ -2203,6 +2266,11 @@ export async function investigate(
     // default to error tier, preserving prior behaviour for unprefixed codes (e.g.
     // leadcall's `HTTP_FLT_001`, which IS a logger.error).
     const ordered = [...seedEmittedJoins].sort((a, b) => {
+      // dogfood GAP F: prefer a code raised by the SEED ITSELF over one raised by a CALLEE —
+      // a generic error from a shared infra dependency (e.g. ERR243_05 "Store client error"
+      // from the `maisonAxios` transport) must not outrank the seed's own error (e.g.
+      // `draftProductsForSale`'s SALE_015_02 "Error drafting sale products").
+      if (a.raisedBySeed !== b.raisedBySeed) return a.raisedBySeed ? -1 : 1;
       const ta = seedEmittedSeverityTier(a.level, a.code, a.message);
       const tb = seedEmittedSeverityTier(b.level, b.code, b.message);
       if (ta !== tb) return tb - ta; // higher severity tier first
@@ -2218,20 +2286,30 @@ export async function investigate(
       const msgClause = lead.message
         ? ` — "${lead.message.replace(/\s+/g, ' ').trim().slice(0, 90)}"`
         : '';
+      // GAP F: name the ACTUAL raiser. A code raised by the seed itself is a direct failure;
+      // one raised by a CALLEE (often shared infra) is a weaker, generic link — attribute it
+      // to the callee ("surfaces on X, a dependency of <seed>"), never "raised by <seed>",
+      // and demote it so it cannot headline as the seed's "likely failure".
+      const bySeed = lead.raisedBySeed;
+      const raiser = bySeed ? top.name : lead.raiserName || top.name;
+      const depClause = bySeed ? '' : `, a dependency of ${top.name}`;
+      const calleePenalty = bySeed ? 0 : 0.18;
       // Label and weight HONESTLY by severity. An error is "the likely failure"; a warning
       // is a frequent warning (not asserted as the failure); a debug/info code is a
       // diagnostic signal. Only an error-tier code gets the strong failure prior.
       let title: string;
       let baseScore: number;
       if (tier === SEV_ERROR) {
-        title = `Runtime error ${lead.code} (${lead.count}x in Elasticsearch) is raised by ${top.name} — the likely failure${msgClause}`;
-        baseScore = clamp01(0.6 + volumeBoost);
+        title = bySeed
+          ? `Runtime error ${lead.code} (${lead.count}x in Elasticsearch) is raised by ${raiser} — the likely failure${msgClause}`
+          : `Runtime error ${lead.code} (${lead.count}x in Elasticsearch) surfaces on ${raiser}${depClause}${msgClause}`;
+        baseScore = clamp01(0.6 + volumeBoost - calleePenalty);
       } else if (tier === SEV_WARN) {
-        title = `Warning ${lead.code} (${lead.count}x in Elasticsearch) is raised by ${top.name}${msgClause}`;
-        baseScore = clamp01(0.42 + volumeBoost);
+        title = `Warning ${lead.code} (${lead.count}x in Elasticsearch) ${bySeed ? 'is raised by' : 'surfaces on'} ${raiser}${depClause}${msgClause}`;
+        baseScore = clamp01(0.42 + volumeBoost - calleePenalty);
       } else {
-        title = `Diagnostic signal ${lead.code} (${lead.count}x in Elasticsearch) is logged by ${top.name} — informational, not an error${msgClause}`;
-        baseScore = clamp01(0.3 + volumeBoost);
+        title = `Diagnostic signal ${lead.code} (${lead.count}x in Elasticsearch) is logged by ${raiser}${depClause} — informational, not an error${msgClause}`;
+        baseScore = clamp01(0.3 + volumeBoost - calleePenalty);
       }
       causeInputs.push({
         id: 'cause:seed-emitted-error',
