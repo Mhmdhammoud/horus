@@ -463,12 +463,34 @@ export function looksDiffable(since: string): boolean {
 export function looksExplanatory(hint: string): boolean {
   const h = hint.trim();
   if (h.length === 0) return false;
-  // Question/behavior pairing: "how does X work", "what happens when …", "why does … flow".
+  // Explicit explanation requests are always explanatory, even if they name an error path.
+  if (/^\s*(explain|describe|walk\s+me\s+through|tell\s+me\s+(?:about|how))\b/i.test(h)) {
+    return true;
+  }
+  // dogfood GAP E: a REGRESSION phrasing ("what recently changed", "what changed in X",
+  // "did Y regress") is a change-diff hunt, never an explanation — the strongest guard, it
+  // overrides the behavior pairing below (so "what changed in the auth flow" is NOT routed to
+  // a walkthrough just because it says "flow").
+  if (/\b(recently\s+changed|what\s+changed|changed\s+recently|regress|regression)\b/i.test(h)) {
+    return false;
+  }
+  // Question/behavior pairing: "how does X work", "what happens when a payment fails",
+  // "why does … flow". Explanatory even when a failure path is named.
   if (/\b(how|what|why|when|where)\b.*\b(work|works|working|do|does|done|happen|happens|flow|flows|behave|called|invoked|triggered|used)\b/i.test(h)) {
     return true;
   }
-  // Leading interrogative or an explicit "explain"/"describe"/"walk me through".
-  if (/^\s*(how|what|why|when|where|explain|describe|walk\s+me\s+through|tell\s+me\s+(?:about|how))\b/i.test(h)) {
+  // dogfood GAP E: a bare leading interrogative carrying SYMPTOM terms is an incident hunt,
+  // not an explanation ("what is breaking", "why are products failing", "what's causing the
+  // errors") — so it must NOT route to a behavioral walkthrough.
+  if (
+    /\b(fail|fails|failed|failing|failure|break|breaks|breaking|broke|broken|crash|crashes|crashing|down|slow|stuck|hang|hangs|hung|timeout|timing\s*out|wrong|exception|error|errors|leak|leaking|stopped|throwing|throws|reject|rejected|denied|not\s+work|doesn'?t\s+work|isn'?t\s+work|can'?t|cannot|caus(?:e|es|ing)|misbehav)/i.test(
+      h,
+    )
+  ) {
+    return false;
+  }
+  // Bare leading interrogative with no fault terms: "what is the order pipeline".
+  if (/^\s*(how|what|why|when|where)\b/i.test(h)) {
     return true;
   }
   return false;
@@ -1232,12 +1254,26 @@ export async function investigate(
           const GAP_D_MAX_RESOLVE = 12;
           const seedScope = new Set<string>([top.id, ...(ctx?.callees ?? []).map((c) => c.id)]);
           const alreadyEmitted = new Set(seedEmittedJoins.map((j) => j.code));
-          const candidates = analysis.signatures
-            .filter(
-              (s) => s.key !== '' && s.key !== '(none)' && s.count > 0 && !alreadyEmitted.has(s.key),
-            )
-            .sort((a, b) => b.count - a.count)
-            .slice(0, GAP_D_MAX_RESOLVE);
+          const eligible = analysis.signatures.filter(
+            (s) => s.key !== '' && s.key !== '(none)' && s.count > 0 && !alreadyEmitted.has(s.key),
+          );
+          // Resolve the top codes BY COUNT, plus any code whose key/message is HINT-RELEVANT
+          // even at lower volume (dogfood M1: "publishing products keeps failing" must reach
+          // ERR_PROD_PUB_002 "Error occurred while publishing product" (5x) even though louder
+          // unrelated codes crowd the top-N). Bounded so the extra resolution stays cheap.
+          const meaningful = meaningfulHintTokens.filter((t) => t.length >= 4);
+          const hintRelevant = (s: { key: string; sampleMessage?: string }): boolean =>
+            meaningful.some(
+              (t) =>
+                s.key.toLowerCase().includes(t) ||
+                (s.sampleMessage ?? '').toLowerCase().includes(t),
+            );
+          const candidates = [
+            ...new Set([
+              ...[...eligible].sort((a, b) => b.count - a.count).slice(0, GAP_D_MAX_RESOLVE),
+              ...eligible.filter(hintRelevant).slice(0, GAP_D_MAX_RESOLVE),
+            ]),
+          ].slice(0, GAP_D_MAX_RESOLVE * 2);
           for (const sig of candidates) {
             let raiser: Symbol | undefined;
             try {
@@ -2417,7 +2453,10 @@ export async function investigate(
     queueFailureSignals.length > 0 ||
     findings.some((f) => f.kind === 'anomaly') ||
     headlineCause !== undefined;
-  const explanatoryHint = looksExplanatory(hint);
+  // dogfood GAP E: `--since <ref>` is an explicit request to analyse what changed across a
+  // commit range — a regression hunt, never a "how does it work" explanation. Suppress the
+  // behavioral route when it is set so the deployment-regression path runs.
+  const explanatoryHint = looksExplanatory(hint) && input.since === undefined;
   let behavioral: BehavioralWalkthrough | undefined;
   if (explanatoryHint) {
     // Gap #5: a "how does X work" hint is a request for an explanation, not a fault hunt —

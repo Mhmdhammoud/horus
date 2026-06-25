@@ -404,6 +404,19 @@ describe('looksExplanatory — detects interrogative/explanatory hints', () => {
     expect(looksExplanatory('checkout latency spike')).toBe(false);
     expect(looksExplanatory('')).toBe(false);
   });
+
+  it('gap E: a leading interrogative carrying FAULT terms is an incident hunt, not an explanation', () => {
+    expect(looksExplanatory('what recently changed that could be breaking product sync')).toBe(false);
+    expect(looksExplanatory('what is causing the product errors')).toBe(false);
+    expect(looksExplanatory('why are products failing to publish')).toBe(false);
+    expect(looksExplanatory('what changed in the auth flow')).toBe(false);
+    // genuine explanation requests are still behavioral, even when they mention a failure path
+    expect(looksExplanatory('how does the retry-on-failure path work')).toBe(true);
+    expect(looksExplanatory('what happens when a payment fails')).toBe(true);
+    expect(looksExplanatory('explain how error handling works')).toBe(true);
+    // a clean interrogative with no fault terms stays explanatory
+    expect(looksExplanatory('what is the order pipeline')).toBe(true);
+  });
 });
 
 describe('looksPerformance — detects latency/performance hints (gap 4)', () => {
