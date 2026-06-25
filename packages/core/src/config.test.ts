@@ -523,6 +523,13 @@ describe('loadConfig — native JS/ESM loading (HOR-83)', () => {
     expect(cfg.database.url).toContain('postgresql://');
   });
 
+  it('throws an ACTIONABLE error (not a cryptic module-not-found) when no config exists', async () => {
+    // tmpDir has no .horus/config.json and no config/horus.config.* — an un-set-up repo.
+    delete process.env['HORUS_CONFIG'];
+    await expect(loadConfig(undefined, { cwd: tmpDir })).rejects.toThrow(/No Horus config found/);
+    await expect(loadConfig(undefined, { cwd: tmpDir })).rejects.toThrow(/horus index/);
+  });
+
   it('throws a clear error when .js config has no default export', async () => {
     const configPath = join(tmpDir, 'no-default.js');
     writeFileSync(configPath, NO_DEFAULT_EXPORT_CONTENT);

@@ -49,6 +49,7 @@ import {
 } from '@horus/connectors';
 import { openDb } from '@horus/db';
 import { stitch } from '@horus/stitcher';
+import { parseHostPort } from '../lib/ensure-host.js';
 
 async function stitchQueueMap(hostUrl: string, dbUrl: string, label: string): Promise<void> {
   const source = new SourceHttpClient({ baseUrl: hostUrl });
@@ -62,6 +63,20 @@ async function stitchQueueMap(hostUrl: string, dbUrl: string, label: string): Pr
     );
   } finally {
     await sql.end();
+  }
+}
+
+/**
+ * Whether the source-intelligence host at `hostUrl` is serving `root` (and not another repo
+ * that happens to occupy the same port). Best-effort: if the host can't report its repo
+ * (older backend / transient error) we do NOT block reuse, preserving prior behaviour.
+ */
+async function hostServesRepo(hostUrl: string, root: string): Promise<boolean> {
+  try {
+    const info = await new SourceHttpClient({ baseUrl: hostUrl }).hostInfo();
+    return resolve(info.repoPath) === resolve(root);
+  } catch {
+    return true;
   }
 }
 
@@ -205,7 +220,10 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
     let hostUrl: string | undefined;
     let spawned = false;
     for (const candidate of [configuredHost, readSourceHostUrl(root) ?? undefined]) {
-      if (candidate && (await isHostHealthy(candidate))) {
+      // Reuse a host only if it is healthy AND actually serving THIS repo — never another
+      // repo's host that happens to occupy the same port (the collision that leaked one
+      // repo's queue map into another's investigation).
+      if (candidate && (await isHostHealthy(candidate)) && (await hostServesRepo(candidate, root))) {
         hostUrl = candidate;
         break;
       }
@@ -240,7 +258,21 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
       } else {
         console.log(pc.dim('  already analyzed'));
       }
-      const port = await findFreePort();
+      // Prefer this repo's OWN prior port (from its config or last host.json) so a re-index
+      // keeps a STABLE port and never grabs the default 8420 out from under another repo —
+      // the port-collision that let one repo reuse another's host and leak its queue map.
+      const priorPort =
+        parseHostPort(configuredHost ?? '') ?? parseHostPort(readSourceHostUrl(root) ?? '');
+      let port: number;
+      if (priorPort !== null) {
+        try {
+          port = await findFreePort(priorPort, priorPort); // exactly the home port, if free
+        } catch {
+          port = await findFreePort(); // home port busy (another repo) — take any free one
+        }
+      } else {
+        port = await findFreePort();
+      }
       hostUrl = `http://127.0.0.1:${port}`;
       console.log(pc.dim(`  starting source-intelligence host on port ${port}…`));
       startHost(root, port);
@@ -264,8 +296,14 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
     // Build/refresh the local project-knowledge snapshot (HOR-293). Best-effort.
     buildKnowledgeIndex(root, config, label, configuredProject, opts);
 
-    if (spawned && !isConfigured) {
-      // Brand new repo — write a full local config and register it.
+    // A repo is "set up" once it has a discoverable local config. Compute this from the repo
+    // itself, NOT from `spawned`: a repo whose host was REUSED (not freshly spawned) used to
+    // fall through without ever writing a config, so `investigate` then failed to load one
+    // (the recurring "Cannot find module config/horus.config.ts").
+    const hasLocalConfig = discoverLocalConfig(root) !== null;
+    if (!isConfigured && !hasLocalConfig) {
+      // No config anywhere for this repo — write a full local config and register it, whether
+      // we spawned a host or reused one.
       const file: LocalConfigFile = {
         version: 1,
         project: {

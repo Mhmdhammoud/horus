@@ -766,6 +766,15 @@ export async function loadConfig(
       // Fall back to .ts for source-mode workflows (tsx, ts-node).
       const jsPath = resolve(cwd, 'config/horus.config.js');
       const tsPath = resolve(cwd, 'config/horus.config.ts');
+      // No `.horus/config.json`, no $HORUS_CONFIG, and no `config/horus.config.*` — this repo
+      // isn't set up. Fail with an ACTIONABLE message instead of a cryptic module-not-found
+      // (the recurring "Cannot find module .../config/horus.config.ts").
+      if (!existsSync(jsPath) && !existsSync(tsPath)) {
+        throw new Error(
+          `No Horus config found for ${cwd}. Run \`horus index\` in this repo to set it up, ` +
+            `or pass --config <path> / --name <project>.`,
+        );
+      }
       target = existsSync(jsPath) ? jsPath : tsPath;
     }
   }
