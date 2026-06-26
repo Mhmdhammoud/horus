@@ -71,6 +71,7 @@ export async function uploadInvestigationToCloud(
   await client.createAgentRun(projectId, investigation.id, {
     repositoryId: cfg.repository?.id,
     status: "completed",
+    agent: "Horus CLI",
     cliVersion: HORUS_VERSION,
     summary: report.summary,
     idempotencyKey: idempotencyKey(report.id, "run"),

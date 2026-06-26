@@ -330,6 +330,8 @@ export class CloudClient {
     body: {
       repositoryId?: string;
       status?: string;
+      agent?: string;
+      model?: string;
       cliVersion?: string;
       summary?: string;
       idempotencyKey?: string;
