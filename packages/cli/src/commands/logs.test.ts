@@ -5,8 +5,26 @@
  * HOR-213 — AI contract and prompt shape tests for `horus logs --ai`.
  */
 import { describe, it, expect } from 'vitest';
-import { resolveRawLevel, LOGS_AI_CONTRACT, matchServiceLabel } from './logs.js';
+import { resolveRawLevel, parseWhere, LOGS_AI_CONTRACT, matchServiceLabel } from './logs.js';
 import { buildInterpretationPrompt } from '@horus/ai';
+
+describe('parseWhere (HOR-344)', () => {
+  it('returns [] for undefined', () => {
+    expect(parseWhere(undefined)).toEqual([]);
+  });
+
+  it('parses field=value entries (value may contain =)', () => {
+    expect(parseWhere(['context.brand_id=42', 'context.q=a=b'])).toEqual([
+      { field: 'context.brand_id', value: '42' },
+      { field: 'context.q', value: 'a=b' },
+    ]);
+  });
+
+  it('throws on a malformed entry instead of silently ignoring it', () => {
+    expect(() => parseWhere(['nope'])).toThrow(/field=value/);
+    expect(() => parseWhere(['=42'])).toThrow(/field=value/);
+  });
+});
 
 describe('resolveRawLevel', () => {
   it('defaults to error when neither --level nor --all-levels is set', () => {

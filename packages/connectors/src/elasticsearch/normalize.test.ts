@@ -240,6 +240,23 @@ describe('buildSearchBody (Meritt mapping)', () => {
     const body = buildSearchBody({});
     expect(body['size']).toBe(50);
   });
+
+  it('AND-combines --where filters, matching keyword or .keyword subfield (HOR-344)', () => {
+    const body = buildSearchBody({
+      where: [
+        { field: 'context.brand_id', value: '42' },
+        { field: 'context.event', value: 'product.activated' },
+      ],
+    });
+    const filter = ((body['query'] as Record<string, unknown>)['bool'] as Record<string, unknown>)[
+      'filter'
+    ] as Record<string, unknown>[];
+    const whereClauses = filter.filter((f) => 'bool' in f);
+    expect(whereClauses).toHaveLength(2);
+    const first = (whereClauses[0]!['bool'] as Record<string, unknown>)['should'] as unknown[];
+    expect(first).toContainEqual({ term: { 'context.brand_id': '42' } });
+    expect(first).toContainEqual({ term: { 'context.brand_id.keyword': '42' } });
+  });
 });
 
 // ---------------------------------------------------------------------------

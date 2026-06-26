@@ -203,6 +203,12 @@ export interface LogRecord {
   raw: Record<string, unknown>;
 }
 
+/** A structured field-equality filter, e.g. `context.brand_id = 42` (HOR-344). */
+export interface WhereClause {
+  field: string;
+  value: string;
+}
+
 export interface LogQuery {
   service?: string;
   index?: string;
@@ -210,6 +216,13 @@ export interface LogQuery {
   to?: string;
   level?: LogLevel;
   text?: string;
+  /**
+   * Structured field-equality filters (HOR-344). Each entry AND-combines a term
+   * match on a (dotted) field path, e.g. `{ field: 'context.brand_id', value: '42' }`.
+   * Matches whether the field is keyword-mapped or carries a `.keyword` subfield —
+   * so `--where` finds records `--grep` can't (grep only matches the message).
+   */
+  where?: WhereClause[];
   /**
    * When true, `text` is matched across the message, `detail`, and `context.*`
    * fields (not just the message) so error strings buried in `detail`/`context`
@@ -293,6 +306,24 @@ export function buildLevelFilter(
   return { terms: { [m.levelField]: stringLevels } };
 }
 
+/**
+ * Build AND-combined term filters for structured `--where field=value` clauses
+ * (HOR-344). Each clause matches whether the field is keyword-mapped or carries a
+ * `.keyword` subfield, so callers don't need to know the index mapping.
+ */
+export function buildWhereFilters(where: WhereClause[] | undefined): unknown[] {
+  if (where === undefined || where.length === 0) return [];
+  return where.map((w) => ({
+    bool: {
+      should: [
+        { term: { [w.field]: w.value } },
+        { term: { [`${w.field}.keyword`]: w.value } },
+      ],
+      minimum_should_match: 1,
+    },
+  }));
+}
+
 // ---------------------------------------------------------------------------
 // Query builders
 // ---------------------------------------------------------------------------
@@ -338,6 +369,8 @@ export function buildSearchBody(
     filters.push({ term: { [serviceTermField(mapping)]: q.service } });
   }
 
+  filters.push(...buildWhereFilters(q.where));
+
   const mustClause = buildTextMust(q, mapping);
 
   return {
@@ -378,6 +411,8 @@ export function buildErrorAggBody(
   if (q.eventCode !== undefined) {
     filters.push({ term: { [signatureTermField(mapping)]: q.eventCode } });
   }
+
+  filters.push(...buildWhereFilters(q.where));
 
   // Use the mapping's keyword-aware term field when the field matches the
   // configured eventCodeField; otherwise fall back to appending .keyword

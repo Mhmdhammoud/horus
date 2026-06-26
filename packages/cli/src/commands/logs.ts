@@ -55,6 +55,27 @@ export function resolveRawLevel(opts: { level?: string; allLevels?: boolean }): 
   return (opts.level as LogLevel | undefined) ?? 'error';
 }
 
+/**
+ * Parse repeatable `--where field=value` into structured filters (HOR-344).
+ * Throws on a malformed entry so the user gets a clear message instead of a
+ * silently-ignored filter.
+ */
+export function parseWhere(raw: string[] | undefined): { field: string; value: string }[] {
+  if (raw === undefined) return [];
+  return raw.map((entry) => {
+    const eq = entry.indexOf('=');
+    if (eq <= 0) {
+      throw new Error(
+        `Invalid --where "${entry}" — expected field=value, e.g. --where context.brand_id=42`,
+      );
+    }
+    return { field: entry.slice(0, eq).trim(), value: entry.slice(eq + 1).trim() };
+  });
+}
+
+const whereLabel = (where: { field: string; value: string }[]): string =>
+  where.map((w) => `${w.field}=${w.value}`).join(', ');
+
 function levelColor(level: string, text: string): string {
   if (level === 'error' || level === 'fatal') return pc.red(text);
   if (level === 'warn') return pc.yellow(text);
@@ -99,6 +120,8 @@ export async function runLogs(
     allLevels?: boolean;
     /** Aggregate error counts by a context/structured field (e.g. context.brand_id). */
     groupBy?: string;
+    /** Repeatable structured filters: context.field=value, AND-combined (HOR-344). */
+    where?: string[];
     errors?: boolean;
     limit?: string;
     json?: boolean;
@@ -109,6 +132,16 @@ export async function runLogs(
   },
 ): Promise<number> {
   try {
+    let where: { field: string; value: string }[];
+    try {
+      where = parseWhere(opts.where);
+    } catch (err) {
+      console.error(pc.red((err as Error).message));
+      return 1;
+    }
+    const hasWhere = where.length > 0;
+    const whereArg = hasWhere ? where : undefined;
+
     const config = await loadConfig(opts.config, { name: opts.name });
 
     let renv;
@@ -183,8 +216,13 @@ export async function runLogs(
     // counts (HOR-209) — previously it dumped recent INFO/DEBUG. An explicit --level
     // overrides; --all-levels removes the severity floor entirely.
     if (opts.raw === true) {
-      const rawLevel = resolveRawLevel(opts);
-      const limit = opts.limit !== undefined ? Math.min(Number(opts.limit), 1000) : 20;
+      // A --where lookup targets specific structured records, often emitted at
+      // INFO/DEBUG — so don't apply the error+ floor unless --level is explicit
+      // (HOR-344: the error+ default previously hid the INFO activation logs).
+      const rawLevel = hasWhere && opts.level === undefined ? undefined : resolveRawLevel(opts);
+      // A filtered lookup wants the matching records, not a 20-line preview.
+      const defaultLimit = hasWhere ? 200 : 20;
+      const limit = opts.limit !== undefined ? Math.min(Number(opts.limit), 1000) : defaultLimit;
       const records = await logs.searchLogs({
         service: resolvedService,
         from,
@@ -193,8 +231,10 @@ export async function runLogs(
         // grep searches message + detail + context.* so error strings buried
         // outside the message field are still found (HOR-216).
         broadText: opts.grep !== undefined,
+        where: whereArg,
         limit,
       });
+      const truncated = records.length === limit;
       if (opts.json) {
         // Curated record shape — omit the raw ES doc (may be large / contain anything).
         console.log(
@@ -208,6 +248,8 @@ export async function runLogs(
                 from,
                 level: rawLevel ?? 'all',
                 grep: opts.grep ?? null,
+                where: whereArg ?? null,
+                truncated,
               },
               records: records.map((r) => ({
                 timestamp: r.timestamp,
@@ -229,6 +271,20 @@ export async function runLogs(
         );
         return 0;
       }
+      // Surface the scope on stderr (so it never pollutes piped stdout) — this is
+      // where the error+ default and any --where filters become visible (HOR-344).
+      console.error(
+        pc.dim(
+          `logs: ${renv.project}/${renv.env}` +
+            (resolvedService ? ` · service ${resolvedService}` : '') +
+            ` · from ${fromDisplay} UTC · level ${rawLevel ?? 'all'}` +
+            (hasWhere ? ` · where ${whereLabel(where)}` : '') +
+            (opts.grep ? ` · grep "${opts.grep}"` : '') +
+            (rawLevel === 'error' && !hasWhere
+              ? '  (error+ only — use --all-levels for info/debug)'
+              : ''),
+        ),
+      );
       if (records.length === 0) {
         console.log(pc.dim('No logs matched.'));
         return 0;
@@ -245,6 +301,14 @@ export async function runLogs(
           console.log(pc.dim(`    ${key}: ${value.slice(0, 200)}`));
         }
       }
+      if (truncated) {
+        console.error(
+          pc.yellow(
+            `[warn] showing the first ${limit} record(s) — results may be truncated. ` +
+              `Narrow with --where/--since/--level or raise --limit (max 1000).`,
+          ),
+        );
+      }
       return 0;
     }
 
@@ -259,6 +323,7 @@ export async function runLogs(
           from,
           text: opts.grep,
           broadText: opts.grep !== undefined,
+          where: whereArg,
         },
         field,
       );
@@ -274,6 +339,7 @@ export async function runLogs(
                 from,
                 severity: 'error+',
                 grep: opts.grep ?? null,
+                where: whereArg ?? null,
                 groupBy: field,
               },
               buckets,
@@ -289,7 +355,8 @@ export async function runLogs(
           pc.dim(
             ` — ${renv.project}/${renv.env}` +
               (resolvedService ? ` · service ${resolvedService}` : '') +
-              (opts.grep ? ` · grep "${opts.grep}"` : ''),
+              (opts.grep ? ` · grep "${opts.grep}"` : '') +
+              (hasWhere ? ` · where ${whereLabel(where)}` : ''),
           ),
       );
       console.log(pc.dim(`  index: ${indexPattern} · from: ${fromDisplay} UTC · severity: error+`));
@@ -313,6 +380,7 @@ export async function runLogs(
       from,
       text: opts.grep,
       broadText: opts.grep !== undefined,
+      where: whereArg,
     });
 
     let scopeService = resolvedService;
@@ -323,7 +391,7 @@ export async function runLogs(
     // This prevents `horus logs "sale"` from silently implying there are no errors
     // when investigation can find thousands (HOR-157).
     if (analysis.signatures.length === 0 && resolvedService !== undefined) {
-      const broader = await logs.analyzeErrors({ from, text: opts.grep, broadText: opts.grep !== undefined });
+      const broader = await logs.analyzeErrors({ from, text: opts.grep, broadText: opts.grep !== undefined, where: whereArg });
       if (broader.signatures.length > 0) {
         // HOR-319 (Bug 3): before silently widening to all services, try to resolve the
         // requested name against the labels that actually carry errors. An exact label
@@ -337,6 +405,7 @@ export async function runLogs(
             from,
             text: opts.grep,
             broadText: opts.grep !== undefined,
+            where: whereArg,
           });
           if (scoped.signatures.length > 0) {
             analysis = scoped;
@@ -371,6 +440,7 @@ export async function runLogs(
               from,
               severity: 'error+',
               grep: opts.grep ?? null,
+              where: whereArg ?? null,
             },
             totalErrors: analysis.totalErrors,
             signatures: analysis.signatures,
@@ -389,7 +459,8 @@ export async function runLogs(
         pc.dim(
           ` — ${renv.project}/${renv.env}` +
             (scopeService ? ` · service ${scopeService}` : '') +
-            (opts.grep ? ` · grep "${opts.grep}"` : ''),
+            (opts.grep ? ` · grep "${opts.grep}"` : '') +
+            (hasWhere ? ` · where ${whereLabel(where)}` : ''),
         ),
     );
     console.log(pc.dim(`  index: ${indexPattern} · from: ${fromDisplay} UTC · severity: error+`));

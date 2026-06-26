@@ -14,6 +14,7 @@ import {
   valueToLevel,
   buildLevelFilter,
   buildTextMust,
+  buildWhereFilters,
   getField,
   serviceTermField,
   signatureTermField,
@@ -122,6 +123,8 @@ export function buildErrorAnalysisBody(
   if (q.eventCode !== undefined) {
     filters.push({ term: { [sigTerm]: q.eventCode } });
   }
+
+  filters.push(...buildWhereFilters(q.where));
 
   const mustClause = buildTextMust(q, mapping);
 

@@ -849,6 +849,12 @@ Examples:
     .option('--raw', 'dump individual log lines instead of synthesized evidence (error+ by default)')
     .option('--all-levels', 'with --raw: show all severity levels, not just error+')
     .option('--group-by <field>', 'aggregate error counts by a context field, e.g. context.brand_id')
+    .option(
+      '--where <field=value>',
+      'filter by a structured context field (repeatable, AND-combined), e.g. --where context.brand_id=42',
+      (val: string, acc: string[]) => [...acc, val],
+      [] as string[],
+    )
     .option('--limit <n>', 'max records (with --raw)')
     .option('--json', 'output JSON')
     .option('--ai', 'append AI narration of error signatures (default mode only, not --raw or --json)')
@@ -867,6 +873,7 @@ Examples:
           raw?: boolean;
           allLevels?: boolean;
           groupBy?: string;
+          where?: string[];
           limit?: string;
           json?: boolean;
           ai?: boolean;
