@@ -1,10 +1,17 @@
 import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
 import { createConnectors } from '@horus/connectors';
-import { whatChanged, renderWhatChanged, whatChangedToJSON } from '@horus/engine';
+import {
+  whatChanged,
+  renderWhatChanged,
+  whatChangedToJSON,
+  type WhatChangedReport,
+} from '@horus/engine';
 import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
 import { renderAiInterpretation } from '../lib/ai-provider.js';
+import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
+import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
 
 const DEFAULT_SINCE = '7 days ago';
 
@@ -34,6 +41,8 @@ export async function runWhatChanged(
     json?: boolean;
     ai?: boolean;
     aiModel?: string;
+    /** Push the report to the linked Horus Cloud project. */
+    push?: boolean;
     /** Injectable AI provider for tests — bypasses credential resolution. */
     _aiProvider?: InterpretationProvider;
   },
@@ -77,9 +86,85 @@ export async function runWhatChanged(
       }
     }
 
+    if (opts.push) {
+      await pushChangeReport(r, opts.repo);
+    }
+
     return 0;
   } catch (err) {
     console.error(pc.red((err as Error).message));
     return 1;
+  }
+}
+
+/**
+ * Push a what-changed report to the linked Horus Cloud project so the team can
+ * see it in the dashboard. Best-effort: a missing login/link or a network error
+ * warns but never fails the command (the local report already printed).
+ */
+async function pushChangeReport(
+  r: WhatChangedReport,
+  repoCwd?: string,
+): Promise<void> {
+  const session = authedClient();
+  if (!session) {
+    console.error(pc.yellow('[cloud] not logged in — run `horus login` to push reports.'));
+    return;
+  }
+  const cfg = readCloudConfig(repoRootOrCwd(repoCwd));
+  if (!isCloudActive(cfg)) {
+    console.error(pc.yellow('[cloud] repo not linked — run `horus cloud link` to push reports.'));
+    return;
+  }
+  const projectId = cfg.project?.id;
+  if (!projectId) return;
+
+  const symName = (s: unknown): string => {
+    if (s && typeof s === 'object') {
+      const o = s as Record<string, unknown>;
+      return String(o.name ?? o.fqn ?? o.id ?? o.symbol ?? '');
+    }
+    return String(s);
+  };
+  const ci = r.changeImpact;
+  const payload: Record<string, unknown> = {
+    summary: r.summary,
+    note: r.note,
+    window: r.window,
+    commitCount: r.commitCount,
+    topCommits: r.topCommits.map((c) => ({
+      hash: c.shortSha,
+      message: c.subject,
+      author: c.author,
+      files: c.files.length,
+    })),
+    changeImpact: ci
+      ? {
+          added: ci.added.map(symName),
+          modified: ci.modified.map((m) => symName(m.after)),
+          removed: ci.removed.map(symName),
+        }
+      : null,
+    contributors: r.contributors,
+    queueTopology: r.queueTopology,
+  };
+
+  try {
+    await session.client.createChangeReport(projectId, {
+      service: r.window.service ?? undefined,
+      since: r.window.since ?? undefined,
+      until: r.window.until ?? undefined,
+      summary: r.summary,
+      commitCount: r.commitCount,
+      contributorCount: r.contributors.length,
+      symbolsAdded: ci?.added.length ?? 0,
+      symbolsModified: ci?.modified.length ?? 0,
+      symbolsRemoved: ci?.removed.length ?? 0,
+      queueTopologyTouched: r.queueTopology.touched,
+      payload,
+    });
+    console.error(pc.dim('[cloud] pushed change report.'));
+  } catch (err) {
+    console.error(pc.yellow(`[cloud] push failed: ${(err as Error).message}`));
   }
 }

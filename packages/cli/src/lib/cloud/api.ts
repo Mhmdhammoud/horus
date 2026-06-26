@@ -158,6 +158,28 @@ export interface PushKnowledgeSnapshotBody {
   idempotencyKey?: string;
 }
 
+export interface ChangeReportBody {
+  service?: string;
+  since?: string;
+  until?: string;
+  summary: string;
+  commitCount?: number;
+  contributorCount?: number;
+  symbolsAdded?: number;
+  symbolsModified?: number;
+  symbolsRemoved?: number;
+  queueTopologyTouched?: boolean;
+  /** The full deterministic WhatChangedReport, stored for the dashboard. */
+  payload?: Record<string, unknown>;
+}
+
+export interface ChangeReportRecord {
+  id: string;
+  projectId: string;
+  summary: string;
+  createdAt: string;
+}
+
 export class CloudClient {
   constructor(
     private readonly baseUrl: string,
@@ -361,6 +383,18 @@ export class CloudClient {
     return this.request<KnowledgeSnapshotRecord>(
       "GET",
       `/v1/projects/${projectId}/knowledge-snapshots/latest`,
+    );
+  }
+
+  /** Push a `horus what-changed` report to the linked cloud project. */
+  createChangeReport(
+    projectId: string,
+    body: ChangeReportBody,
+  ): Promise<ChangeReportRecord> {
+    return this.request<ChangeReportRecord>(
+      "POST",
+      `/v1/projects/${projectId}/changes`,
+      body,
     );
   }
 }

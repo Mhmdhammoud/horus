@@ -594,6 +594,7 @@ Examples:
     .option('--json', 'output JSON')
     .option('--ai', 'append AI interpretation of the changes')
     .option('--ai-model <model>', 'override the AI model (default: claude-opus-4-8)')
+    .option('--push', 'push the report to the linked Horus Cloud project')
     .action(
       async (
         service: string | undefined,
@@ -605,6 +606,7 @@ Examples:
           json?: boolean;
           ai?: boolean;
           aiModel?: string;
+          push?: boolean;
         },
       ) => {
         process.exitCode = await runWhatChanged(service, {
@@ -615,6 +617,7 @@ Examples:
           json: opts.json,
           ai: opts.ai,
           aiModel: opts.aiModel,
+          push: opts.push,
         });
       },
     );
