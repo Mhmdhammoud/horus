@@ -69,8 +69,12 @@ function makeCode(opts: {
   highCoupling?: number;
   externalFiles?: Record<string, number>;
   symbols?: { id: string; name: string; filePath: string }[];
+  hostDown?: boolean;
 }): CodeProvider {
   return {
+    async health() {
+      return { ok: opts.hostDown !== true };
+    },
     async cypher(query: string) {
       if (query.includes('member_of')) {
         return { rows: (opts.subsystems ?? []).map(([n, c]) => [n, c]) };
@@ -276,9 +280,10 @@ describe('buildMemoryView — broader-recall fallback + low prior evidence', () 
     });
     const view = await buildMemoryView('payments', { ...DEPS_BASE, code, db });
     expect(view.pastInvestigations.map((p) => p.title)).toContain('payments incident postmortem');
-    // No scoped memory rows at all -> low prior evidence with the "no prior" reason.
+    // A prior investigation IS shown (via fallback) but was never confirmed → low prior evidence,
+    // and the reason must reflect that, not the contradictory "no prior investigations".
     expect(view.weakSpots.lowPriorEvidence).toBe(true);
-    expect(view.weakSpots.lowPriorEvidenceReason).toContain('No prior investigations');
+    expect(view.weakSpots.lowPriorEvidenceReason).toContain('never with a confirmed cause');
   });
 
   it('isolates by project — never returns another project memory', async () => {
@@ -298,5 +303,27 @@ describe('buildMemoryView — broader-recall fallback + low prior evidence', () 
     const view = await buildMemoryView('payments', { ...DEPS_BASE, code, db });
     expect(view.pastInvestigations).toHaveLength(0);
     expect(view.recurringPatterns).toHaveLength(0);
+  });
+});
+
+describe('buildMemoryView — honesty: source-host reachability + accurate low-prior reason', () => {
+  it('flags sourceAvailable=false and the render says WHY when the host is unreachable', async () => {
+    const code = makeCode({ hostDown: true, subsystems: [['payments-core', 4]], symbols: [] });
+    const db = makeDb({ incidentMemory: [], investigations: [] });
+    const view = await buildMemoryView('payments', { ...DEPS_BASE, code, db });
+    expect(view.sourceAvailable).toBe(false);
+    const md = renderMemoryView(view);
+    expect(md).toContain('host unreachable');
+    expect(md).toContain('incident memory only');
+  });
+
+  it('uses the "no prior investigations" reason ONLY when nothing is displayed', async () => {
+    const code = makeCode({ symbols: [] });
+    const db = makeDb({ incidentMemory: [], investigations: [] }); // truly empty
+    const view = await buildMemoryView('payments', { ...DEPS_BASE, code, db });
+    expect(view.pastInvestigations).toHaveLength(0);
+    expect(view.sourceAvailable).toBe(true);
+    expect(view.weakSpots.lowPriorEvidence).toBe(true);
+    expect(view.weakSpots.lowPriorEvidenceReason).toContain('No prior investigations');
   });
 });

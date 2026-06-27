@@ -23,12 +23,23 @@ export function renderMemoryView(v: MemoryView): string {
   lines.push('');
   lines.push(v.summary);
   lines.push('');
+  if (!v.sourceAvailable) {
+    lines.push('> ⚠ Source-intelligence host unreachable — run `horus index`.');
+    lines.push(
+      '> Showing **incident memory only**; code structure (owned areas, runtime paths, external systems) is unavailable, not absent.',
+    );
+    lines.push('');
+  }
 
   // --- Owned areas ------------------------------------------------------
   lines.push('## Owned areas');
   lines.push('');
   if (v.ownedAreas.subsystems.length === 0) {
-    lines.push('No scope-matched subsystems.');
+    lines.push(
+      v.sourceAvailable
+        ? 'No scope-matched subsystems.'
+        : '_Unavailable — source host unreachable (run `horus index`)._',
+    );
   } else {
     for (const s of v.ownedAreas.subsystems) {
       const tag = s.testy ? ' (tests)' : '';
@@ -48,7 +59,11 @@ export function renderMemoryView(v: MemoryView): string {
     }
     lines.push('_Probabilistic — git commit history only, not an org chart._');
   } else {
-    lines.push('_Ownership unavailable — no source symbol matched the scope._');
+    lines.push(
+      v.sourceAvailable
+        ? '_Ownership unavailable — no source symbol matched the scope._'
+        : '_Ownership unavailable — source host unreachable._',
+    );
   }
   lines.push('');
 
@@ -56,7 +71,11 @@ export function renderMemoryView(v: MemoryView): string {
   lines.push('## Runtime paths & queues');
   lines.push('');
   if (v.runtimePaths.asyncBoundaries.length === 0) {
-    lines.push('No scope-matched async boundaries.');
+    lines.push(
+      v.sourceAvailable
+        ? 'No scope-matched async boundaries.'
+        : '_Unavailable — source host unreachable._',
+    );
   } else {
     for (const b of v.runtimePaths.asyncBoundaries) {
       lines.push(`- ${b.queueName}: ${fmtEndpoints(b.producers)} -> ${fmtEndpoints(b.workers)}`);
@@ -78,7 +97,11 @@ export function renderMemoryView(v: MemoryView): string {
   lines.push('## External systems');
   lines.push('');
   if (v.externalSystems.length === 0) {
-    lines.push('No scope-matched external systems.');
+    lines.push(
+      v.sourceAvailable
+        ? 'No scope-matched external systems.'
+        : '_Unavailable — source host unreachable._',
+    );
   } else {
     for (const e of v.externalSystems) lines.push(`- ${e.name} (${e.files} files)`);
   }

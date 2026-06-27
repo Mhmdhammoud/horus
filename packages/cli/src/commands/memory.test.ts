@@ -78,6 +78,7 @@ const FIXTURE: MemoryView = {
   project: 'my-api',
   area: 'src/payments',
   tokens: ['payments', 'checkout'],
+  sourceAvailable: true,
   ownedAreas: {
     subsystems: [
       { name: 'payments', members: 24, testy: false },

@@ -118,6 +118,13 @@ export interface MemoryView {
   /** moduleArea(scope) — the first-3-segment area shared with incident signatures/tags. */
   area: string;
   tokens: string[];
+  /**
+   * False when the source-intelligence host is unreachable — the code-knowledge sections
+   * (owned areas / runtime paths / external systems) are then empty because the graph couldn't
+   * be queried, NOT because nothing matched. Surfaced so the view says WHY rather than silently
+   * degrading to incident-only (honesty — same class as HOR-373).
+   */
+  sourceAvailable: boolean;
   ownedAreas: MemoryOwnedAreas;
   runtimePaths: MemoryRuntimePaths;
   externalSystems: ExternalSystem[];
@@ -257,6 +264,17 @@ function toIso(value: unknown): string | null {
  */
 export async function buildMemoryView(scope: string, deps: MemoryViewDeps): Promise<MemoryView> {
   const { code, db, repoPath, project } = deps;
+
+  // 0. Is the source-intelligence host reachable? If not, the code-knowledge sections below will
+  //    be empty because the graph can't be queried — surface that instead of silently showing
+  //    "0 subsystems" (honesty). The incident half (DB) still works when the host is down.
+  let sourceAvailable = true;
+  try {
+    const h = await code.health();
+    sourceAvailable = h.ok === true;
+  } catch {
+    sourceAvailable = false;
+  }
 
   // 1. Whole-repo architecture model (queue edges scoped to the project — HOR-207).
   const architecture = await discoverArchitecture({ code, db, project });
@@ -406,7 +424,10 @@ export async function buildMemoryView(scope: string, deps: MemoryViewDeps): Prom
   const testLightSubsystems = subsystems.filter((s) => s.testy).map((s) => s.name);
   let lowPriorEvidence: boolean;
   let lowPriorEvidenceReason: string;
-  if (scopedMemory.length === 0) {
+  if (past.length === 0) {
+    // Key off the DISPLAYED investigations, not just tag-matched incident_memory rows — the
+    // broader-recall fallback can surface investigations even when scopedMemory is empty, so
+    // basing this on scopedMemory contradicted the Past-investigations section.
     lowPriorEvidence = true;
     lowPriorEvidenceReason =
       'No prior investigations on record for this area — predictions rest on code structure + git history only.';
@@ -450,6 +471,7 @@ export async function buildMemoryView(scope: string, deps: MemoryViewDeps): Prom
     project,
     area,
     tokens: tokenArr,
+    sourceAvailable,
     ownedAreas: { subsystems, seedSymbol, ownership },
     runtimePaths,
     externalSystems: filtered.externalSystems,
