@@ -12,7 +12,24 @@ vi.mock('@horus/connectors', () => ({
 }));
 
 import * as connectors from '@horus/connectors';
-import { estimateOwnership } from './ownership.js';
+import { estimateOwnership, isBotAuthor } from './ownership.js';
+
+describe('isBotAuthor (HOR-369)', () => {
+  it('flags bot identities, not humans', () => {
+    for (const bot of [
+      'github-actions[bot]',
+      'dependabot[bot]',
+      'renovate[bot]',
+      'snyk-bot',
+      'semantic-release-bot',
+    ]) {
+      expect(isBotAuthor(bot)).toBe(true);
+    }
+    for (const human of ['Mohammad Hammoud', 'alice', 'Sebastián Ramírez', 'bot-builder-jane']) {
+      expect(isBotAuthor(human)).toBe(false);
+    }
+  });
+});
 
 const mockGitFileContributors = vi.mocked(connectors.gitFileContributors);
 

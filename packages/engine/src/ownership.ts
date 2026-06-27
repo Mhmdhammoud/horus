@@ -8,6 +8,13 @@ import type { CodeProvider, FileContributor } from '@horus/connectors';
 import { gitFileContributors } from '@horus/connectors';
 import type { Symbol } from '@horus/core';
 
+/** Bot commit identities that must never be surfaced as a maintainer (HOR-369). */
+const BOT_AUTHOR_RE =
+  /\[bot\]|^(?:github-actions|dependabot|renovate(?:-bot)?|greenkeeper|snyk-bot|mergify|codecov|semantic-release-bot|allcontributors)\b/i;
+export function isBotAuthor(author: string): boolean {
+  return BOT_AUTHOR_RE.test((author ?? '').trim());
+}
+
 export interface OwnershipEstimate {
   query: string;
   symbol: Symbol | null;
@@ -122,12 +129,17 @@ export async function estimateOwnership(
 
   const contributors = await gitFileContributors(deps.repoPath, file);
 
-  const total = contributors.reduce((n, c) => n + c.commits, 0);
-  const lead = contributors[0] ?? null;
+  // Bots (github-actions[bot], dependabot[bot], …) can dominate a file's commit count yet are
+  // never the maintainer — rank only HUMAN contributors, falling back to all if every author is
+  // a bot (HOR-369). `contributors` (the full list) is still returned for evidence.
+  const humans = contributors.filter((c) => !isBotAuthor(c.author));
+  const ranked = humans.length > 0 ? humans : contributors;
+  const total = ranked.reduce((n, c) => n + c.commits, 0);
+  const lead = ranked[0] ?? null;
   const maintainerShare = total > 0 && lead !== null ? lead.commits / total : 0;
 
-  // Most active recently = contributor with the latest lastDate
-  const byRecent = [...contributors].sort((a, b) =>
+  // Most active recently = (human) contributor with the latest lastDate
+  const byRecent = [...ranked].sort((a, b) =>
     b.lastDate < a.lastDate ? -1 : b.lastDate > a.lastDate ? 1 : 0,
   );
   const mostActiveRecent = byRecent[0]?.author ?? null;
