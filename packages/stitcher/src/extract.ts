@@ -380,11 +380,18 @@ export function extractCeleryQueueGraph(nodes: CeleryNodeInput[]): QueueGraph {
   const producers: { queue: string; symbol: string; file: string }[] = [];
   const workers: { queue: string; symbol: string; file: string }[] = [];
 
+  // A File node's name is the filename (e.g. `views.py`); its content also contains the
+  // function bodies, so it double-matches `.delay()` already attributed to the function node.
+  // Skip producer attribution from File nodes so the producer symbol is the function, not the
+  // file (workers are unaffected — they derive their symbol from the `def` name, not n.name).
+  const FILE_NODE_RE = /\.(py|pyi|js|jsx|ts|tsx|mjs|cjs)$/i;
+
   for (const n of nodes) {
     for (const m of n.content.matchAll(CELERY_TASK_DEF_RE)) {
       const task = m[1];
       if (task) workers.push({ queue: task, symbol: task, file: n.filePath });
     }
+    if (FILE_NODE_RE.test(n.name)) continue;
     for (const m of n.content.matchAll(CELERY_ENQUEUE_RE)) {
       const task = m[1];
       if (task) producers.push({ queue: task, symbol: n.name || baseName(n.filePath), file: n.filePath });

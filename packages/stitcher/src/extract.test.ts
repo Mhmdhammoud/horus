@@ -40,6 +40,18 @@ describe('extractCeleryQueueGraph (HOR-356)', () => {
     expect(solo.edges[0]?.producerSymbol).toBeNull();
     expect(solo.edges[0]?.workerSymbol).toBe('cleanup');
   });
+
+  it('attributes producers to functions, not File nodes', () => {
+    const withFile = extractCeleryQueueGraph([
+      { name: 'send_email', filePath: 'app/tasks.py', content: '@shared_task\ndef send_email(to):\n    pass' },
+      { name: 'signup', filePath: 'app/views.py', content: 'def signup(e):\n    send_email.delay(e)' },
+      // File node: name is the filename, content is the whole file (also contains `.delay`).
+      { name: 'views.py', filePath: 'app/views.py', content: 'def signup(e):\n    send_email.delay(e)' },
+    ]);
+    const producers = withFile.edges.map((e) => e.producerSymbol);
+    expect(producers).toContain('signup');
+    expect(producers).not.toContain('views.py');
+  });
 });
 
 // ---------------------------------------------------------------------------
