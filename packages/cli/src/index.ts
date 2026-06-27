@@ -782,7 +782,10 @@ Examples:
   program
     .command('ask <id> <directive>')
     .description(
-      'Ask about or refine a saved investigation — reuses evidence, no re-query.\n' +
+      'Ask about or refine a saved investigation — reuses evidence; code-locating\n' +
+        '  questions re-query the source host for fresh file:line citations.\n' +
+        '  Code-locating (fresh source lookup):\n' +
+        '    "where is processOrder defined?" · "which file has OrderService?"\n' +
         '  Questions (direct answers):\n' +
         '    "what evidence contradicts <topic>?"  · "what evidence is missing?"\n' +
         '    "why is confidence not higher?"\n' +

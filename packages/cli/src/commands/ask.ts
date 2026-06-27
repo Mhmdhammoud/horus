@@ -1,5 +1,9 @@
 import pc from 'picocolors';
 import { openDb, getInvestigation } from '@horus/db';
+import { loadConfig } from '@horus/core';
+import type { Symbol, SymbolContext } from '@horus/core';
+import { codeForRepo } from '@horus/connectors';
+import type { CodeProvider } from '@horus/connectors';
 import { resolveDbUrl } from '../lib/db-url.js';
 import {
   refineInvestigation,
@@ -91,11 +95,197 @@ async function lookupLocalInvestigation(id: string, configPath?: string): Promis
   }
 }
 
+// ---------------------------------------------------------------------------
+// HOR-331 — fresh source lookup for code-locating questions
+// ---------------------------------------------------------------------------
+
+/**
+ * Phrases that signal a "where/how does this code live" question, as opposed to a
+ * question about the saved investigation's reasoning ("why is confidence low?").
+ */
+const CODE_LOCATING_PHRASES: readonly RegExp[] = [
+  /\bwhere\b.*\b(is|are|does|do|can\s+i\s+find|defined|declared|implemented|located|live[s]?)\b/i,
+  /\b(which|what)\s+file\b/i,
+  /\bhow\s+is\b.+\b(defined|implemented|declared|structured)\b/i,
+  /\bfind\b.*\b(definition|symbol|function|class|method|file)\b/i,
+  /\blocate\b/i,
+];
+
+/** Strip surrounding punctuation that clings to a word (`processOrder?` → `processOrder`). */
+function cleanToken(t: string): string {
+  return t.replace(/[?.,!:;'"()]+$/g, '').replace(/^[?.,!:;'"]+/g, '');
+}
+
+/**
+ * Heuristic: does `raw` look like a code identifier (camelCase, PascalCase, snake_case,
+ * or a `foo()` call) rather than an ordinary English word?
+ */
+function looksLikeSymbol(raw: string): boolean {
+  const t = raw.replace(/[?.,!:;]+$/g, '');
+  if (/\w\(\)$/.test(t)) return true; // foo()
+  const w = t.replace(/[()'"]/g, '');
+  if (w.length < 2) return false;
+  if (/[a-z][A-Z]/.test(w)) return true; // camelCase / PascalCase boundary
+  if (/^[A-Z][a-zA-Z0-9]*[A-Z]/.test(w)) return true; // PascalCase (two+ caps)
+  if (/^[a-zA-Z]\w*_\w+$/.test(w)) return true; // snake_case
+  return false;
+}
+
+/**
+ * HOR-331 — Classify a question as "code-locating": one that asks WHERE/HOW code lives
+ * (e.g. "where is X", "which file", "how is X defined") or that simply names a symbol-like
+ * token. These deserve a fresh source lookup rather than a replay of saved evidence.
+ */
+export function isCodeLocatingQuestion(directive: string): boolean {
+  const q = directive.trim();
+  if (!q) return false;
+  if (CODE_LOCATING_PHRASES.some((re) => re.test(q))) return true;
+  return q.split(/\s+/).some(looksLikeSymbol);
+}
+
+const LOCATE_STOPWORDS = new Set<string>([
+  'where', 'is', 'are', 'was', 'were', 'does', 'do', 'did', 'has', 'have', 'the', 'a',
+  'an', 'how', 'which', 'what', 'file', 'files', 'defined', 'define', 'declared',
+  'implemented', 'located', 'find', 'locate', 'can', 'i', 'in', 'code', 'to', 'of',
+  'for', 'that', 'this', 'it', 'function', 'class', 'method', 'symbol', 'definition',
+]);
+
+/**
+ * Reduce a natural-language question to the best query string for `searchSymbols`:
+ * prefer the symbol-like tokens, otherwise drop locate/stopwords and keep the remainder.
+ */
+export function extractSymbolQuery(directive: string): string {
+  const rawTokens = directive.split(/\s+/).filter(Boolean);
+  const symbols = rawTokens.filter(looksLikeSymbol).map(cleanToken).filter(Boolean);
+  if (symbols.length > 0) return symbols.join(' ');
+  const rest = rawTokens
+    .map(cleanToken)
+    .filter((t) => t && !LOCATE_STOPWORDS.has(t.toLowerCase()));
+  return rest.join(' ') || directive.trim();
+}
+
+/** Render a symbol's `file:line` (or `file:start-end`) citation. */
+function symbolLocation(s: { filePath: string; startLine?: number; endLine?: number }): string {
+  let loc = s.filePath;
+  if (s.startLine) {
+    loc += ':' + s.startLine;
+    if (s.endLine && s.endLine !== s.startLine) loc += '-' + s.endLine;
+  }
+  return loc;
+}
+
+function codeAnswerToJSON(
+  directive: string,
+  query: string,
+  symbols: Symbol[],
+  ctx: SymbolContext | null,
+): unknown {
+  return {
+    question: directive,
+    query,
+    source: 'source-host',
+    matches: symbols.map((s) => ({
+      name: s.name,
+      location: symbolLocation(s),
+      filePath: s.filePath,
+      startLine: s.startLine,
+      endLine: s.endLine,
+      signature: s.signature,
+    })),
+    snippet: ctx?.snippet,
+  };
+}
+
+function renderCodeAnswer(directive: string, symbols: Symbol[], ctx: SymbolContext | null): void {
+  const top = symbols[0];
+  if (!top) return;
+  console.log('');
+  console.log(pc.bold(directive));
+  console.log(`  ${pc.green('→')} ${pc.bold(top.name)}  ${pc.dim(symbolLocation(top))}`);
+  if (top.signature) console.log(`    ${pc.dim(top.signature)}`);
+  if (ctx?.snippet) {
+    for (const line of ctx.snippet.split('\n').slice(0, 3)) {
+      console.log(pc.dim('    ' + line));
+    }
+  }
+  const others = symbols.slice(1);
+  if (others.length > 0) {
+    console.log('');
+    console.log(pc.dim('  Other matches:'));
+    for (const s of others) {
+      console.log(`    - ${s.name}  ${pc.dim(symbolLocation(s))}`);
+    }
+  }
+  console.log('');
+  console.log(pc.dim('  (fresh source lookup — re-queried the source host)'));
+}
+
+/**
+ * HOR-331 — Answer a code-locating question by issuing a NEW lookup against the
+ * source-intelligence host (`searchSymbols` + `context`), with file:line citations —
+ * instead of re-printing saved evidence. Returns an exit code on success, or `null`
+ * when no host is configured / reachable / matched, so the caller can fall back to the
+ * saved-report path.
+ */
+async function answerFromSource(
+  directive: string,
+  opts: { config?: string; json?: boolean; repo?: string },
+): Promise<number | null> {
+  let code: CodeProvider;
+  try {
+    const config = await loadConfig(opts.config);
+    code = codeForRepo(config, opts.repo);
+  } catch {
+    return null; // no config / no source connector → fall back to saved report
+  }
+
+  let healthOk = false;
+  try {
+    healthOk = (await code.health()).ok;
+  } catch {
+    healthOk = false;
+  }
+  if (!healthOk) return null; // host unreachable → fall back
+
+  const query = extractSymbolQuery(directive);
+  let symbols: Symbol[];
+  try {
+    symbols = await code.searchSymbols(query, 5);
+  } catch {
+    return null;
+  }
+  if (!symbols || symbols.length === 0) return null; // host-miss → fall back
+
+  const top = symbols[0];
+  let ctx: SymbolContext | null = null;
+  try {
+    ctx = top ? await code.context(top.id) : null;
+  } catch {
+    ctx = null; // citations from searchSymbols are enough; context is best-effort
+  }
+
+  if (opts.json) {
+    console.log(JSON.stringify(codeAnswerToJSON(directive, query, symbols, ctx), null, 2));
+  } else {
+    renderCodeAnswer(directive, symbols, ctx);
+  }
+  return 0;
+}
+
 export async function runAsk(
   id: string,
   directive: string,
-  opts: { config?: string; json?: boolean },
+  opts: { config?: string; json?: boolean; repo?: string },
 ): Promise<number> {
+  // HOR-331: a code-locating question ("where is X", "which file", a symbol token, …)
+  // deserves a FRESH answer from the source host with file:line citations — not a replay
+  // of stale saved evidence. Try that first; fall back to the saved report on any miss
+  // (no host configured, host unreachable, or no symbol matched).
+  if (isCodeLocatingQuestion(directive)) {
+    const located = await answerFromSource(directive, opts);
+    if (located !== null) return located;
+  }
+
   const repoRoot = repoRootOrCwd();
   const cloudCfg = readCloudConfig(repoRoot);
 
