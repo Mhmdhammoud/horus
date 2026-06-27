@@ -45,7 +45,11 @@ async function ensureBackendPinned(write: (line: string) => void): Promise<void>
   try {
     await execFileAsync(
       'uv',
-      ['tool', 'install', '--force', `horus-source==${PINNED_SOURCE_VERSION}`],
+      // --refresh: a CLI update commonly lands seconds after a backend release, so uv's
+      // cached PyPI index may not list the just-published version yet and the install
+      // resolves to "unsatisfiable". Refreshing the index makes the lockstep upgrade
+      // reliable right after a release (HOR-360).
+      ['tool', 'install', '--force', '--refresh', `horus-source==${PINNED_SOURCE_VERSION}`],
       { timeout: 300_000 },
     );
     write(`  ${pc.green('✓')} Source backend upgraded to ${PINNED_SOURCE_VERSION}.`);
