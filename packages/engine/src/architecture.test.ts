@@ -44,6 +44,18 @@ const { discoverArchitecture } = await import('./architecture.js');
 const fakeCode = { cypher: async () => ({ rows: [] }) } as unknown as CodeProvider;
 const fakeDb = {} as never;
 
+describe('isTestyCommunity (HOR-365)', () => {
+  it('flags test/example/docs communities, not real subsystems', async () => {
+    const { isTestyCommunity } = await import('./architecture.js');
+    expect(isTestyCommunity('Tests+flask')).toBe(true);
+    expect(isTestyCommunity('Api-docs+metrics')).toBe(true);
+    expect(isTestyCommunity('Examples+webservice')).toBe(true);
+    expect(isTestyCommunity('Tutorial+models')).toBe(true);
+    expect(isTestyCommunity('Channels+jobs')).toBe(false);
+    expect(isTestyCommunity('Routes+core')).toBe(false);
+  });
+});
+
 describe('discoverArchitecture — project scoping (HOR-207)', () => {
   it('returns only the active project queues, never another project (no Zoho leak)', async () => {
     const m = await discoverArchitecture({ code: fakeCode, db: fakeDb, project: 'maison-safqa' });

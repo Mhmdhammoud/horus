@@ -67,6 +67,20 @@ const EXTERNAL_MARKERS = [
   'mssql',
 ] as const;
 
+/** Community-name tokens that mark a test/example/docs cluster (de-prioritized in ranking). */
+const TESTY_TOKENS = new Set([
+  'test', 'tests', 'spec', 'specs', 'example', 'examples', 'sample', 'samples',
+  'demo', 'demos', 'docs', 'doc', 'tutorial', 'tutorials', 'fixture', 'fixtures', 'e2e',
+]);
+
+/** True when a Louvain community name is dominated by test/example/docs tokens (HOR-365). */
+export function isTestyCommunity(name: string): boolean {
+  return name
+    .toLowerCase()
+    .split(/[+\s/_.-]+/)
+    .some((t) => TESTY_TOKENS.has(t));
+}
+
 export async function discoverArchitecture(deps: {
   code: CodeProvider;
   db: HorusDb;
@@ -96,12 +110,20 @@ export async function discoverArchitecture(deps: {
       const result = await deps.code.cypher(
         'MATCH (m)-[r:CodeRelation]->(c:Community) WHERE r.rel_type = "member_of" RETURN c.name, count(m) ORDER BY count(m) DESC',
       );
-      return result.rows
-        .slice(0, 12)
-        .map((row) => ({
-          name: String(row[0] ?? ''),
-          members: Number(row[1] ?? 0),
-        }));
+      const rows = result.rows.map((row) => ({
+        name: String(row[0] ?? ''),
+        members: Number(row[1] ?? 0),
+      }));
+      // De-prioritize test/example/docs clusters so the real product subsystems lead — they're
+      // large but rarely what "the architecture" means. Sort AFTER mapping all rows so a real
+      // subsystem ranked below the test clusters isn't dropped by the top-12 slice (HOR-365).
+      rows.sort((a, b) => {
+        const at = isTestyCommunity(a.name) ? 1 : 0;
+        const bt = isTestyCommunity(b.name) ? 1 : 0;
+        if (at !== bt) return at - bt;
+        return b.members - a.members;
+      });
+      return rows.slice(0, 12);
     } catch {
       return [];
     }

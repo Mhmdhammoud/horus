@@ -37,6 +37,27 @@ describe('scoreSeed — test files demoted below the implementation (HOR-361)', 
       expect(scoreSeed(sym('handler', p), 0, hint)).toBeLessThan(scoreSeed(impl, 0, hint));
     }
   });
+
+  it('demotes examples/docs/tutorial files below real source (HOR-365)', () => {
+    // sqlmodel: real ORM `Relationship` should beat the tutorial `Relationship` example.
+    const impl = sym('Relationship', 'sqlmodel/main.py');
+    const hint = ['relationship'];
+    for (const p of [
+      'docs_src/tutorial/relationship_attributes/tutorial001.py',
+      'examples/web-service/index.js',
+      'example/app.py',
+      'samples/demo.ts',
+      'docs/snippets/usage.py',
+    ]) {
+      expect(scoreSeed(sym('Relationship', p), 0, hint)).toBeLessThan(scoreSeed(impl, 0, hint));
+    }
+    expect(
+      rankSeeds(
+        [sym('Relationship', 'docs_src/tutorial/read_relationships/tutorial001.py'), impl],
+        hint,
+      ).map((r) => r.symbol.filePath)[0],
+    ).toBe('sqlmodel/main.py');
+  });
 });
 
 describe('seedRole', () => {

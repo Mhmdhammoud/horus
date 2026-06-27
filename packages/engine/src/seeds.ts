@@ -120,6 +120,17 @@ export function scoreSeed(
   ) {
     score -= 4;
   }
+  // Examples, tutorials, and docs snippets hug hints just like tests (a "detached instance error"
+  // hint matched `docs_src/tutorial/...` over the real ORM, and an express hint matched
+  // `examples/...` over `lib/`), and they're never the incident surface — demote them so the
+  // library/app source wins on a tie (HOR-365).
+  if (
+    /(^|\/)(examples?|samples?|demos?|fixtures?|sandbox|playground|docs|docs_src|tutorials?)(\/|$)/i.test(
+      s.filePath,
+    )
+  ) {
+    score -= 4;
+  }
   // Tie-break toward earlier search rank. For a code hint the search's exact-content head IS the
   // ordered list of raise sites, so trust that order strongly; for prose it's a mild nudge.
   score += Math.max(0, 5 - index) * (hintHasCode ? 0.8 : 0.1);
