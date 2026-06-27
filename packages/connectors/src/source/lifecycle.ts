@@ -96,15 +96,30 @@ export function isAnalyzed(root: string): boolean {
   return existsSync(join(root, '.horus', 'source'));
 }
 
-/** Run `horus-source analyze .` in the repo. Throws on failure. */
+/** Run `horus-source analyze .` in the repo. Throws on failure with the REAL cause (HOR-381). */
 export async function analyzeRepo(root: string): Promise<void> {
   const bin = await resolveSourceBin();
   if (!bin) throw new Error('horus-source not found on PATH. Install it: curl -fsSL https://horus.sh/install.sh | bash');
-  await exec(bin, ['analyze', '.'], {
-    cwd: root,
-    timeout: 900_000,
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  try {
+    await exec(bin, ['analyze', '.'], {
+      cwd: root,
+      timeout: 900_000,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch (err) {
+    // The generic "Command failed: horus-source analyze ." hides both the 900s timeout (hit on
+    // large repos in the slow embeddings phase) and horus-source's own stderr. Surface them so
+    // `horus index` reports WHY it failed instead of a bare command-failed string (HOR-381).
+    const e = err as { killed?: boolean; signal?: string; code?: unknown; stderr?: string; message?: string };
+    const tail = (e.stderr ?? '').trim().slice(-800);
+    if (e.killed || e.signal === 'SIGTERM' || e.code === 'ETIMEDOUT') {
+      throw new Error(
+        `horus-source analyze timed out after 900s (large repo / slow embeddings phase)` +
+          (tail ? ` — last output: ${tail}` : ''),
+      );
+    }
+    throw new Error(tail ? `horus-source analyze failed: ${tail}` : (e.message ?? 'horus-source analyze failed'));
+  }
 }
 
 /**

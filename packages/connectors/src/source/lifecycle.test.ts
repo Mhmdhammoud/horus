@@ -21,7 +21,44 @@ import {
   getSourceVersion,
   reconcileSpawnedHostPid,
   readSpawnedHost,
+  analyzeRepo,
 } from './lifecycle.js';
+
+describe('analyzeRepo — surfaces the real failure (HOR-381)', () => {
+  // resolveSourceBin runs `--version` (succeeds → bin found); the `analyze` call fails.
+  function stubAnalyzeFailure(makeErr: () => Error): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (mockExecFile as any).mockImplementation(
+      (_cmd: unknown, args: unknown, _opts: unknown, cb: ExecFileCb) => {
+        if (Array.isArray(args) && (args as string[]).includes('analyze')) {
+          cb(makeErr(), undefined);
+        } else {
+          cb(null, { stdout: 'horus-source 1.5.4', stderr: '' });
+        }
+      },
+    );
+  }
+
+  it('reports a timeout instead of a bare command-failed', async () => {
+    stubAnalyzeFailure(() => {
+      const e = new Error('Command failed: horus-source analyze .') as Error & Record<string, unknown>;
+      e.killed = true;
+      e.signal = 'SIGTERM';
+      e.stderr = 'embedding 10000 symbols…';
+      return e;
+    });
+    await expect(analyzeRepo('/repo')).rejects.toThrow(/timed out after 900s/);
+  });
+
+  it('surfaces horus-source stderr on a non-timeout failure', async () => {
+    stubAnalyzeFailure(() => {
+      const e = new Error('Command failed') as Error & Record<string, unknown>;
+      e.stderr = 'ModuleNotFoundError: no module named tree_sitter';
+      return e;
+    });
+    await expect(analyzeRepo('/repo')).rejects.toThrow(/ModuleNotFoundError: no module named tree_sitter/);
+  });
+});
 
 const mockExecFile = vi.mocked(childProcess.execFile);
 
