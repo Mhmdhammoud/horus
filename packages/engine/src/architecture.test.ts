@@ -44,6 +44,24 @@ const { discoverArchitecture } = await import('./architecture.js');
 const fakeCode = { cypher: async () => ({ rows: [] }) } as unknown as CodeProvider;
 const fakeDb = {} as never;
 
+describe('discoverArchitecture — detects Python async DB drivers (HOR-379)', () => {
+  it('surfaces asyncpg, aiomysql, sqlite as external systems', async () => {
+    const code = {
+      cypher: async (q: string) => {
+        for (const m of ['asyncpg', 'aiomysql', 'sqlite']) {
+          if (q.includes(`CONTAINS "${m}"`)) return { rows: [[`src/backends/${m}_backend.py`]] };
+        }
+        return { rows: [] };
+      },
+    } as unknown as CodeProvider;
+    const model = await discoverArchitecture({ code, db: fakeDb });
+    const names = model.externalSystems.map((e) => e.name);
+    expect(names).toContain('asyncpg');
+    expect(names).toContain('aiomysql');
+    expect(names).toContain('sqlite');
+  });
+});
+
 describe('cleanSubsystemName (HOR-377)', () => {
   it('collapses redundant X+x, strips leading underscores, leaves real names', async () => {
     const { cleanSubsystemName } = await import('./architecture.js');
