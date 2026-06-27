@@ -66,7 +66,8 @@ export class SourceVersionMismatchError extends Error {
       `horus-source ${installed} is installed but Horus is pinned to ${pinned}. ` +
         `A drifted backend builds a graph this CLI cannot map and can corrupt the index ` +
         `(e.g. duplicate-primary-key failures during "Running initial index"). ` +
-        `Install the pinned version: pip install 'horus-source==${pinned}'`,
+        `Run \`horus update\` to sync the backend, or re-run the installer: ` +
+        `curl -fsSL https://horus.sh/install.sh | bash`,
     );
     this.name = 'SourceVersionMismatchError';
   }
@@ -98,7 +99,7 @@ export function isAnalyzed(root: string): boolean {
 /** Run `horus-source analyze .` in the repo. Throws on failure. */
 export async function analyzeRepo(root: string): Promise<void> {
   const bin = await resolveSourceBin();
-  if (!bin) throw new Error('horus-source not found on PATH. Install it: pip install horus-source');
+  if (!bin) throw new Error('horus-source not found on PATH. Install it: curl -fsSL https://horus.sh/install.sh | bash');
   await exec(bin, ['analyze', '.'], {
     cwd: root,
     timeout: 900_000,
@@ -223,7 +224,7 @@ export function startHost(root: string, port: number): void {
   child.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'ENOENT') {
       process.stderr.write(
-        '\nhorus-source not found on PATH. Install it: pip install horus-source\n',
+        '\nhorus-source not found on PATH. Install it: curl -fsSL https://horus.sh/install.sh | bash\n',
       );
     }
   });

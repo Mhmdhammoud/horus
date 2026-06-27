@@ -69,6 +69,16 @@ export function parseGitLog(stdout: string): GitCommit[] {
   return commits;
 }
 
+/** True when `rev` resolves to a commit in `repoPath` (i.e. it's a git ref, not a date). */
+async function resolvesToCommit(repoPath: string, rev: string): Promise<boolean> {
+  try {
+    await exec('git', ['-C', repoPath, 'rev-parse', '--verify', '--quiet', `${rev}^{commit}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Fetch git log for `repoPath` with optional time-window and commit-count limits.
  * Returns commits in git order (newest first).
@@ -86,11 +96,23 @@ export async function gitLog(
     '--name-only',
   ];
 
-  if (opts.since !== undefined) {
-    args.push('--since=' + opts.since);
-  }
-  if (opts.until !== undefined) {
-    args.push('--until=' + opts.until);
+  // `since`/`until` accept EITHER a date (git --since semantics, e.g. "7 days ago") OR a
+  // git ref (e.g. HEAD~10). A ref passed to --since is parsed as an invalid date and
+  // silently yields zero commits (HOR-354), so when `since` resolves to a commit we build a
+  // revision range instead.
+  if (opts.since !== undefined && (await resolvesToCommit(repoPath, opts.since))) {
+    const end =
+      opts.until !== undefined && (await resolvesToCommit(repoPath, opts.until))
+        ? opts.until
+        : 'HEAD';
+    args.push(`${opts.since}..${end}`);
+  } else {
+    if (opts.since !== undefined) {
+      args.push('--since=' + opts.since);
+    }
+    if (opts.until !== undefined) {
+      args.push('--until=' + opts.until);
+    }
   }
   args.push('--max-count=' + (opts.maxCount ?? 200));
 

@@ -2513,7 +2513,14 @@ export async function investigate(
   // confident "likely" diagnosis (and so confidence actually discriminates linked vs not).
   if (headlineCause && !headlineLinked) confidence = Math.min(confidence, 0.6);
   const banner = degradedNoSource ? 'Runtime-only (source intelligence unavailable). ' : '';
-  const scope = top ? `resolved to ${label} (${area})` : `over runtime evidence (${area})`;
+  // HOR-355: never present a weak semantic guess as "resolved to X" — it reads as a (wrong)
+  // answer and undercuts the disclaimer. Only claim localization for a confident seed match;
+  // otherwise say we couldn't localize and let the disclaimer point at how to refine.
+  const scope = top
+    ? seedIsLowConfidence
+      ? 'could not be confidently localized from source alone'
+      : `resolved to ${label} (${area})`
+    : `over runtime evidence (${area})`;
   // HOR-335: lead with an honest disclaimer when the seed is only a semantic guess.
   const seedDisclaimer =
     seedIsLowConfidence && top

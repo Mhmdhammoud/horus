@@ -52,7 +52,7 @@ describe('parseHostPort', () => {
 
 describe('ensureHostReasonHint', () => {
   it('maps each reason to an actionable hint', () => {
-    expect(ensureHostReasonHint('source-unavailable')).toMatch(/pip install horus-source/);
+    expect(ensureHostReasonHint('source-unavailable')).toMatch(/install\.sh/);
     expect(ensureHostReasonHint('version-mismatch')).toMatch(/pinned/);
     expect(ensureHostReasonHint('not-analyzed')).toMatch(/horus index/);
     expect(ensureHostReasonHint('bad-url')).toMatch(/valid URL/);

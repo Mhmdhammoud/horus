@@ -28,7 +28,7 @@ export async function runSetup(opts: {
     write(
       pc.dim(
         `      install it (Python 3.11+ required):\n` +
-        `        pip install horus-source\n` +
+        `        curl -fsSL https://horus.sh/install.sh | bash\n` +
         `      ensure ~/.local/bin is on your PATH`,
       ),
     );
@@ -41,7 +41,7 @@ export async function runSetup(opts: {
     write(
       pc.dim(
         `      update it:\n` +
-        `        pip install --upgrade horus-source`,
+        `        horus update`,
       ),
     );
   } else {

@@ -42,6 +42,18 @@ const EXTERNAL_MARKERS = [
   'prometheus',
   'mongo',
   'graphql',
+  // Python ecosystem (HOR-356): the markers above are Node-centric, so Python backends'
+  // DB/queue/web stacks went undetected (e.g. redash's Postgres + Celery). 'mongo'/'redis'
+  // already cover pymongo/redis-py by substring.
+  'sqlalchemy',
+  'sqlmodel',
+  'psycopg',
+  'celery',
+  'fastapi',
+  'flask',
+  'django',
+  'kafka',
+  'boto3',
 ] as const;
 
 export async function discoverArchitecture(deps: {

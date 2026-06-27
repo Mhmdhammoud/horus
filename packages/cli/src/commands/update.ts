@@ -9,8 +9,51 @@ import {
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import pc from 'picocolors';
-import { HORUS_VERSION } from '@horus/core';
+import { HORUS_VERSION, PINNED_SOURCE_VERSION } from '@horus/core';
+import { getSourceVersion } from '@horus/connectors';
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Keep the source-intelligence backend in lockstep with the CLI (HOR-350). A CLI that is
+ * newer than its pinned `horus-source` builds a graph it cannot map (and refuses to index),
+ * so after updating the CLI we bring the backend to {@link PINNED_SOURCE_VERSION} too. The
+ * backend is installed via `uv tool` (see install.sh), so we upgrade the same way. Best-effort:
+ * never fails the update — falls back to pointing at the installer.
+ */
+async function ensureBackendPinned(write: (line: string) => void): Promise<void> {
+  let installed: string | null = null;
+  try {
+    installed = await getSourceVersion();
+  } catch {
+    installed = null;
+  }
+  if (installed === PINNED_SOURCE_VERSION) {
+    write(`  ${pc.green('✓')} Source backend already on pinned ${PINNED_SOURCE_VERSION}.`);
+    return;
+  }
+  if (installed === null) {
+    write(
+      `  ${pc.dim('Source backend not installed — install it: curl -fsSL https://horus.sh/install.sh | bash')}`,
+    );
+    return;
+  }
+  write(`  Upgrading source backend ${installed} → ${PINNED_SOURCE_VERSION}…`);
+  try {
+    await execFileAsync(
+      'uv',
+      ['tool', 'install', '--force', `horus-source==${PINNED_SOURCE_VERSION}`],
+      { timeout: 300_000 },
+    );
+    write(`  ${pc.green('✓')} Source backend upgraded to ${PINNED_SOURCE_VERSION}.`);
+  } catch {
+    write(`  ${pc.yellow('!')} Couldn't auto-upgrade the source backend. Re-run the installer:`);
+    write(`    ${pc.dim('curl -fsSL https://horus.sh/install.sh | bash')}`);
+  }
+}
 
 const RELEASES_API = 'https://api.github.com/repos/meritt-dev/horus/releases/latest';
 
@@ -100,6 +143,8 @@ export async function runUpdate(opts: {
 
   if (!newer && !opts.force) {
     write(`\n  ${pc.green('✓')} Already on the latest version.`);
+    // Even when the CLI is current, the backend can have drifted — keep it pinned.
+    await ensureBackendPinned(write);
     return 0;
   }
 
@@ -197,5 +242,7 @@ export async function runUpdate(opts: {
 
   write(`  ${pc.green('✓')} Updated: ${pc.bold(currentVersion)} → ${pc.bold(latest)}`);
   write(`  ${pc.dim(binaryPath)}`);
+  // Bring the source backend to the version this new CLI is pinned to (HOR-350).
+  await ensureBackendPinned(write);
   return 0;
 }

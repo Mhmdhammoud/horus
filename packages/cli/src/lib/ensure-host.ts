@@ -49,7 +49,7 @@ export function parseHostPort(hostUrl: string): number | null {
 export function ensureHostReasonHint(reason: EnsureHostReason | undefined): string {
   switch (reason) {
     case 'source-unavailable':
-      return 'horus-source is not installed — install it: pip install horus-source';
+      return 'horus-source is not installed — install it: curl -fsSL https://horus.sh/install.sh | bash';
     case 'version-mismatch':
       return 'the installed horus-source backend does not match the version Horus is pinned to — reinstall the pinned version (run `horus status` to see it)';
     case 'not-analyzed':

@@ -236,7 +236,7 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
       // No host running for this repo — set one up.
       console.log(pc.bold(`Indexing ${label}`) + pc.dim(`  (${root})`));
       if (!(await sourceAvailable())) {
-        console.error(pc.red('horus-source not found on PATH. Install it: pip install horus-source'));
+        console.error(pc.red('horus-source not found on PATH. Install it: curl -fsSL https://horus.sh/install.sh | bash'));
         return 1;
       }
       // Refuse to analyze or host with a drifted backend — a version mismatch corrupts
@@ -261,34 +261,55 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
       // Prefer this repo's OWN prior port (from its config or last host.json) so a re-index
       // keeps a STABLE port and never grabs the default 8420 out from under another repo —
       // the port-collision that let one repo reuse another's host and leak its queue map.
+      //
+      // findFreePort is check-then-release, so two repos indexing CONCURRENTLY can pick the
+      // same free port (TOCTOU) and one backend then fails to bind. Retry on a fresh port
+      // when the host doesn't come up, which makes parallel first-index race-safe (HOR-357).
       const priorPort =
         parseHostPort(configuredHost ?? '') ?? parseHostPort(readSourceHostUrl(root) ?? '');
-      let port: number;
-      if (priorPort !== null) {
-        try {
-          port = await findFreePort(priorPort, priorPort); // exactly the home port, if free
-        } catch {
-          port = await findFreePort(); // home port busy (another repo) — take any free one
+      const MAX_PORT_ATTEMPTS = 4;
+      let started = false;
+      for (let attempt = 0; attempt < MAX_PORT_ATTEMPTS && !started; attempt += 1) {
+        let port: number;
+        if (attempt === 0 && priorPort !== null) {
+          try {
+            port = await findFreePort(priorPort, priorPort); // exactly the home port, if free
+          } catch {
+            port = await findFreePort(); // home port busy (another repo) — take any free one
+          }
+        } else {
+          port = await findFreePort();
         }
-      } else {
-        port = await findFreePort();
+        hostUrl = `http://127.0.0.1:${port}`;
+        console.log(
+          pc.dim(
+            attempt === 0
+              ? `  starting source-intelligence host on port ${port}…`
+              : `  port contended — retrying on ${port}…`,
+          ),
+        );
+        startHost(root, port);
+        if (await waitForHost(hostUrl)) {
+          // Point the ownership record at the backend's real server pid (host.json), so
+          // `horus stop` later signals the process that actually holds the port + Kùzu lock.
+          reconcileSpawnedHostPid(root, port);
+          started = true;
+        } else {
+          // Didn't come up — usually a concurrent bind race on this port. Drop the
+          // ownership record (so `horus stop` won't chase a dead pid) and try a fresh port.
+          removeSpawnedHostRecord(root);
+        }
       }
-      hostUrl = `http://127.0.0.1:${port}`;
-      console.log(pc.dim(`  starting source-intelligence host on port ${port}…`));
-      startHost(root, port);
-      if (!(await waitForHost(hostUrl))) {
-        // Remove the ownership record — the host never became healthy, so the
-        // record would cause `horus stop` to try to signal a dead process.
-        removeSpawnedHostRecord(root);
+      if (!started) {
         console.error(
           pc.red(`  Source-intelligence host did not become healthy — see ${root}/.horus/source-host.log`),
         );
         return 1;
       }
-      // Point the ownership record at the backend's real server pid (host.json), so
-      // `horus stop` later signals the process that actually holds the port + Kùzu lock.
-      reconcileSpawnedHostPid(root, port);
     }
+
+    // hostUrl is guaranteed set here (a host was reused or freshly started) — narrow for TS.
+    if (!hostUrl) return 1;
 
     // Build the queue map.
     await stitchQueueMap(hostUrl, dbUrl, label);

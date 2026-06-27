@@ -18,6 +18,7 @@ import type {
   Flow,
   HealthStatus,
 } from '@horus/core';
+import { SourceHttpError } from './client.js';
 import type { SourceHttpClient } from './client.js';
 import type { SourceNode } from './types.js';
 import type { CodeProvider } from '../contract.js';
@@ -52,7 +53,18 @@ export class SourceCodeProvider implements CodeProvider {
   }
 
   private async rows(query: string): Promise<unknown[][]> {
-    return (await this.client.cypher(query)).rows;
+    try {
+      return (await this.client.cypher(query)).rows;
+    } catch (err) {
+      // Graceful degradation (HOR-353): a query the backend rejects for THIS repo's
+      // graph shape (HTTP 4xx) must not abort the whole investigation. Degrade that one
+      // piece of structural evidence to empty so the engine still produces an honest,
+      // partial report instead of surfacing a raw "POST /api/cypher -> HTTP 400".
+      if (err instanceof SourceHttpError && err.status >= 400 && err.status < 500) {
+        return [];
+      }
+      throw err;
+    }
   }
 
   private cypherRowToSymbol(
