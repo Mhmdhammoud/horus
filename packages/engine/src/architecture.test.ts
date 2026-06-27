@@ -54,6 +54,22 @@ describe('isTestyCommunity (HOR-365)', () => {
     expect(isTestyCommunity('Channels+jobs')).toBe(false);
     expect(isTestyCommunity('Routes+core')).toBe(false);
   });
+
+  it('isTestOrExamplePath flags test/example/docs file paths (HOR-366)', async () => {
+    const { isTestOrExamplePath } = await import('./architecture.js');
+    for (const p of [
+      'tests/test_login.py',
+      'src/__tests__/a.ts',
+      'examples/web/index.js',
+      'docs_src/tutorial/x.py',
+      'pkg/fixtures/data.py',
+    ]) {
+      expect(isTestOrExamplePath(p)).toBe(true);
+    }
+    for (const p of ['sqlmodel/main.py', 'lib/response.js', 'src/app/handler.ts']) {
+      expect(isTestOrExamplePath(p)).toBe(false);
+    }
+  });
 });
 
 describe('discoverArchitecture — project scoping (HOR-207)', () => {

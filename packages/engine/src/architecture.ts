@@ -81,6 +81,13 @@ export function isTestyCommunity(name: string): boolean {
     .some((t) => TESTY_TOKENS.has(t));
 }
 
+/** A file path under a test/example/docs tree — excluded from external-system detection (HOR-366). */
+const TEST_EXAMPLE_PATH_RE =
+  /(^|\/)(tests?|__tests__|examples?|samples?|demos?|docs|docs_src|tutorials?|fixtures?|spec|specs)(\/|$)/i;
+export function isTestOrExamplePath(p: string): boolean {
+  return TEST_EXAMPLE_PATH_RE.test(p);
+}
+
 export async function discoverArchitecture(deps: {
   code: CodeProvider;
   db: HorusDb;
@@ -192,17 +199,25 @@ export async function discoverArchitecture(deps: {
     }
   })();
 
-  // 6. External systems (parallel marker checks)
+  // 6. External systems (parallel marker checks). Count only NON-test/example files so a marker
+  //    mentioned once in a test or example isn't reported as a real dependency, and skip the
+  //    repo's OWN package (a project named `flask` shouldn't list `flask` as external) — HOR-366.
+  const ownPackage = deps.project?.toLowerCase();
   const externalSystems = await (async () => {
     try {
       const results = await Promise.all(
         EXTERNAL_MARKERS.map(async (marker) => {
+          if (ownPackage && marker.toLowerCase() === ownPackage) {
+            return { name: marker, files: 0 };
+          }
           try {
             const result = await deps.code.cypher(
-              `MATCH (n:File) WHERE n.content CONTAINS "${marker}" RETURN count(n)`,
+              `MATCH (n:File) WHERE n.content CONTAINS "${marker}" RETURN n.file_path LIMIT 500`,
             );
-            const count = Number(result.rows[0]?.[0] ?? 0);
-            return { name: marker, files: count };
+            const files = result.rows
+              .map((r) => String(r[0] ?? ''))
+              .filter((p) => p !== '' && !isTestOrExamplePath(p)).length;
+            return { name: marker, files };
           } catch {
             return { name: marker, files: 0 };
           }
