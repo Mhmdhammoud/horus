@@ -762,9 +762,13 @@ export async function investigate(
     const fp = (s.filePath ?? '').replace(/^\.?\/+/, '');
     return fp === scopePrefix || fp.startsWith(scopePrefix + '/');
   };
-  const seedSearchLimit = scopePrefix ? 25 : 5;
+  // HOR-361: retrieve a WIDER candidate pool and rank it before truncating, so a real
+  // implementation the raw search ranks below the top few (e.g. behind same-named tests)
+  // can still be promoted by rankSeeds (which demotes tests/types/getters). Slicing to 5
+  // BEFORE ranking used to starve the ranker of the very candidate we want.
+  const seedSearchLimit = scopePrefix ? 30 : 20;
   const rawSeeds = code
-    ? (await code.searchSymbols(hint, seedSearchLimit)).filter(inScope).slice(0, 5)
+    ? (await code.searchSymbols(hint, seedSearchLimit)).filter(inScope)
     : [];
   const hintTokens = [...new Set(tokenize(hint))];
   // gap-3 rebalance: a CODE-shaped hint (HTTPFLT001, E_SYNC_04…) makes the search's exact-content/
@@ -772,7 +776,9 @@ export async function investigate(
   // fulfillment function on raw score alone — caught by the dogfood re-run).
   const hintHasCode = /\b(?=[A-Z0-9_]*[0-9_])[A-Z][A-Z0-9_]{3,}\b/.test(hint);
   const ranked = rankSeeds(rawSeeds, hintTokens, changedFilePaths, hintHasCode);
-  let seeds = ranked.map((r) => r.symbol);
+  // Keep the top-ranked handful as candidate seeds — the wider pool was only needed so the
+  // ranker could see (and promote) a lower-search-ranked implementation (HOR-361).
+  let seeds = ranked.map((r) => r.symbol).slice(0, 5);
   // noUncheckedIndexedAccess: a non-empty array could still index to undefined.
   let top: Symbol | undefined = seeds[0];
 
