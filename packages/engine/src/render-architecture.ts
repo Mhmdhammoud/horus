@@ -1,5 +1,6 @@
 import type { AsyncBoundary } from './architecture.js';
 import type { ArchitectureModel } from './architecture.js';
+import { isTestyCommunity } from './architecture.js';
 
 /** Render a queue's producers/workers with files so same-named ones don't read as `x -> x` (HOR-368). */
 function fmtEndpoints(endpoints: AsyncBoundary['producers']): string {
@@ -25,7 +26,10 @@ export function renderArchitecture(m: ArchitectureModel): string {
     lines.push('(none)');
   } else {
     for (const s of m.subsystems) {
-      lines.push(`- ${s.name} — ${s.members} members`);
+      // Mark test/example clusters so a large one lower in the list doesn't read as a
+      // contradiction of the "largest" (product) subsystem in the summary (HOR-377).
+      const tag = isTestyCommunity(s.name) ? ' (tests)' : '';
+      lines.push(`- ${s.name} — ${s.members} members${tag}`);
     }
   }
   lines.push('');

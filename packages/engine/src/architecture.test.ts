@@ -44,6 +44,38 @@ const { discoverArchitecture } = await import('./architecture.js');
 const fakeCode = { cypher: async () => ({ rows: [] }) } as unknown as CodeProvider;
 const fakeDb = {} as never;
 
+describe('cleanSubsystemName (HOR-377)', () => {
+  it('collapses redundant X+x, strips leading underscores, leaves real names', async () => {
+    const { cleanSubsystemName } = await import('./architecture.js');
+    expect(cleanSubsystemName('Sqs+sqs')).toBe('Sqs');
+    expect(cleanSubsystemName('_ext')).toBe('ext');
+    expect(cleanSubsystemName('.cache')).toBe('cache');
+    expect(cleanSubsystemName('Auth+Data')).toBe('Auth+Data'); // distinct halves preserved
+    expect(cleanSubsystemName('Routes+core')).toBe('Routes+core');
+  });
+});
+
+describe('renderArchitecture — test clusters tagged so "largest" is not contradicted (HOR-377)', () => {
+  it('marks testy subsystems with (tests)', async () => {
+    const { renderArchitecture } = await import('./render-architecture.js');
+    const out = renderArchitecture({
+      nodeStats: [],
+      subsystems: [
+        { name: 'Ext', members: 17 },
+        { name: 'Tests+scrapy', members: 1638 },
+      ],
+      asyncBoundaries: [],
+      keyFlows: [],
+      externalSystems: [],
+      fragile: { deadCode: 0, highCouplingPairs: 0 },
+      summary: '2 subsystems (largest: Ext with 17 symbols), ...',
+    });
+    expect(out).toContain('Tests+scrapy — 1638 members (tests)');
+    expect(out).toContain('Ext — 17 members');
+    expect(out).not.toContain('Ext — 17 members (tests)');
+  });
+});
+
 describe('isTestyCommunity (HOR-365)', () => {
   it('flags test/example/docs communities, not real subsystems', async () => {
     const { isTestyCommunity } = await import('./architecture.js');
