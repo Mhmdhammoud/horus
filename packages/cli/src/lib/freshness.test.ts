@@ -7,8 +7,22 @@ import {
   readIndexMeta,
   computeFreshness,
   renderFreshness,
+  semanticSearchReady,
   STALE_INDEX_MS,
 } from './freshness.js';
+
+describe('semanticSearchReady (HOR-373/375)', () => {
+  it('flags an index with symbols but no embeddings, accepts a complete one', () => {
+    expect(semanticSearchReady(null)).toBe(false);
+    expect(semanticSearchReady({ stats: { symbols: 100, embeddings: 0 } })).toBe(false);
+    expect(
+      semanticSearchReady({ embeddingsComplete: false, stats: { symbols: 100, embeddings: 100 } }),
+    ).toBe(false);
+    expect(semanticSearchReady({ stats: { symbols: 100, embeddings: 100 } })).toBe(true);
+    // An empty repo (no symbols) isn't a degradation.
+    expect(semanticSearchReady({ stats: { symbols: 0, embeddings: 0 } })).toBe(true);
+  });
+});
 
 const NOW = '2026-06-27T12:00:00.000Z';
 const nowMs = Date.parse(NOW);

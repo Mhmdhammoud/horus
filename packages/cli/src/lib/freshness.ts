@@ -43,6 +43,8 @@ export interface IndexMeta {
   lastIndexedAt?: string;
   version?: string;
   stats?: Record<string, number>;
+  /** HOR-375: false until the (possibly background) embedding phase persisted vectors. */
+  embeddingsComplete?: boolean;
 }
 
 /** Read `.horus/source/meta.json` for the repo, or null when absent/unreadable. */
@@ -54,10 +56,25 @@ export function readIndexMeta(repoRoot: string): IndexMeta | null {
       lastIndexedAt: typeof j.last_indexed_at === 'string' ? j.last_indexed_at : undefined,
       version: typeof j.version === 'string' ? j.version : undefined,
       stats: (j.stats as Record<string, number>) ?? undefined,
+      embeddingsComplete:
+        typeof j.embeddings_complete === 'boolean' ? j.embeddings_complete : undefined,
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * Whether a repo's index has usable semantic-search vectors (HOR-373/375). An index with symbols
+ * but zero embeddings — or an explicit `embeddings_complete: false` — silently degrades search to
+ * keyword/FTS only, so callers (readiness/doctor) can surface it instead of letting recall vanish.
+ */
+export function semanticSearchReady(meta: IndexMeta | null): boolean {
+  if (meta === null) return false;
+  if (meta.embeddingsComplete === false) return false;
+  const embeddings = meta.stats?.embeddings ?? 0;
+  const symbols = meta.stats?.symbols ?? 0;
+  return !(symbols > 0 && embeddings === 0);
 }
 
 export interface Freshness {

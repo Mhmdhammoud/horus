@@ -25,6 +25,7 @@ import { getSourceVersion } from '@horus/connectors';
 import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
 import { renderAiInterpretation } from '../lib/ai-provider.js';
+import { readIndexMeta, semanticSearchReady } from '../lib/freshness.js';
 
 export const READINESS_AI_CONTRACT = `Provide a clearly separated AI readiness summary with:
 
@@ -176,6 +177,29 @@ export async function runReadiness(opts?: {
       blocking: false,
       detail: `${sourceVersion} — ready`,
     });
+  }
+
+  // ── Semantic search (index embeddings) — OPTIONAL (HOR-373/375) ───────────
+  // An index with symbols but zero embeddings silently degrades search to keyword/FTS only, so
+  // surface it here rather than letting recall quietly vanish. Only checked for an indexed repo.
+  const indexMeta = readIndexMeta(cwd);
+  if (indexMeta !== null) {
+    checks.push(
+      semanticSearchReady(indexMeta)
+        ? {
+            label: 'Semantic search',
+            status: 'pass',
+            blocking: false,
+            detail: `${indexMeta.stats?.embeddings ?? 0} embeddings`,
+          }
+        : {
+            label: 'Semantic search',
+            status: 'warn',
+            blocking: false,
+            detail: 'index has 0 embeddings — running keyword/FTS only',
+            next: 'horus index   # rebuilds embeddings (a prior index was interrupted)',
+          },
+    );
   }
 
   // ── Connector config (from global config) — OPTIONAL ─────────────────────
