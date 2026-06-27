@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { HORUS_VERSION } from '@horus/core';
+import { maybeNotifyUpdate } from './lib/update-notifier.js';
 import { runStatus } from './commands/status.js';
 import { runExplain } from './commands/explain.js';
 import { runIndex } from './commands/index-repo.js';
@@ -80,6 +81,13 @@ export function buildProgram(): Command {
     .name('horus')
     .description('Local-first, source-aware production-incident investigation engine')
     .version(`horus ${HORUS_VERSION}`, '-V, --version', 'output the version number');
+
+  // Passive update notifier (HOR-383): a one-line stderr hint when the CLI is behind the latest
+  // release — cached (~24h), non-blocking, and suppressed for non-TTY / CI / --json /
+  // HORUS_NO_UPDATE_CHECK. Skip `update` itself (it runs its own check).
+  program.hook('preAction', (_thisCommand, actionCommand) => {
+    if (actionCommand.name() !== 'update') maybeNotifyUpdate();
+  });
 
   program
     .command('doctor')
