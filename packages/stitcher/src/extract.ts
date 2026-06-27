@@ -354,15 +354,20 @@ export function extractQueueGraph(input: {
 }
 
 // --- Celery (Python) patterns (HOR-356) ---
-// A Celery task definition: a `@task` / `@shared_task` / `@app.task` / `@celery.task`
-// decorator (optionally with args + stacked decorators) directly on a `def`. The task name
-// is the function name — that name is what `.delay()`/`.apply_async()` call sites reference,
-// so it plays the role BullMQ's queue-name literal does. Captures the def name.
+// A Python task-queue worker def: a Celery `@task`/`@shared_task`/`@app.task`/`@celery.task`
+// OR a huey `@huey.task`/`@db_task`/`@db_periodic_task` decorator (optionally with args + stacked
+// decorators) directly on a `def`. The task name is the function name — what `.delay()`/
+// `.apply_async()`/`.schedule()` call sites reference (HOR-356/380). Captures the def name.
+// The `(?:[\w]+\.)*` prefix already covers the `huey.`/`app.` qualifier; db_task/db_periodic_task
+// are huey-specific names the Celery set missed.
 const CELERY_TASK_DEF_RE =
-  /@(?:[\w]+\.)*(?:shared_task|periodic_task|task)\b[^\n]*(?:\n[ \t]*@[^\n]*)*\n[ \t]*(?:async[ \t]+)?def[ \t]+(\w+)/g;
-// An enqueue call site: `<task>.delay(` or `<task>.apply_async(`. Captures the immediate
-// identifier before the call (the task name), e.g. `tasks.send_email.delay(` -> `send_email`.
-const CELERY_ENQUEUE_RE = /([A-Za-z_]\w*)\s*\.\s*(?:delay|apply_async)\s*\(/g;
+  /@(?:[\w]+\.)*(?:shared_task|db_periodic_task|periodic_task|db_task|task)\b[^\n]*(?:\n[ \t]*@[^\n]*)*\n[ \t]*(?:async[ \t]+)?def[ \t]+(\w+)/g;
+// An enqueue/producer call site: Celery `<task>.delay(`/`<task>.apply_async(` or huey
+// `<task>.schedule(` (HOR-380). Captures the immediate identifier before the call (the task
+// name), e.g. `tasks.send_email.delay(` -> `send_email`. `.schedule(` is broad, but the
+// taskQueues filter keeps a producer only when it names a real @task def, so non-task
+// `.schedule(` calls (cron/APScheduler) are dropped.
+const CELERY_ENQUEUE_RE = /([A-Za-z_]\w*)\s*\.\s*(?:delay|apply_async|schedule)\s*\(/g;
 
 export interface CeleryNodeInput {
   name: string;

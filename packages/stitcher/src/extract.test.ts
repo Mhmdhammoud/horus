@@ -54,6 +54,37 @@ describe('extractCeleryQueueGraph (HOR-356)', () => {
   });
 });
 
+describe('extractCeleryQueueGraph — huey support (HOR-380)', () => {
+  it('links a huey .schedule() producer to its @huey.task worker', () => {
+    const g = extractCeleryQueueGraph([
+      { name: 'count_beans', filePath: 'app/tasks.py', content: '@huey.task()\ndef count_beans(n):\n    return n' },
+      { name: 'enqueue', filePath: 'app/views.py', content: 'def enqueue():\n    count_beans.schedule(args=(10,), delay=5)' },
+    ]);
+    expect(
+      g.edges.some(
+        (e) => e.queueName === 'count_beans' && e.producerSymbol === 'enqueue' && e.workerSymbol === 'count_beans',
+      ),
+    ).toBe(true);
+  });
+
+  it('recognizes @db_task and @db_periodic_task as workers', () => {
+    const g = extractCeleryQueueGraph([
+      { name: 'sync_rows', filePath: 'app/tasks.py', content: '@db_task()\ndef sync_rows():\n    pass' },
+      { name: 'nightly', filePath: 'app/tasks.py', content: '@db_periodic_task(crontab(minute=0))\ndef nightly():\n    pass' },
+    ]);
+    expect(g.queues).toContain('sync_rows');
+    expect(g.queues).toContain('nightly');
+  });
+
+  it('does not synthesize a queue for a .schedule() with no @task definition', () => {
+    const g = extractCeleryQueueGraph([
+      { name: 'cron', filePath: 'app/cron.py', content: 'def cron():\n    scheduler.schedule(job)' },
+    ]);
+    expect(g.queues).not.toContain('scheduler');
+    expect(g.edges.some((e) => e.queueName === 'scheduler')).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Domain-neutral fixtures
 // ---------------------------------------------------------------------------

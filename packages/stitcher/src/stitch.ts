@@ -67,13 +67,17 @@ export async function stitch(
 
   const graph = extractQueueGraph({ producerClasses, workerFiles });
 
-  // Celery (Python) queue boundaries (HOR-356): a `@task def foo` is the worker for task
-  // "foo"; a `foo.delay()` / `foo.apply_async()` call site is the producer. The static flow
-  // graph can't connect them — the same gap BullMQ has — so stitch them here too.
+  // Python task-queue boundaries — Celery (HOR-356) + huey (HOR-380): a `@task def foo` is the
+  // worker for task "foo"; a `foo.delay()`/`foo.apply_async()` (Celery) or `foo.schedule()` (huey)
+  // call site is the producer. The static flow graph can't connect them — the same gap BullMQ has
+  // — so stitch them here. The CONTAINS filter must FETCH huey's `.schedule(` producers and its
+  // `@db_task`/`@db_periodic_task` workers ("periodic_task" also covers @db_periodic_task).
   const celeryRows = (
     await client.cypher(
       'MATCH (n) WHERE n.content CONTAINS ".delay(" OR n.content CONTAINS ".apply_async(" ' +
+        'OR n.content CONTAINS ".schedule(" ' +
         'OR n.content CONTAINS "@shared_task" OR n.content CONTAINS "@task" OR n.content CONTAINS ".task" ' +
+        'OR n.content CONTAINS "periodic_task" OR n.content CONTAINS "db_task" ' +
         'RETURN n.name, n.file_path, n.content',
     )
   ).rows;
