@@ -6,7 +6,7 @@
 
 **Understand what happened.**
 
-Open-source incident investigation. Horus connects Elasticsearch, Grafana, MongoDB, BullMQ, and source intelligence into deterministic reports — installable today.
+Open-source incident investigation. Horus connects Elasticsearch, Sentry, Grafana, MongoDB, Postgres, Redis, BullMQ, and source intelligence into deterministic reports — installable today.
 
 CLI-only. Read-only against production systems. Horus never writes to your infrastructure.
 
@@ -63,17 +63,17 @@ Horus source intelligence requires a local code-graph host (the curl installer a
 
 | Runtime + Source | Investigation Engine | Investigation Report |
 |---|---|---|
-| Elasticsearch logs | Correlation | Suspected causes (ranked) |
+| Elasticsearch logs · Sentry errors | Correlation | Suspected causes (ranked) |
 | Grafana metrics | Timeline | Hypotheses + confidence |
-| MongoDB state | Cause ranking | Evidence + gaps |
-| BullMQ queues | | Next actions |
+| MongoDB · Postgres · Redis state | Cause ranking | Evidence + gaps |
+| BullMQ queue runtime | | Next actions |
 | Source graph + git | | |
 
 Pipeline: **Evidence → Correlation → Hypotheses → Timeline → Report**
 
 ## Sources Horus investigates
 
-Elasticsearch · Grafana · MongoDB · BullMQ · Git changes · Source graph · Queue map · Ownership
+Elasticsearch · Sentry · Grafana · MongoDB · Postgres · Redis · BullMQ · Git changes · Source graph · Queue map · Ownership
 
 Trace reconstruction is not shipped yet. Connectors are read-only and project-scoped.
 
@@ -124,8 +124,9 @@ Installable today. More connectors and AI providers are in progress.
 **Today**
 
 - Elasticsearch logs
+- Sentry errors
 - Grafana metrics
-- MongoDB state
+- MongoDB / Postgres / Redis state
 - BullMQ queue evidence
 - Source intelligence (code graph)
 - Timeline generation
@@ -153,9 +154,10 @@ Horus is organized in four layers:
 **Runtime Evidence**
 
 - **Elasticsearch** — logs → synthesized error-signature evidence
-- **MongoDB** — application/operational state
+- **Sentry** — grouped exceptions (issues) → same error-signature / direct-seed path as logs
+- **MongoDB / Postgres** — application/operational state
 - **Grafana** — metrics via its datasource proxy
-- **Redis / BullMQ** — queue runtime state
+- **Redis / BullMQ** — cache & queue runtime state
 - **Git** — change history, ownership signals
 
 **Investigation** (deterministic)
@@ -184,7 +186,7 @@ Horus talks to the source intelligence backend over **HTTP/MCP only** (no CLI sh
 The config model separates **code** from **runtime**:
 
 - **Code belongs to the project** — `repositories[]`, each served by its own source intelligence host.
-- **Runtime belongs to the environment** — `environments[].connectors` (Elasticsearch, MongoDB, Grafana, Redis/BullMQ).
+- **Runtime belongs to the environment** — `environments[].connectors` (Elasticsearch, Sentry, MongoDB, Postgres, Grafana, Redis/BullMQ).
 
 ```ts
 // config/horus.config.ts
