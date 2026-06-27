@@ -1,6 +1,46 @@
 import { describe, it, expect } from 'vitest';
-import { extractQueueGraph } from './extract.js';
+import { extractQueueGraph, extractCeleryQueueGraph } from './extract.js';
 import type { ProducerClassInput, WorkerFileInput } from './extract.js';
+
+describe('extractCeleryQueueGraph (HOR-356)', () => {
+  const nodes = [
+    { name: 'send_email', filePath: 'app/tasks.py', content: '@shared_task\ndef send_email(to):\n    smtp.send(to)' },
+    { name: 'generate_report', filePath: 'app/tasks.py', content: '@app.task(bind=True)\ndef generate_report(self):\n    pass' },
+    {
+      name: 'signup',
+      filePath: 'app/views.py',
+      content: 'def signup(req):\n    send_email.delay(req.email)\n    generate_report.apply_async()',
+    },
+    // `.delay()` with no matching @task def — must NOT synthesize a queue.
+    { name: 'animate', filePath: 'web/anim.py', content: 'def animate():\n    tween.delay(100)' },
+  ];
+  const g = extractCeleryQueueGraph(nodes);
+  const has = (q: string, p: string | null, w: string | null): boolean =>
+    g.edges.some((e) => e.queueName === q && e.producerSymbol === p && e.workerSymbol === w);
+
+  it('links a .delay() producer to its @shared_task worker', () => {
+    expect(has('send_email', 'signup', 'send_email')).toBe(true);
+  });
+
+  it('links an apply_async() producer to its @app.task worker', () => {
+    expect(has('generate_report', 'signup', 'generate_report')).toBe(true);
+  });
+
+  it('does not synthesize a queue for a .delay() with no @task definition', () => {
+    expect(g.queues).not.toContain('tween');
+    expect(g.edges.some((e) => e.queueName === 'tween')).toBe(false);
+  });
+
+  it('emits a worker-only edge for a task with no producer', () => {
+    const solo = extractCeleryQueueGraph([
+      { name: 'cleanup', filePath: 't.py', content: '@shared_task\ndef cleanup():\n    pass' },
+    ]);
+    expect(solo.edges).toHaveLength(1);
+    expect(solo.edges[0]?.queueName).toBe('cleanup');
+    expect(solo.edges[0]?.producerSymbol).toBeNull();
+    expect(solo.edges[0]?.workerSymbol).toBe('cleanup');
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Domain-neutral fixtures

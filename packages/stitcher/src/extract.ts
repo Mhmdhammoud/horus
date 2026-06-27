@@ -353,6 +353,84 @@ export function extractQueueGraph(input: {
   return { queues, producers, workers, edges };
 }
 
+// --- Celery (Python) patterns (HOR-356) ---
+// A Celery task definition: a `@task` / `@shared_task` / `@app.task` / `@celery.task`
+// decorator (optionally with args + stacked decorators) directly on a `def`. The task name
+// is the function name — that name is what `.delay()`/`.apply_async()` call sites reference,
+// so it plays the role BullMQ's queue-name literal does. Captures the def name.
+const CELERY_TASK_DEF_RE =
+  /@(?:[\w]+\.)*(?:shared_task|periodic_task|task)\b[^\n]*(?:\n[ \t]*@[^\n]*)*\n[ \t]*(?:async[ \t]+)?def[ \t]+(\w+)/g;
+// An enqueue call site: `<task>.delay(` or `<task>.apply_async(`. Captures the immediate
+// identifier before the call (the task name), e.g. `tasks.send_email.delay(` -> `send_email`.
+const CELERY_ENQUEUE_RE = /([A-Za-z_]\w*)\s*\.\s*(?:delay|apply_async)\s*\(/g;
+
+export interface CeleryNodeInput {
+  name: string;
+  filePath: string;
+  content: string;
+}
+
+/**
+ * Pure Celery queue-graph extraction. A `@task def foo` is the worker for task "foo"; a
+ * `foo.delay(...)` / `foo.apply_async(...)` call site is a producer. Edges are only emitted
+ * for tasks that have a real `@task` definition, so a stray `.delay()` from an unrelated
+ * library (e.g. lodash, animation code) never synthesizes a phantom queue.
+ */
+export function extractCeleryQueueGraph(nodes: CeleryNodeInput[]): QueueGraph {
+  const producers: { queue: string; symbol: string; file: string }[] = [];
+  const workers: { queue: string; symbol: string; file: string }[] = [];
+
+  for (const n of nodes) {
+    for (const m of n.content.matchAll(CELERY_TASK_DEF_RE)) {
+      const task = m[1];
+      if (task) workers.push({ queue: task, symbol: task, file: n.filePath });
+    }
+    for (const m of n.content.matchAll(CELERY_ENQUEUE_RE)) {
+      const task = m[1];
+      if (task) producers.push({ queue: task, symbol: n.name || baseName(n.filePath), file: n.filePath });
+    }
+  }
+
+  // Only tasks with a real @task definition are queues — drops `.delay()` false positives.
+  const taskQueues = new Set(workers.map((w) => w.queue));
+  const queues = [...taskQueues].sort();
+  const edges: SynthEdge[] = [];
+  for (const q of queues) {
+    const P = dedupeBySymbolFile(producers.filter((p) => p.queue === q));
+    const W = dedupeBySymbolFile(workers.filter((w) => w.queue === q));
+    if (P.length) {
+      for (const p of P) {
+        for (const w of W) {
+          edges.push({
+            queueName: q,
+            producerSymbol: p.symbol,
+            producerFile: p.file,
+            workerSymbol: w.symbol,
+            workerFile: w.file,
+          });
+        }
+      }
+    } else {
+      for (const w of W) {
+        edges.push({
+          queueName: q,
+          producerSymbol: null,
+          producerFile: null,
+          workerSymbol: w.symbol,
+          workerFile: w.file,
+        });
+      }
+    }
+  }
+
+  return {
+    queues,
+    producers: producers.filter((p) => taskQueues.has(p.queue)),
+    workers,
+    edges,
+  };
+}
+
 /**
  * Dedup queue rows by symbol+file. Previously keyed by file alone, but enum fan-out and
  * dispatch tables can legitimately yield several distinct symbols per file (e.g. a generic

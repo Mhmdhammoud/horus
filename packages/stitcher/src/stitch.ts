@@ -7,8 +7,10 @@ import { SourceHttpClient } from '@horus/connectors';
 import { replaceQueueEdges, type HorusDb, type NewQueueEdge } from '@horus/db';
 import {
   extractQueueGraph,
+  extractCeleryQueueGraph,
   type ProducerClassInput,
   type WorkerFileInput,
+  type CeleryNodeInput,
 } from './extract.js';
 
 export interface StitchSummary {
@@ -65,7 +67,24 @@ export async function stitch(
 
   const graph = extractQueueGraph({ producerClasses, workerFiles });
 
-  const edges: NewQueueEdge[] = graph.edges.map((e) => ({
+  // Celery (Python) queue boundaries (HOR-356): a `@task def foo` is the worker for task
+  // "foo"; a `foo.delay()` / `foo.apply_async()` call site is the producer. The static flow
+  // graph can't connect them — the same gap BullMQ has — so stitch them here too.
+  const celeryRows = (
+    await client.cypher(
+      'MATCH (n) WHERE n.content CONTAINS ".delay(" OR n.content CONTAINS ".apply_async(" ' +
+        'OR n.content CONTAINS "@shared_task" OR n.content CONTAINS "@task" OR n.content CONTAINS ".task" ' +
+        'RETURN n.name, n.file_path, n.content',
+    )
+  ).rows;
+  const celeryNodes: CeleryNodeInput[] = celeryRows.map((r) => ({
+    name: String(r[0] ?? ''),
+    filePath: String(r[1] ?? ''),
+    content: String(r[2] ?? ''),
+  }));
+  const celery = extractCeleryQueueGraph(celeryNodes);
+
+  const edges: NewQueueEdge[] = [...graph.edges, ...celery.edges].map((e) => ({
     queueName: e.queueName,
     producerSymbol: e.producerSymbol,
     producerFile: e.producerFile,
@@ -78,9 +97,9 @@ export async function stitch(
   await replaceQueueEdges(db, edges, { project: opts.project });
 
   return {
-    queues: graph.queues.length,
-    producers: graph.producers.length,
-    workers: graph.workers.length,
+    queues: graph.queues.length + celery.queues.length,
+    producers: graph.producers.length + celery.producers.length,
+    workers: graph.workers.length + celery.workers.length,
     edges: edges.length,
   };
 }
