@@ -15,6 +15,21 @@ const SEEDS: Symbol[] = [
   sym('getRecentOrders', 'src/services/order-analytics.service.ts'),
 ];
 
+describe('rankSeeds — a real candidate beats a hint-hugging test fixture (HOR-376)', () => {
+  it('hard-demotes test/fixture paths below real source when a real candidate exists', () => {
+    const fixture = sym('Model', 'tests/mypy/modules/plugin_fail.py'); // name hugs the hint
+    const real = sym('build_schema', 'pydantic/_internal/_core_utils.py'); // weaker name match
+    const hint = ['model', 'validation', 'recursion'];
+    expect(rankSeeds([fixture, real], hint).map((r) => r.symbol.name)[0]).toBe('build_schema');
+  });
+
+  it('still allows a test seed when every candidate is a test (test-only repo)', () => {
+    const t1 = sym('test_alpha', 'tests/test_alpha.py');
+    const t2 = sym('test_beta', 'tests/test_beta.py');
+    expect(rankSeeds([t1, t2], ['alpha']).map((r) => r.symbol.name)[0]).toBe('test_alpha');
+  });
+});
+
 describe('scoreSeed — test files demoted below the implementation (HOR-361)', () => {
   it('ranks the implementation above a same-topic test (tests/ + test_x.py)', () => {
     const impl = sym('login', 'backend/app/api/routes/login.py');

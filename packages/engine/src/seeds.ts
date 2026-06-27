@@ -160,19 +160,46 @@ export function scoreSeed(
 }
 
 /** Rank seeds best-first. Stable for equal scores (preserves search order). */
+/**
+ * Test / example / docs / fixture paths that must never be the seed when real source exists.
+ * Mirrors the path penalties in scoreSeed (HOR-361/365) and is the decision boundary for the
+ * conditional hard-demotion in rankSeeds (HOR-376).
+ */
+export function isDeprioritizedSeedPath(filePath: string): boolean {
+  return (
+    /(^|\/)(tests?|__tests__|spec)\//i.test(filePath) ||
+    /(\.|_)(test|spec)\.[jt]sx?$/i.test(filePath) ||
+    /(^|\/)test_[^/]*\.py$/i.test(filePath) ||
+    /_test\.py$/i.test(filePath) ||
+    /(^|\/)(examples?|samples?|demos?|fixtures?|sandbox|playground|docs|docs_src|tutorials?)(\/|$)/i.test(
+      filePath,
+    )
+  );
+}
+
 export function rankSeeds(
   seeds: Symbol[],
   hintTokens?: string[],
   changedFiles?: Set<string>,
   hintHasCode?: boolean,
 ): RankedSeed[] {
-  return seeds
-    .map((symbol, i) => ({
-      symbol,
-      score: scoreSeed(symbol, i, hintTokens, changedFiles, hintHasCode),
-      role: seedRole(symbol),
-      i,
-    }))
+  const scored = seeds.map((symbol, i) => ({
+    symbol,
+    score: scoreSeed(symbol, i, hintTokens, changedFiles, hintHasCode),
+    role: seedRole(symbol),
+    i,
+    deprio: isDeprioritizedSeedPath(symbol.filePath),
+  }));
+  // HOR-376: the −4 path penalties aren't decisive — a test fixture whose name hugs the hint
+  // (e.g. pydantic's `tests/mypy/modules/plugin_fail.py` for "model validation recursion") can
+  // still outscore the real implementation. When ANY real (non-test/example) candidate exists,
+  // hard-demote every deprioritized candidate below all real ones. They remain available as a
+  // last resort for genuinely test/example-only repos.
+  const hasReal = scored.some((s) => !s.deprio);
+  if (hasReal) {
+    for (const s of scored) if (s.deprio) s.score -= 1000;
+  }
+  return scored
     .sort((a, b) => (b.score === a.score ? a.i - b.i : b.score - a.score))
     .map(({ symbol, score, role }) => ({ symbol, score, role }));
 }
