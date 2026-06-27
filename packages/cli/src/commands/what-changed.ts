@@ -1,6 +1,6 @@
 import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
-import { createConnectors } from '@horus/connectors';
+import { createConnectors, resolvesToCommit } from '@horus/connectors';
 import {
   whatChanged,
   renderWhatChanged,
@@ -14,6 +14,13 @@ import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
 import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
 
 const DEFAULT_SINCE = '7 days ago';
+
+/** Heuristic: does this --since value look like a git ref (HEAD~10, a sha, v1.2) rather than a date? */
+export function looksLikeGitRef(s: string): boolean {
+  const t = s.trim();
+  if (/\s/.test(t) || /^\d{4}-\d{2}-\d{2}/.test(t)) return false; // "7 days ago", ISO date
+  return /[~^]/.test(t) || /^HEAD\b/.test(t) || /^[0-9a-f]{7,40}$/i.test(t) || /^v?\d+\.\d+/.test(t);
+}
 
 export const WHAT_CHANGED_AI_CONTRACT = `Provide a clearly separated AI interpretation section with:
 
@@ -61,6 +68,21 @@ export async function runWhatChanged(
     const { code } = createConnectors(config);
 
     const since = opts.since ?? DEFAULT_SINCE;
+
+    // HOR-371: a ref-like --since that doesn't resolve (e.g. HEAD~10 on a shallow clone) is
+    // silently treated as a date by git and yields zero commits. Warn instead of misleading.
+    if (
+      opts.since !== undefined &&
+      looksLikeGitRef(opts.since) &&
+      !(await resolvesToCommit(renv.path, opts.since))
+    ) {
+      console.error(
+        pc.yellow(
+          `Warning: --since "${opts.since}" does not resolve to a commit (shallow clone or unknown ref?); ` +
+            `it will be treated as a date filter and likely return no commits.`,
+        ),
+      );
+    }
 
     const r = await whatChanged(
       { repoPath: renv.path, since, until: opts.until, service },

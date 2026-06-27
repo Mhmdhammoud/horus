@@ -10,7 +10,18 @@
 
 import { describe, it, expect } from 'vitest';
 import { buildInterpretationPrompt } from '@horus/ai';
-import { WHAT_CHANGED_AI_CONTRACT } from './what-changed.js';
+import { WHAT_CHANGED_AI_CONTRACT, looksLikeGitRef } from './what-changed.js';
+
+describe('looksLikeGitRef (HOR-371)', () => {
+  it('treats refs as refs and dates as dates', () => {
+    for (const ref of ['HEAD~10', 'HEAD^', 'v1.2.3', '1.5', 'abc1234', 'a1b2c3d4e5f6']) {
+      expect(looksLikeGitRef(ref)).toBe(true);
+    }
+    for (const date of ['7 days ago', '2 weeks ago', '2026-06-01', 'yesterday']) {
+      expect(looksLikeGitRef(date)).toBe(false);
+    }
+  });
+});
 
 const SAMPLE_REPORT = {
   window: { since: '6 hours ago', until: null, service: 'api' },

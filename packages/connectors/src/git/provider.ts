@@ -70,7 +70,7 @@ export function parseGitLog(stdout: string): GitCommit[] {
 }
 
 /** True when `rev` resolves to a commit in `repoPath` (i.e. it's a git ref, not a date). */
-async function resolvesToCommit(repoPath: string, rev: string): Promise<boolean> {
+export async function resolvesToCommit(repoPath: string, rev: string): Promise<boolean> {
   try {
     await exec('git', ['-C', repoPath, 'rev-parse', '--verify', '--quiet', `${rev}^{commit}`]);
     return true;
