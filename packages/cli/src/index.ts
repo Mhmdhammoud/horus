@@ -37,6 +37,7 @@ import { runPostmortem } from './commands/postmortem.js';
 import { runScore, runScores } from './commands/score.js';
 import { runAsk } from './commands/ask.js';
 import { runOnboard } from './commands/onboard.js';
+import { runMemoryShow } from './commands/memory.js';
 import { runSimulate } from './commands/simulate.js';
 import { runLogs } from './commands/logs.js';
 import { runMetrics } from './commands/metrics.js';
@@ -401,6 +402,23 @@ Examples:
     .option('--force', 'overwrite local knowledge that differs from the cloud snapshot')
     .action(async (opts: { force?: boolean }) => {
       process.exitCode = await runKnowledgePull({ force: opts.force });
+    });
+
+  const memory = program
+    .command('memory')
+    .description(
+      'Inspect deterministic incident memory + code-knowledge for a scope (project-scoped, offline)',
+    );
+  memory
+    .command('show <scope>')
+    .description(
+      'Synthesize owned areas, runtime paths, past investigations and weak spots for a scope',
+    )
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--json', 'output JSON')
+    .action(async (scope: string, opts: { config?: string; repo?: string; json?: boolean }) => {
+      process.exitCode = await runMemoryShow(scope, opts);
     });
 
   program
