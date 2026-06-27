@@ -9,6 +9,9 @@ export const EXPECTED_TABLES = [
   'findings',
   'hypotheses',
   'incident_memory',
+  'memory_item',
+  'memory_link',
+  'memory_audit',
   'queue_edges',
   'provider_cache',
 ] as const;

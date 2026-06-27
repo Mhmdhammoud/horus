@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLocalDb, shouldUseEmbeddedDb } from './client.js';
-import { investigations, incidentMemory } from './schema.js';
+import { investigations, incidentMemory, memoryItem, memoryLink, memoryAudit } from './schema.js';
 import { eq } from 'drizzle-orm';
 
 const DEFAULT = 'postgresql://horus:horus@localhost:5433/horus';
@@ -77,6 +77,61 @@ describe('createLocalDb (embedded pglite)', () => {
 
       const mem = await db.select().from(incidentMemory).where(eq(incidentMemory.project, 'r'));
       expect(mem[0]!.tags).toEqual(['mod/area', 'queue-x']);
+    } finally {
+      await sql.end();
+    }
+  }, 30_000);
+
+  it('0007: applies the memory_item/_link/_audit tables from the embedded bundle and round-trips them', async () => {
+    // Bundle parity: single-file CLI installs rely on EMBEDDED_MIGRATIONS, not the drizzle/ dir.
+    const { db, sql } = await createLocalDb({ path: join(dir, 'horus.db') });
+    try {
+      await db.insert(memoryItem).values({
+        id: 'mem_01',
+        kind: 'decision',
+        claim: 'queue consumers must ack before processing',
+        scope: 'repo',
+        source: 'human',
+        confidence: 0.8,
+        repo: 'r',
+      });
+
+      await db.insert(memoryLink).values({
+        id: 'lnk_01',
+        fromMemoryId: 'mem_01',
+        rel: 'about-symbol',
+        toKind: 'node',
+        toRef: 'Function:src/queue.ts:consume',
+        toFilePath: 'src/queue.ts',
+      });
+
+      await db.insert(memoryAudit).values({
+        id: 'aud_01',
+        memoryId: 'mem_01',
+        action: 'add',
+        actor: { kind: 'user', id: 'u1' },
+        toStatus: 'fresh',
+        note: 'created',
+      });
+
+      const items = await db.select().from(memoryItem).where(eq(memoryItem.repo, 'r'));
+      expect(items).toHaveLength(1);
+      expect(items[0]!.status).toBe('fresh'); // default applied
+      expect(items[0]!.visibility).toBe('private'); // default applied
+      expect(items[0]!.evidence).toEqual([]); // jsonb default '[]'
+      expect(items[0]!.createdAt).toBeInstanceOf(Date);
+
+      const links = await db.select().from(memoryLink).where(eq(memoryLink.fromMemoryId, 'mem_01'));
+      expect(links[0]!.rel).toBe('about-symbol');
+      expect(links[0]!.toFilePath).toBe('src/queue.ts');
+
+      const audit = await db.select().from(memoryAudit).where(eq(memoryAudit.memoryId, 'mem_01'));
+      expect(audit[0]!.actor).toEqual({ kind: 'user', id: 'u1' });
+
+      // ON DELETE cascade: removing the item clears its links + audit rows.
+      await db.delete(memoryItem).where(eq(memoryItem.id, 'mem_01'));
+      expect(await db.select().from(memoryLink)).toHaveLength(0);
+      expect(await db.select().from(memoryAudit)).toHaveLength(0);
     } finally {
       await sql.end();
     }

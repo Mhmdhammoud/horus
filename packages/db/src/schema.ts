@@ -182,6 +182,89 @@ export const incidentMemory = pgTable(
   ],
 );
 
+/**
+ * Authored memory items — the durable system-of-record for Horus Memory (M1).
+ * Distinct from `incident_memory` (the per-run incident recall index): a MemoryItem is an
+ * authored, user-controllable claim that must survive re-analyze and be cloud-syncable.
+ * No embedding column — vectors are derived and live in a separate (later) store keyed by `id`.
+ * HOR-46: `repo` scopes recall to the originating repository (fail-closed); org/workspace/user
+ * are additive tenancy that widen, never weaken, that isolation.
+ */
+export const memoryItem = pgTable(
+  'memory_item',
+  {
+    id: text('id').primaryKey(), // ULID; the join key to the (later) vector store
+    kind: text('kind').notNull(), // code-fact|contract|decision|pitfall|incident-pattern|confirmed-outcome
+    claim: text('claim').notNull(), // the NL claim; this is what gets embedded
+    scope: text('scope').notNull(), // global|repo|module:<area>|symbol:<node_id>
+    source: text('source').notNull(), // derived|human|confirmed-outcome
+    evidence: jsonb('evidence').notNull().default([]), // [{kind, ref, shortId?, capturedAt}]
+    confidence: real('confidence').notNull(), // 0..1
+    status: text('status').notNull().default('fresh'), // fresh|possibly-stale|contradicted|deprecated|pinned|forgotten
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastVerifiedAt: timestamp('last_verified_at', { withTimezone: true }),
+    lastVerifiedHash: text('last_verified_hash'), // sha256(node.content) snapshot at verify time
+    orgId: text('org_id'),
+    workspaceId: text('workspace_id'),
+    repo: text('repo').notNull(), // == today's `project` scoping key; recall fails CLOSED on null (HOR-46)
+    userId: text('user_id'),
+    visibility: text('visibility').notNull().default('private'), // private|team
+    payload: jsonb('payload'), // forward-compat, zero-migration extension
+  },
+  (t) => [
+    index('memory_item_repo_idx').on(t.repo),
+    index('memory_item_scope_idx').on(t.scope),
+    index('memory_item_status_idx').on(t.status),
+    index('memory_item_tenancy_idx').on(t.orgId, t.workspaceId, t.repo, t.userId),
+  ],
+);
+
+/**
+ * Normalized memory edges (traversal-friendly; powers `memory show` + packets).
+ * M1 rels are limited to about-symbol|about-file|has-evidence|about-incident (memory→memory
+ * rels are deferred). `rel`/`to_kind` are validated in TS, not at the column level.
+ * `to_file_path` is the rename/orphan fallback for node links (the code id orphans on rename/move).
+ */
+export const memoryLink = pgTable(
+  'memory_link',
+  {
+    id: text('id').primaryKey(),
+    fromMemoryId: text('from_memory_id')
+      .notNull()
+      .references(() => memoryItem.id, { onDelete: 'cascade' }),
+    rel: text('rel').notNull(), // about-symbol|about-file|has-evidence|about-incident
+    toKind: text('to_kind').notNull(), // node|incident|evidence
+    toRef: text('to_ref').notNull(), // node_id | investigationId | evidence shortId
+    toFilePath: text('to_file_path'), // node links: rename/orphan fallback
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('memory_link_from_idx').on(t.fromMemoryId),
+    index('memory_link_to_idx').on(t.toKind, t.toRef),
+  ],
+);
+
+/**
+ * Append-only audit trail for every MemoryItem mutation. Soft-forget + this log gives a
+ * complete, reversible provenance record (point 7). `history()` returns the trail.
+ */
+export const memoryAudit = pgTable(
+  'memory_audit',
+  {
+    id: text('id').primaryKey(),
+    memoryId: text('memory_id')
+      .notNull()
+      .references(() => memoryItem.id, { onDelete: 'cascade' }),
+    action: text('action').notNull(), // add|confirm|forget|pin|mark-stale|verify|set-visibility|...
+    actor: jsonb('actor').notNull(), // {kind: user|agent|system, ...}
+    fromStatus: text('from_status'),
+    toStatus: text('to_status'),
+    note: text('note'),
+    at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('memory_audit_memory_idx').on(t.memoryId)],
+);
+
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
 export type Repository = typeof repositories.$inferSelect;
@@ -196,3 +279,9 @@ export type Finding = typeof findings.$inferSelect;
 export type NewFinding = typeof findings.$inferInsert;
 export type IncidentMemory = typeof incidentMemory.$inferSelect;
 export type NewIncidentMemory = typeof incidentMemory.$inferInsert;
+export type MemoryItem = typeof memoryItem.$inferSelect;
+export type NewMemoryItem = typeof memoryItem.$inferInsert;
+export type MemoryLink = typeof memoryLink.$inferSelect;
+export type NewMemoryLink = typeof memoryLink.$inferInsert;
+export type MemoryAudit = typeof memoryAudit.$inferSelect;
+export type NewMemoryAudit = typeof memoryAudit.$inferInsert;

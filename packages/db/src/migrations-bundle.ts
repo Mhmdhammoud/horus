@@ -76,5 +76,22 @@ export const EMBEDDED_MIGRATIONS: readonly EmbeddedMigration[] = [
   {
     "tag": "0006_source_intelligence_metadata",
     "statements": []
+  },
+  {
+    "tag": "0007_memory_item",
+    "statements": [
+      "CREATE TABLE \"memory_item\" (\n\t\"id\" text PRIMARY KEY NOT NULL,\n\t\"kind\" text NOT NULL,\n\t\"claim\" text NOT NULL,\n\t\"scope\" text NOT NULL,\n\t\"source\" text NOT NULL,\n\t\"evidence\" jsonb DEFAULT '[]'::jsonb NOT NULL,\n\t\"confidence\" real NOT NULL,\n\t\"status\" text DEFAULT 'fresh' NOT NULL,\n\t\"created_at\" timestamp with time zone DEFAULT now() NOT NULL,\n\t\"last_verified_at\" timestamp with time zone,\n\t\"last_verified_hash\" text,\n\t\"org_id\" text,\n\t\"workspace_id\" text,\n\t\"repo\" text NOT NULL,\n\t\"user_id\" text,\n\t\"visibility\" text DEFAULT 'private' NOT NULL,\n\t\"payload\" jsonb\n);",
+      "CREATE TABLE \"memory_link\" (\n\t\"id\" text PRIMARY KEY NOT NULL,\n\t\"from_memory_id\" text NOT NULL,\n\t\"rel\" text NOT NULL,\n\t\"to_kind\" text NOT NULL,\n\t\"to_ref\" text NOT NULL,\n\t\"to_file_path\" text,\n\t\"created_at\" timestamp with time zone DEFAULT now() NOT NULL\n);",
+      "CREATE TABLE \"memory_audit\" (\n\t\"id\" text PRIMARY KEY NOT NULL,\n\t\"memory_id\" text NOT NULL,\n\t\"action\" text NOT NULL,\n\t\"actor\" jsonb NOT NULL,\n\t\"from_status\" text,\n\t\"to_status\" text,\n\t\"note\" text,\n\t\"at\" timestamp with time zone DEFAULT now() NOT NULL\n);",
+      "ALTER TABLE \"memory_link\" ADD CONSTRAINT \"memory_link_from_memory_id_memory_item_id_fk\" FOREIGN KEY (\"from_memory_id\") REFERENCES \"public\".\"memory_item\"(\"id\") ON DELETE cascade ON UPDATE no action;",
+      "ALTER TABLE \"memory_audit\" ADD CONSTRAINT \"memory_audit_memory_id_memory_item_id_fk\" FOREIGN KEY (\"memory_id\") REFERENCES \"public\".\"memory_item\"(\"id\") ON DELETE cascade ON UPDATE no action;",
+      "CREATE INDEX \"memory_item_repo_idx\" ON \"memory_item\" USING btree (\"repo\");",
+      "CREATE INDEX \"memory_item_scope_idx\" ON \"memory_item\" USING btree (\"scope\");",
+      "CREATE INDEX \"memory_item_status_idx\" ON \"memory_item\" USING btree (\"status\");",
+      "CREATE INDEX \"memory_item_tenancy_idx\" ON \"memory_item\" USING btree (\"org_id\",\"workspace_id\",\"repo\",\"user_id\");",
+      "CREATE INDEX \"memory_link_from_idx\" ON \"memory_link\" USING btree (\"from_memory_id\");",
+      "CREATE INDEX \"memory_link_to_idx\" ON \"memory_link\" USING btree (\"to_kind\",\"to_ref\");",
+      "CREATE INDEX \"memory_audit_memory_idx\" ON \"memory_audit\" USING btree (\"memory_id\");"
+    ]
   }
 ];

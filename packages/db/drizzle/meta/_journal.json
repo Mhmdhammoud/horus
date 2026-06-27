@@ -50,6 +50,13 @@
       "when": 1750008000000,
       "tag": "0006_source_intelligence_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1750094400000,
+      "tag": "0007_memory_item",
+      "breakpoints": true
     }
   ]
 }
