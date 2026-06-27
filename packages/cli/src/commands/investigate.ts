@@ -13,6 +13,7 @@ import { track } from '../lib/telemetry/client.js';
 import { isContentSharingEnabled } from '../lib/telemetry/consent.js';
 import { maybePromptFeedback } from '../lib/telemetry/feedback.js';
 import { reportCloudError } from './context.js';
+import { computeFreshness, renderFreshness } from '../lib/freshness.js';
 import {
   buildInvestigationContext,
   runOneInvestigation,
@@ -246,13 +247,21 @@ export async function runInvestigate(
       const db = ctx.dbHandle.db;
       // --json is back-compat for --format json.
       const format = opts.json ? 'json' : (opts.format ?? 'text');
-      const rendered =
-        format === 'json'
-          ? reportToJSON(report)
-          : format === 'markdown' || format === 'md'
-            ? reportToMarkdown(report)
-            : renderReport(report);
-      console.log(rendered);
+      // HOR-362: how fresh are the inputs behind this report? (code index age + runtime window)
+      const freshness = computeFreshness({
+        repoRoot,
+        evidence: report.evidence,
+        nowIso: new Date().toISOString(),
+      });
+      if (format === 'json') {
+        const obj = JSON.parse(reportToJSON(report)) as Record<string, unknown>;
+        obj.freshness = freshness;
+        console.log(JSON.stringify(obj, null, 2));
+      } else {
+        console.log(format === 'markdown' || format === 'md' ? reportToMarkdown(report) : renderReport(report));
+        console.log('');
+        console.log(renderFreshness(freshness));
+      }
 
       if (opts.ai && format !== 'json') {
         // Resolve AI settings saved via `horus connect ai` (key + model), with the
