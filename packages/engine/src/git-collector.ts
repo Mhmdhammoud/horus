@@ -164,6 +164,78 @@ export async function defaultChangeWindowSince(
   return changeWindowSinceFrom(anchor, days);
 }
 
+// ── Config/migration change classification (HOR-332) ───────────────────────────
+
+/**
+ * A non-git change source class. Most production incidents are not (only) code:
+ * a migration or a config/data edit landing in the change window is a candidate
+ * cause on its own. `migration` = schema/data migrations (the highest-signal
+ * non-code change); `config` = environment/config/data files.
+ */
+export type ConfigChangeCategory = 'migration' | 'config';
+
+export interface ConfigChangeFile {
+  path: string;
+  category: ConfigChangeCategory;
+}
+
+// Migration / schema migrations: a `migrations/`, `migration/`, `alembic/`, or
+// `migrate/` directory anywhere in the path, a top-level schema file, or a
+// `*.migration.*` / `*.migrate.*` file. Checked FIRST so a migration is never
+// downgraded to a plain config match.
+const MIGRATION_DIR_RE = /(^|\/)(migrations?|alembic|migrate)\//i;
+const SCHEMA_FILE_RE = /(^|\/)schema\.(sql|prisma|rb|graphql|gql)$/i;
+const MIGRATION_FILE_RE = /\.(migration|migrate)\.[a-z0-9]+$/i;
+
+// Config/data files: env files (`.env`, `.env.local`, `prod.env`), `*.config.*`
+// / `*.conf` files, and yaml/toml/ini data files.
+const ENV_FILE_RE = /(^|\.)env($|\.)/i;
+const CONFIG_FILE_RE = /\.(config|conf)($|\.)/i;
+const DATA_FILE_RE = /\.(ya?ml|toml|ini)$/i;
+
+/**
+ * Classify a single changed file path as a config/migration change source, or
+ * undefined when it is neither. Pure + deterministic. Migration classification
+ * wins over config so a migration is never mislabelled.
+ */
+export function classifyConfigPath(path: string): ConfigChangeCategory | undefined {
+  const p = path.trim();
+  if (p === '') return undefined;
+  const base = p.split('/').pop() ?? p;
+
+  if (MIGRATION_DIR_RE.test(p) || SCHEMA_FILE_RE.test(p) || MIGRATION_FILE_RE.test(base)) {
+    return 'migration';
+  }
+  if (ENV_FILE_RE.test(base) || CONFIG_FILE_RE.test(base) || DATA_FILE_RE.test(base)) {
+    return 'config';
+  }
+  return undefined;
+}
+
+/**
+ * From a changed-files list (e.g. {@link BoundedGitChange.changedFiles}), pick the
+ * config/migration files and tag each with its category. De-duplicates by path and
+ * preserves input order so the result is deterministic for a given change window.
+ * Classification only — no I/O. Runtime-config / feature-flag ingestion is out of
+ * scope (HOR-332 remaining).
+ */
+export function classifyConfigChangeFiles(
+  paths: readonly string[],
+): ConfigChangeFile[] {
+  const out: ConfigChangeFile[] = [];
+  const seen = new Set<string>();
+  for (const raw of paths) {
+    const path = raw.trim();
+    if (path === '' || seen.has(path)) continue;
+    const category = classifyConfigPath(path);
+    if (category !== undefined) {
+      out.push({ path, category });
+      seen.add(path);
+    }
+  }
+  return out;
+}
+
 // ── Core function ─────────────────────────────────────────────────────────────
 
 /**

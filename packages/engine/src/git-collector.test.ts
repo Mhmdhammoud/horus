@@ -11,6 +11,8 @@ import {
   latestCommitDate,
   defaultChangeWindowSince,
   DEFAULT_CHANGE_WINDOW_DAYS,
+  classifyConfigPath,
+  classifyConfigChangeFiles,
 } from './git-collector.js';
 import type { GitChangeQuery } from './git-collector.js';
 
@@ -388,5 +390,85 @@ describe('defaultChangeWindowSince', () => {
 
   it('exposes a 14-day default', () => {
     expect(DEFAULT_CHANGE_WINDOW_DAYS).toBe(14);
+  });
+});
+
+// ── classifyConfigPath / classifyConfigChangeFiles (HOR-332) ───────────────────
+
+describe('classifyConfigPath', () => {
+  it('classifies a migrations directory as a migration', () => {
+    expect(classifyConfigPath('db/migrations/0009_add_index.sql')).toBe('migration');
+    expect(classifyConfigPath('migration/2024_01_init.ts')).toBe('migration');
+    expect(classifyConfigPath('app/alembic/versions/abc.py')).toBe('migration');
+    expect(classifyConfigPath('src/migrate/001.sql')).toBe('migration');
+  });
+
+  it('classifies a top-level schema file as a migration', () => {
+    expect(classifyConfigPath('prisma/schema.prisma')).toBe('migration');
+    expect(classifyConfigPath('schema.sql')).toBe('migration');
+    expect(classifyConfigPath('db/schema.rb')).toBe('migration');
+  });
+
+  it('classifies a *.migration.* file as a migration', () => {
+    expect(classifyConfigPath('users.migration.ts')).toBe('migration');
+  });
+
+  it('classifies env files as config', () => {
+    expect(classifyConfigPath('.env')).toBe('config');
+    expect(classifyConfigPath('.env.local')).toBe('config');
+    expect(classifyConfigPath('config/production.env')).toBe('config');
+  });
+
+  it('classifies *.config.* / *.conf files as config', () => {
+    expect(classifyConfigPath('webpack.config.js')).toBe('config');
+    expect(classifyConfigPath('nginx.conf')).toBe('config');
+  });
+
+  it('classifies yaml/toml/ini data files as config', () => {
+    expect(classifyConfigPath('docker-compose.yml')).toBe('config');
+    expect(classifyConfigPath('k8s/deploy.yaml')).toBe('config');
+    expect(classifyConfigPath('pyproject.toml')).toBe('config');
+    expect(classifyConfigPath('setup.ini')).toBe('config');
+  });
+
+  it('prefers migration over config when a path could match both', () => {
+    // A yaml file living under a migrations dir is still a migration.
+    expect(classifyConfigPath('migrations/0001_seed.yaml')).toBe('migration');
+  });
+
+  it('returns undefined for ordinary source files', () => {
+    expect(classifyConfigPath('src/service/order.ts')).toBeUndefined();
+    expect(classifyConfigPath('lib/environment.ts')).toBeUndefined();
+    expect(classifyConfigPath('README.md')).toBeUndefined();
+    expect(classifyConfigPath('')).toBeUndefined();
+  });
+});
+
+describe('classifyConfigChangeFiles', () => {
+  it('picks and tags only the config/migration files, preserving order', () => {
+    const result = classifyConfigChangeFiles([
+      'src/service/order.ts',
+      'db/migrations/0009_add.sql',
+      '.env.production',
+      'README.md',
+      'config/app.config.json',
+    ]);
+    expect(result).toEqual([
+      { path: 'db/migrations/0009_add.sql', category: 'migration' },
+      { path: '.env.production', category: 'config' },
+      { path: 'config/app.config.json', category: 'config' },
+    ]);
+  });
+
+  it('de-duplicates by path', () => {
+    const result = classifyConfigChangeFiles(['.env', '.env', 'schema.sql']);
+    expect(result).toEqual([
+      { path: '.env', category: 'config' },
+      { path: 'schema.sql', category: 'migration' },
+    ]);
+  });
+
+  it('returns an empty list when nothing matches', () => {
+    expect(classifyConfigChangeFiles(['a.ts', 'b.go', 'c.py'])).toEqual([]);
   });
 });

@@ -71,8 +71,9 @@ import {
   collectGitChanges,
   defaultChangeWindowSince,
   DEFAULT_CHANGE_WINDOW_DAYS,
+  classifyConfigChangeFiles,
 } from './git-collector.js';
-import type { BoundedGitChange } from './git-collector.js';
+import type { BoundedGitChange, ConfigChangeFile } from './git-collector.js';
 
 /** Dependencies the engine needs: a code provider and a database handle. */
 export interface EngineDeps {
@@ -1086,6 +1087,37 @@ export async function investigate(
     changeEvId = ev.id;
   }
 
+  // HOR-332: classify CHANGED CONFIG/MIGRATION files in the window as a distinct,
+  // visible "config/data change" source alongside code commits — many prod incidents
+  // are caused by a migration or a config edit, not a code change. Reuses the
+  // changed-files list already collected from git detection (no new I/O); classifies
+  // and surfaces only. Runtime-config / feature-flag ingestion remains out of scope.
+  let configChangeEvId: string | undefined;
+  let configChanges: ConfigChangeFile[] = [];
+  if (recentChanges !== undefined && recentChanges.changedFiles.length > 0) {
+    configChanges = classifyConfigChangeFiles(recentChanges.changedFiles);
+    if (configChanges.length > 0) {
+      const migrationN = configChanges.filter((c) => c.category === 'migration').length;
+      const configN = configChanges.length - migrationN;
+      const parts: string[] = [];
+      if (migrationN > 0) parts.push(`${migrationN} migration/schema file(s)`);
+      if (configN > 0) parts.push(`${configN} config/data file(s)`);
+      const ev = mkEv(
+        'commit',
+        `Config/migration change ${changeRangeLabel}: ${parts.join(', ')} changed`,
+        {
+          source: 'git',
+          kind: 'config-change',
+          files: configChanges.slice(0, 30),
+          migrationCount: migrationN,
+          configCount: configN,
+        },
+        {},
+      );
+      configChangeEvId = ev.id;
+    }
+  }
+
   // e0. RUNTIME LOG EVIDENCE (HOR-10/13) — synthesize error SIGNATURES, not raw log
   // dumps. Optional; never breaks the investigation on failure.
   let analysis: LogAnalysis | null = null;
@@ -2070,6 +2102,26 @@ export async function investigate(
       title: `${recentChanges.commits.length} commit(s) in ${changeRangeLabel} touching ${recentChanges.changedFiles.length} file(s)`,
       confidence: clamp01(0.3 + Math.min(recentChanges.commits.length, 10) / 20),
       evidenceIds: [changeEvId],
+    });
+  }
+
+  // HOR-332: surface a config/migration change in the window as its own candidate
+  // change source so a non-code change (schema migration, env/config edit) is VISIBLE
+  // rather than buried in the commit file count.
+  if (configChangeEvId && configChanges.length > 0) {
+    const migrationN = configChanges.filter((c) => c.category === 'migration').length;
+    const configN = configChanges.length - migrationN;
+    const label =
+      migrationN > 0 && configN > 0
+        ? `${migrationN} migration/schema + ${configN} config/data file(s)`
+        : migrationN > 0
+          ? `${migrationN} migration/schema file(s)`
+          : `${configN} config/data file(s)`;
+    findings.push({
+      kind: 'observation',
+      title: `Config/migration change in ${changeRangeLabel}: ${label} — possible non-code change source`,
+      confidence: clamp01(0.35 + Math.min(configChanges.length, 10) / 20),
+      evidenceIds: [configChangeEvId],
     });
   }
 
