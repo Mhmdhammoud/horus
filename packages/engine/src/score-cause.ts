@@ -155,7 +155,12 @@ function clamp01(n: number): number {
   return Math.min(1, Math.max(0, n));
 }
 
-function getBand(score: number): CauseBand {
+/**
+ * Map a 0–1 score to a qualitative confidence band. Exported so the agent-packet
+ * layer (packet.ts) can derive the report-level honesty band from `report.confidence`
+ * using the exact same thresholds, avoiding drift (HOR-384).
+ */
+export function getBand(score: number): CauseBand {
   if (score >= 0.85) return 'highly-likely';
   if (score >= 0.65) return 'likely';
   if (score >= 0.40) return 'possible';
