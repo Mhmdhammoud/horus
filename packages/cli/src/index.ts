@@ -435,6 +435,7 @@ Examples:
     .option('--project <name>', 'project name to scope to')
     .option('--env <name>', 'environment name (e.g. production)')
     .option('--repo <name>', 'repository/project to scope to (alias for --project)')
+    .option('--scope <path>', 'resolve the seed only from symbols under this path (e.g. packages/core) — useful in monorepos')
     .option('--since <ref>', 'git ref/range for change-impact (e.g. HEAD~5)')
     .option('--logs-since <dur>', 'runtime-log window as a duration (e.g. 30d, 24h); independent of --since')
     .option('--timeout <sec>', 'overall investigation deadline in seconds (default 120)')
@@ -455,6 +456,7 @@ Examples:
           project?: string;
           env?: string;
           repo?: string;
+          scope?: string;
           since?: string;
           logsSince?: string;
           timeout?: string;
@@ -471,6 +473,7 @@ Examples:
           project: opts.project,
           env: opts.env,
           repo: opts.repo,
+          scope: opts.scope,
           since: opts.since,
           logsSince: opts.logsSince,
           timeout: opts.timeout,

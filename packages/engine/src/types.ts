@@ -34,6 +34,12 @@ export interface InvestigationInput {
   logsSince?: string;
   /** Optional service name scope. */
   service?: string;
+  /**
+   * Optional path scope (e.g. `packages/core` or `apps/api`) — resolve the seed only from
+   * symbols whose file is under this directory. Lets a backend hint avoid seeding a co-located
+   * frontend in a monorepo (HOR-356).
+   */
+  scope?: string;
 }
 
 /** A deterministic, evidence-backed finding asserted by the engine. */

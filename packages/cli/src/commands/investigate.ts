@@ -164,6 +164,8 @@ export async function runInvestigate(
     env?: string;
     /** @deprecated use project — kept for back-compat with parked commands */
     repo?: string;
+    /** Path scope for seed resolution (e.g. packages/core) — HOR-356. */
+    scope?: string;
     since?: string;
     /** Widen the runtime-log window independently of `--since` (a duration like 30d/24h). */
     logsSince?: string;
@@ -234,6 +236,7 @@ export async function runInvestigate(
       const report = await runOneInvestigation(
         {
           hint,
+          ...(opts.scope !== undefined ? { scope: opts.scope } : {}),
           ...(opts.since !== undefined ? { since: opts.since } : {}),
           ...(opts.logsSince !== undefined ? { logsSince: opts.logsSince } : {}),
         },

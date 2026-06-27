@@ -187,6 +187,40 @@ describe('investigate() — fuzzy seed disclosed + confidence damped (HOR-335)',
 // diagnosis, so it cannot read high.
 // ---------------------------------------------------------------------------
 
+describe('investigate() — --scope restricts the seed to a path (HOR-356)', () => {
+  const FRONTEND: Symbol = {
+    id: 'sym:fe:order',
+    name: 'order',
+    filePath: 'apps/admin-ui/src/order.component.ts',
+    startLine: 1,
+    endLine: 9,
+  };
+  const BACKEND: Symbol = {
+    id: 'sym:be:order',
+    name: 'order',
+    filePath: 'packages/core/src/order.service.ts',
+    startLine: 1,
+    endLine: 9,
+  };
+  // Returns both candidates regardless of query; frontend listed first to simulate dominance.
+  const codeBoth: CodeProvider = {
+    ...fakeCode,
+    async searchSymbols() { return [FRONTEND, BACKEND]; },
+    async context() { return { ...fakeCtx, symbol: BACKEND }; },
+    async impact(): Promise<ImpactResult> { return { target: BACKEND, affected: 0, byDepth: [] }; },
+  };
+
+  it('seeds the in-scope backend symbol, not the co-located frontend', async () => {
+    const report = await investigate(
+      { hint: 'order placement failing', scope: 'packages/core' },
+      { code: codeBoth, db: fakeDb },
+    );
+    const seedEv = report.evidence.find((e) => e.kind === 'symbol');
+    expect(seedEv?.title).toContain('packages/core/src/order.service.ts');
+    expect(seedEv?.title).not.toContain('apps/admin-ui');
+  });
+});
+
 describe('investigate() — confidence reflects diagnosis strength (HOR-336)', () => {
   it('caps the headline when no meaningful cause emerges', async () => {
     // seed matches the hint (not fuzzy), but fakeCode has impact.affected=0 and no

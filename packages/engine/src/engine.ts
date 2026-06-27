@@ -751,7 +751,20 @@ export async function investigate(
     recentChanges && recentChanges.changedFiles.length > 0
       ? new Set(recentChanges.changedFiles)
       : undefined;
-  const rawSeeds = code ? await code.searchSymbols(hint, 5) : [];
+  // HOR-356: when a path scope is given, resolve the seed only from symbols under it — search
+  // wider then keep in-scope — so a backend hint doesn't seed a co-located frontend in a monorepo.
+  const scopePrefix = input.scope
+    ? input.scope.replace(/^\.?\/+/, '').replace(/\/+$/, '')
+    : undefined;
+  const inScope = (s: Symbol): boolean => {
+    if (!scopePrefix) return true;
+    const fp = (s.filePath ?? '').replace(/^\.?\/+/, '');
+    return fp === scopePrefix || fp.startsWith(scopePrefix + '/');
+  };
+  const seedSearchLimit = scopePrefix ? 25 : 5;
+  const rawSeeds = code
+    ? (await code.searchSymbols(hint, seedSearchLimit)).filter(inScope).slice(0, 5)
+    : [];
   const hintTokens = [...new Set(tokenize(hint))];
   // gap-3 rebalance: a CODE-shaped hint (HTTPFLT001, E_SYNC_04…) makes the search's exact-content/
   // colocated score authoritative; a prose hint does not (a `Brand` schema must not beat the real
@@ -769,7 +782,7 @@ export async function investigate(
   if (top && code && isTypeLikeName(top.name)) {
     const base = executableBaseName(top.name);
     if (base) {
-      const altTop = rankSeeds(await code.searchSymbols(base, 5), hintTokens, undefined, hintHasCode).find(
+      const altTop = rankSeeds((await code.searchSymbols(base, seedSearchLimit)).filter(inScope), hintTokens, undefined, hintHasCode).find(
         (r) => !isTypeLikeName(r.symbol.name),
       )?.symbol;
       if (altTop && altTop.id !== top.id) {

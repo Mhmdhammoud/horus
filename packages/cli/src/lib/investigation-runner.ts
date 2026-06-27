@@ -168,6 +168,8 @@ export interface RunInvestigationInput {
   logsSince?: string;
   /** Service scope override; defaults to the context's resolved service. */
   service?: string;
+  /** Path scope for seed resolution (e.g. packages/core) — HOR-356. */
+  scope?: string;
 }
 
 /**
@@ -186,6 +188,7 @@ export async function runOneInvestigation(
     {
       hint: input.hint,
       repo: renv.project,
+      ...(input.scope !== undefined ? { scope: input.scope } : {}),
       ...(input.since !== undefined ? { since: input.since } : {}),
       ...(input.logsSince !== undefined ? { logsSince: input.logsSince } : {}),
       ...((input.service ?? ctx.service) !== undefined
