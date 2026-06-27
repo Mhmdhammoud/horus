@@ -265,8 +265,9 @@ Examples:
   program
     .command('hosts')
     .description('List registered source-intelligence hosts and their live status (port, repo, running/stopped)')
-    .action(async () => {
-      process.exitCode = await runHosts();
+    .option('--reap', 'stop orphaned source hosts that no registered repo owns')
+    .action(async (opts: { reap?: boolean }) => {
+      process.exitCode = await runHosts({ reap: opts.reap });
     });
 
   program
