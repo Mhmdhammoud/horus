@@ -54,6 +54,17 @@ const EXTERNAL_MARKERS = [
   'django',
   'kafka',
   'boto3',
+  // Node ORMs/DB drivers (HOR-359): markers above had only prisma/mongo/redis, so a
+  // TypeORM/Sequelize/Knex backend's database layer went undetected (e.g. vendure on
+  // Postgres). Names chosen to be unambiguous in file content (bare 'pg' would false-match).
+  'typeorm',
+  'sequelize',
+  'knex',
+  'drizzle-orm',
+  'postgres',
+  'mariadb',
+  'mysql2',
+  'mssql',
 ] as const;
 
 export async function discoverArchitecture(deps: {
