@@ -262,15 +262,16 @@ async function stopBackendServerPid(root: string, port: number): Promise<Backend
   if (info === null) return 'none'; // already gone
 
   if (!hostArgvRegex(port).test(info.args)) {
-    // The pid is alive but is NOT our host (pid reuse / mismatched record). Refuse to
-    // signal an unverified process — treat as nothing we own to stop.
-    console.error(
-      pc.red(
-        `Backend host pid ${rec.pid} args do not match "horus-source host --port ${port}". ` +
-          `Not signalling — possible stale source/host.json or PID reuse.`,
+    // The pid is alive but is NOT our host — it was REUSED by another process after our host
+    // already exited. Our host is gone and the record is merely stale: don't signal the
+    // unrelated process, and DON'T count this as a stop failure (HOR-378). It's "already gone",
+    // not a failure — this was the source of `stop --all`'s phantom "N failed".
+    console.log(
+      pc.dim(
+        `Host pid ${rec.pid} is now an unrelated process (stale source/host.json / PID reuse) — host already gone.`,
       ),
     );
-    return 'failed';
+    return 'none';
   }
 
   let terminated: boolean;

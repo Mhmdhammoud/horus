@@ -318,4 +318,40 @@ describe('horus stop --all — summary counts correctly', () => {
     // Should be 0 — process-already-gone is treated as success
     expect(code).toBe(0);
   });
+
+  it('counts a pid-reused stale record as already-gone, not a failure (HOR-378)', async () => {
+    const { readRegistry } = await import('@horus/core');
+    vi.mocked(readRegistry).mockReturnValue({
+      projects: {
+        'maison-safqa': { root: '/repo/root', name: 'maison-safqa', configPath: '/repo/root/.horus/config.yml' },
+      },
+    } as ReturnType<typeof readRegistry>);
+    mockIsHostHealthy.mockResolvedValue(false);
+    mockReadSpawnedHost.mockReturnValue(null); // no live wrapper
+    // Stale source/host.json: pid 59176 is alive but was REUSED by an unrelated process.
+    mockReadSourceHostPid.mockReturnValue({ pid: 59176, port: 8420, repoPath: '/repo/root' });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (mockExecFile as any).mockImplementation(
+      (_cmd: unknown, args: string[], _opts: unknown, cb: ExecFileCb) => {
+        const key = args.join(' ');
+        if (key.includes('59176')) {
+          cb(null, {
+            stdout: key.includes('etime=') ? '10:00' : 'node /usr/bin/unrelated-process',
+            stderr: '',
+          });
+        } else {
+          cb(new Error('no such process'), undefined);
+        }
+      },
+    );
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+
+    const promise = runStop({ all: true });
+    await drainTimers();
+    const code = await promise;
+
+    expect(code).toBe(0); // already gone — NOT counted as a failure
+    expect(killSpy).not.toHaveBeenCalledWith(59176, 'SIGTERM'); // never signal the reused pid
+    killSpy.mockRestore();
+  });
 });
