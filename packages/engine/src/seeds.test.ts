@@ -15,6 +15,30 @@ const SEEDS: Symbol[] = [
   sym('getRecentOrders', 'src/services/order-analytics.service.ts'),
 ];
 
+describe('scoreSeed — test files demoted below the implementation (HOR-361)', () => {
+  it('ranks the implementation above a same-topic test (tests/ + test_x.py)', () => {
+    const impl = sym('login', 'backend/app/api/routes/login.py');
+    const test = sym('test_login_incorrect_password', 'backend/tests/api/routes/test_login.py');
+    const hint = ['login'];
+    expect(scoreSeed(impl, 1, hint)).toBeGreaterThan(scoreSeed(test, 0, hint));
+    expect(rankSeeds([test, impl], hint).map((r) => r.symbol.name)[0]).toBe('login');
+  });
+
+  it('demotes the test path conventions DEMOTE\\b misses', () => {
+    const impl = sym('handler', 'src/app/handler.ts');
+    const hint = ['handler'];
+    for (const p of [
+      'src/__tests__/handler.ts',
+      'src/app/handler.test.ts',
+      'src/app/handler.spec.ts',
+      'tests/test_handler.py',
+      'app/handler_test.py',
+    ]) {
+      expect(scoreSeed(sym('handler', p), 0, hint)).toBeLessThan(scoreSeed(impl, 0, hint));
+    }
+  });
+});
+
 describe('seedRole', () => {
   it('labels architectural roles', () => {
     expect(seedRole(SEEDS[1]!)).toBe('resolver');

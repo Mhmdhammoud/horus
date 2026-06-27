@@ -107,6 +107,19 @@ export function scoreSeed(
   if (/\.(resolver|controller|service)\.[jt]sx?$/i.test(s.filePath)) score += hintHasCode ? 0 : 2;
   // Scripts/migrations are rarely the incident surface.
   if (/(^|\/)scripts?\//i.test(s.filePath)) score -= 2;
+  // Tests assert behaviour and their names hug hints (`test_login_incorrect_password` for a
+  // "login returns 401" hint), so they can outrank the real handler. The DEMOTE word-match
+  // above misses common test PATHS — "tests/" (plural; no \b after) and "test_x.py"/"x_test.py"
+  // (underscore is a word char, so \btest\b never fires) — so penalise them explicitly. The
+  // implementation under test should win on a tie (HOR-361).
+  if (
+    /(^|\/)(tests?|__tests__|spec)\//i.test(s.filePath) ||
+    /(\.|_)(test|spec)\.[jt]sx?$/i.test(s.filePath) ||
+    /(^|\/)test_[^/]*\.py$/i.test(s.filePath) ||
+    /_test\.py$/i.test(s.filePath)
+  ) {
+    score -= 4;
+  }
   // Tie-break toward earlier search rank. For a code hint the search's exact-content head IS the
   // ordered list of raise sites, so trust that order strongly; for prose it's a mild nudge.
   score += Math.max(0, 5 - index) * (hintHasCode ? 0.8 : 0.1);
