@@ -37,7 +37,14 @@ import { runPostmortem } from './commands/postmortem.js';
 import { runScore, runScores } from './commands/score.js';
 import { runAsk } from './commands/ask.js';
 import { runOnboard } from './commands/onboard.js';
-import { runMemoryShow } from './commands/memory.js';
+import {
+  runMemoryShow,
+  runMemoryAdd,
+  runMemoryConfirm,
+  runMemoryForget,
+  runMemoryPin,
+  runMemoryList,
+} from './commands/memory.js';
 import { runSimulate } from './commands/simulate.js';
 import { runLogs } from './commands/logs.js';
 import { runMetrics } from './commands/metrics.js';
@@ -419,6 +426,82 @@ Examples:
     .option('--json', 'output JSON')
     .action(async (scope: string, opts: { config?: string; repo?: string; json?: boolean }) => {
       process.exitCode = await runMemoryShow(scope, opts);
+    });
+
+  const collectEvidence = (value: string, prev: string[]): string[] => prev.concat([value]);
+
+  memory
+    .command('add <claim>')
+    .description('Add an authored memory claim (human source) for the repo')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--scope <scope>', 'applicability scope: global|repo|module:<area>|symbol:<node_id>', 'repo')
+    .option('--kind <kind>', 'code-fact|contract|decision|pitfall|incident-pattern', 'code-fact')
+    .option('--evidence <kind:ref>', 'evidence reference (repeatable); "kind:ref" or bare "ref"', collectEvidence, [])
+    .option('--confidence <0..1>', 'confidence in the claim (default 0.75)')
+    .option('--json', 'output JSON')
+    .action(
+      async (
+        claim: string,
+        opts: {
+          config?: string;
+          repo?: string;
+          scope?: string;
+          kind?: string;
+          evidence?: string[];
+          confidence?: string;
+          json?: boolean;
+        },
+      ) => {
+        process.exitCode = await runMemoryAdd(claim, opts);
+      },
+    );
+
+  memory
+    .command('confirm <investigationId>')
+    .description('Record a confirmed-outcome memory item from an investigation (private, PII-gated)')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--note <note>', 'note recorded in the audit trail')
+    .option('--json', 'output JSON')
+    .action(
+      async (
+        investigationId: string,
+        opts: { config?: string; repo?: string; note?: string; json?: boolean },
+      ) => {
+        process.exitCode = await runMemoryConfirm(investigationId, opts);
+      },
+    );
+
+  memory
+    .command('forget <id>')
+    .description('Soft-delete a memory item (retained + audited, excluded from recall, reversible)')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--note <note>', 'note recorded in the audit trail')
+    .option('--json', 'output JSON')
+    .action(async (id: string, opts: { config?: string; note?: string; json?: boolean }) => {
+      process.exitCode = await runMemoryForget(id, opts);
+    });
+
+  memory
+    .command('pin <id>')
+    .description('Pin a memory item so it floats to the top of recall (never auto-hidden)')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--note <note>', 'note recorded in the audit trail')
+    .option('--json', 'output JSON')
+    .action(async (id: string, opts: { config?: string; note?: string; json?: boolean }) => {
+      process.exitCode = await runMemoryPin(id, opts);
+    });
+
+  memory
+    .command('list')
+    .description('List persisted authored memory items for the repo')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--all', 'include forgotten/deprecated/contradicted items')
+    .option('--json', 'output JSON')
+    .action(async (opts: { config?: string; repo?: string; all?: boolean; json?: boolean }) => {
+      process.exitCode = await runMemoryList(opts);
     });
 
   program

@@ -1,37 +1,105 @@
 /**
- * HOR — Tests for `horus memory show <scope>`.
+ * HOR — Tests for the `horus memory` command group (show/add/confirm/forget/pin/list).
  *
  * Offline: the engine renderers (renderMemoryView / memoryViewToJSON) run for real against a
- * fixture MemoryView; only the DB, connectors and the engine synthesis (buildMemoryView) are
- * mocked. We pin: project isolation (unresolved project → hard error, no DB/connectors touched),
- * the pool is always closed, scope+project are threaded into buildMemoryView, and --json stays a
- * single parseable document while the default path renders Markdown.
+ * fixture MemoryView; the DB, connectors, engine synthesis (buildMemoryView), the MemoryStore
+ * (createLocalMemoryStore) and the recall layer (recallMemory) are mocked. We pin: project
+ * isolation (unresolved project → hard error, no DB/connectors touched), the pool is always
+ * closed, scope+project are threaded into buildMemoryView, --json stays a single parseable
+ * document while the default path renders Markdown, the authored-substrate leaves route to the
+ * store with the right shapes, the PII gate surfaces as a clean error, soft-forget routes to
+ * `forgotten`, and confirmed-outcome stays private + linked to its investigation.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { MemoryView } from '@horus/engine';
+import type { MemoryView, RecalledMemory } from '@horus/engine';
+import { MemorySecretError } from '@horus/engine';
 
 const sqlEnd = vi.fn(async () => {});
 const db = vi.hoisted(() => ({
   openDb: vi.fn(),
+  getInvestigation: vi.fn(),
 }));
 const connectors = vi.hoisted(() => ({
   createConnectors: vi.fn(() => ({ code: { kind: 'fake-code' } })),
 }));
+const store = vi.hoisted(() => ({
+  add: vi.fn(),
+  addLink: vi.fn(),
+  setStatus: vi.fn(),
+}));
 const engine = vi.hoisted(() => ({
   buildMemoryView: vi.fn(),
+  createLocalMemoryStore: vi.fn(() => store),
+  recallMemory: vi.fn(),
 }));
 
-vi.mock('@horus/db', () => db);
+vi.mock('@horus/db', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@horus/db')>();
+  return { ...actual, openDb: db.openDb, getInvestigation: db.getInvestigation };
+});
 vi.mock('@horus/connectors', () => connectors);
 vi.mock('@horus/engine', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@horus/engine')>();
-  return { ...actual, buildMemoryView: engine.buildMemoryView };
+  return {
+    ...actual,
+    buildMemoryView: engine.buildMemoryView,
+    createLocalMemoryStore: engine.createLocalMemoryStore,
+    recallMemory: engine.recallMemory,
+  };
 });
 
-import { runMemoryShow } from './memory.js';
+import {
+  runMemoryShow,
+  runMemoryAdd,
+  runMemoryConfirm,
+  runMemoryForget,
+  runMemoryPin,
+  runMemoryList,
+} from './memory.js';
+
+/** Build a fixture RecalledMemory (what recallMemory returns) for show/list assertions. */
+function recalled(over: {
+  item?: Partial<RecalledMemory['item']>;
+  freshness?: Partial<RecalledMemory['freshness']>;
+} = {}): RecalledMemory {
+  const item = {
+    id: 'mem_1',
+    kind: 'code-fact',
+    claim: 'Payments use Stripe idempotency keys',
+    scope: 'module:payments',
+    source: 'human',
+    evidence: [],
+    confidence: 0.8,
+    status: 'fresh',
+    createdAt: new Date('2026-06-01T00:00:00.000Z'),
+    lastVerifiedAt: null,
+    lastVerifiedHash: null,
+    orgId: null,
+    workspaceId: null,
+    repo: 'my-api',
+    userId: null,
+    visibility: 'private',
+    payload: null,
+    ...over.item,
+  } as RecalledMemory['item'];
+  return {
+    item,
+    relevance: 0,
+    rank: 0.8,
+    freshness: {
+      status: 'fresh',
+      ageDays: 5,
+      verified: false,
+      decay: 1,
+      driftDetected: false,
+      label: 'fresh',
+      ...over.freshness,
+    },
+  };
+}
 
 const dirs: string[] = [];
 function writeSingleProjectConfig(): string {
@@ -143,6 +211,11 @@ beforeEach(() => {
   errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   db.openDb.mockResolvedValue({ db: { fake: true }, sql: { end: sqlEnd } });
   engine.buildMemoryView.mockResolvedValue(FIXTURE);
+  engine.recallMemory.mockResolvedValue([]);
+  engine.createLocalMemoryStore.mockReturnValue(store);
+  store.add.mockResolvedValue({ id: 'mem_new', kind: 'code-fact', scope: 'repo', visibility: 'private' });
+  store.addLink.mockResolvedValue(undefined);
+  store.setStatus.mockResolvedValue(undefined);
 });
 afterEach(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
@@ -208,5 +281,216 @@ describe('runMemoryShow — synthesis path', () => {
     expect(parsed.project).toBe('my-api');
     expect(parsed.pastInvestigations[0].confirmedProxy).toBe(true);
     expect(parsed.weakSpots.fragile.scope).toBe('repo-wide');
+  });
+
+  it('merges PERSISTED authored items into the view, clearly sectioned (Markdown + JSON)', async () => {
+    engine.recallMemory.mockResolvedValueOnce([recalled()]);
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryShow('payments', { config });
+    expect(code).toBe(0);
+    // recall is scoped to the resolved repo with the scope as the relevance text.
+    expect(engine.recallMemory).toHaveBeenCalledWith(
+      store,
+      expect.objectContaining({ repo: 'my-api', text: 'payments' }),
+      expect.objectContaining({ limit: 50 }),
+    );
+    const out = stdout();
+    expect(out).toContain('## Stored memory items');
+    expect(out).toContain('Payments use Stripe idempotency keys');
+  });
+
+  it('carries storedItems in the --json document', async () => {
+    engine.recallMemory.mockResolvedValueOnce([recalled()]);
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryShow('payments', { config, json: true });
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout());
+    expect(parsed.scope).toBe('payments');
+    expect(Array.isArray(parsed.storedItems)).toBe(true);
+    expect(parsed.storedItems[0].id).toBe('mem_1');
+    expect(parsed.storedItems[0].effectiveStatus).toBe('fresh');
+  });
+});
+
+describe('runMemoryAdd', () => {
+  it('routes a human claim to the store with the resolved repo + parsed evidence', async () => {
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryAdd('Payments are idempotent', {
+      config,
+      scope: 'module:payments',
+      kind: 'contract',
+      evidence: ['code:src/payments/pay.ts', 'a free note'],
+    });
+    expect(code).toBe(0);
+    expect(store.add).toHaveBeenCalledTimes(1);
+    const [item, audit] = store.add.mock.calls[0]!;
+    expect(item).toMatchObject({
+      kind: 'contract',
+      claim: 'Payments are idempotent',
+      scope: 'module:payments',
+      source: 'human',
+      repo: 'my-api',
+      confidence: 0.75,
+    });
+    expect(item.evidence).toEqual([
+      expect.objectContaining({ kind: 'code', ref: 'src/payments/pay.ts' }),
+      expect.objectContaining({ kind: 'note', ref: 'a free note' }),
+    ]);
+    expect(audit.actor.kind).toBe('user');
+    expect(sqlEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('emits clean JSON under --json', async () => {
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryAdd('A fact', { config, json: true });
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout());
+    expect(parsed).toEqual({ ok: true, id: 'mem_new', kind: 'code-fact', scope: 'repo' });
+  });
+
+  it('rejects an unknown --kind before touching the store', async () => {
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryAdd('A fact', { config, kind: 'nonsense' });
+    expect(code).toBe(1);
+    expect(store.add).not.toHaveBeenCalled();
+    expect(db.openDb).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.flat().join(' ')).toContain('Unknown --kind');
+  });
+
+  it('rejects an out-of-range --confidence', async () => {
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryAdd('A fact', { config, confidence: '5' });
+    expect(code).toBe(1);
+    expect(store.add).not.toHaveBeenCalled();
+  });
+
+  it('surfaces the PII/secret gate as a clean error (exit 1)', async () => {
+    store.add.mockRejectedValueOnce(new MemorySecretError('aws-access-key-id'));
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryAdd('key is AKIA...', { config });
+    expect(code).toBe(1);
+    expect(errSpy.mock.calls.flat().join(' ')).toContain('aws-access-key-id');
+    expect(sqlEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('errors on an unresolved project without opening the DB (HOR-46)', async () => {
+    const config = writeMultiProjectConfig();
+    const code = await runMemoryAdd('A fact', { config });
+    expect(code).toBe(1);
+    expect(db.openDb).not.toHaveBeenCalled();
+  });
+});
+
+describe('runMemoryConfirm — confirmed-outcome flywheel', () => {
+  it('errors when the investigation is not found', async () => {
+    db.getInvestigation.mockResolvedValueOnce(null);
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryConfirm('inv-x', { config });
+    expect(code).toBe(1);
+    expect(store.add).not.toHaveBeenCalled();
+    expect(sqlEnd).toHaveBeenCalledTimes(1);
+    expect(errSpy.mock.calls.flat().join(' ')).toContain('Investigation not found');
+  });
+
+  it('writes a PRIVATE confirmed-outcome item and links it to the investigation', async () => {
+    db.getInvestigation.mockResolvedValueOnce({
+      id: 'inv-1',
+      title: 'Payment retries piling up',
+      summary: null,
+      report: { summary: 'Stripe timeout filled the retry queue', confidence: 0.74 },
+    });
+    store.add.mockResolvedValueOnce({ id: 'mem_co', visibility: 'private' });
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryConfirm('inv-1', { config });
+    expect(code).toBe(0);
+
+    const [item] = store.add.mock.calls[0]!;
+    expect(item).toMatchObject({
+      kind: 'confirmed-outcome',
+      source: 'confirmed-outcome',
+      visibility: 'private',
+      repo: 'my-api',
+      confidence: 0.74,
+    });
+    expect(item.claim).toContain('Payment retries piling up');
+    expect(item.claim).toContain('Stripe timeout filled the retry queue');
+
+    expect(store.addLink).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fromMemoryId: 'mem_co',
+        rel: 'about-incident',
+        toKind: 'incident',
+        toRef: 'inv-1',
+      }),
+    );
+    expect(sqlEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('emits clean JSON under --json', async () => {
+    db.getInvestigation.mockResolvedValueOnce({ id: 'inv-1', title: 'X', summary: 'done', report: null });
+    store.add.mockResolvedValueOnce({ id: 'mem_co', visibility: 'private' });
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryConfirm('inv-1', { config, json: true });
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout());
+    expect(parsed).toEqual({ ok: true, id: 'mem_co', investigationId: 'inv-1', visibility: 'private' });
+  });
+});
+
+describe('runMemoryForget / runMemoryPin', () => {
+  it('soft-forget routes to status=forgotten (row retained, audited)', async () => {
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryForget('mem_1', { config });
+    expect(code).toBe(0);
+    expect(store.setStatus).toHaveBeenCalledWith(
+      'mem_1',
+      'forgotten',
+      expect.objectContaining({ actor: { kind: 'user' } }),
+    );
+    expect(sqlEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('pin routes to status=pinned and emits clean JSON', async () => {
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryPin('mem_1', { config, json: true });
+    expect(code).toBe(0);
+    expect(store.setStatus).toHaveBeenCalledWith('mem_1', 'pinned', expect.anything());
+    expect(JSON.parse(stdout())).toEqual({ ok: true, id: 'mem_1', status: 'pinned' });
+  });
+
+  it('errors on a blank id without opening the DB', async () => {
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryForget('   ', { config });
+    expect(code).toBe(1);
+    expect(db.openDb).not.toHaveBeenCalled();
+  });
+});
+
+describe('runMemoryList', () => {
+  it('lists persisted items via recall, scoped to the repo, with clean JSON', async () => {
+    engine.recallMemory.mockResolvedValueOnce([recalled()]);
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryList({ config, json: true });
+    expect(code).toBe(0);
+    expect(engine.recallMemory).toHaveBeenCalledWith(
+      store,
+      expect.objectContaining({ repo: 'my-api', status: undefined }),
+      expect.objectContaining({ limit: 200 }),
+    );
+    const parsed = JSON.parse(stdout());
+    expect(parsed.project).toBe('my-api');
+    expect(parsed.items[0].id).toBe('mem_1');
+    expect(sqlEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('--all surfaces every status (incl. forgotten)', async () => {
+    engine.recallMemory.mockResolvedValueOnce([]);
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryList({ config, all: true });
+    expect(code).toBe(0);
+    const [, query] = engine.recallMemory.mock.calls[0]!;
+    expect(query.status).toEqual(
+      expect.arrayContaining(['fresh', 'forgotten', 'deprecated', 'contradicted', 'pinned', 'possibly-stale']),
+    );
   });
 });
