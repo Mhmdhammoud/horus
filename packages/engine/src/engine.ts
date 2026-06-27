@@ -64,7 +64,7 @@ import type {
 } from './types.js';
 import { buildTimeline } from './timeline.js';
 import { correlate } from './correlate.js';
-import { rankSeeds, isTypeLikeName, executableBaseName } from './seeds.js';
+import { rankSeeds, isTypeLikeName, executableBaseName, parseSeedQualifier } from './seeds.js';
 import { normalizeEvidence } from './normalize.js';
 import { computeWeightedEvidenceConfidence } from './confidence.js';
 import { collectGitChanges } from './git-collector.js';
@@ -775,12 +775,40 @@ export async function investigate(
   // colocated score authoritative; a prose hint does not (a `Brand` schema must not beat the real
   // fulfillment function on raw score alone — caught by the dogfood re-run).
   const hintHasCode = /\b(?=[A-Z0-9_]*[0-9_])[A-Z][A-Z0-9_]{3,}\b/.test(hint);
-  const ranked = rankSeeds(rawSeeds, hintTokens, changedFilePaths, hintHasCode);
+  // HOR-337: a `Class.method` (ProductService.syncProduct) or `path/to/file:symbol` token in the
+  // hint pins the seed to that EXACT symbol — strongly prefer the candidate whose name and
+  // class/file both match, not an unrelated same-named symbol.
+  const seedQualifier = parseSeedQualifier(hint);
+  const ranked = rankSeeds(rawSeeds, hintTokens, changedFilePaths, hintHasCode, seedQualifier);
   // Keep the top-ranked handful as candidate seeds — the wider pool was only needed so the
   // ranker could see (and promote) a lower-search-ranked implementation (HOR-361).
   let seeds = ranked.map((r) => r.symbol).slice(0, 5);
   // noUncheckedIndexedAccess: a non-empty array could still index to undefined.
   let top: Symbol | undefined = seeds[0];
+
+  // HOR-337: when a qualifier is present but the top seed isn't the exact symbol it names,
+  // the full-hint search may not have surfaced it — re-search for the bare symbol name and
+  // re-rank with the qualifier, promoting an exact (name + container) match when found.
+  if (seedQualifier && code && (!top || top.name.toLowerCase() !== seedQualifier.symbol.toLowerCase())) {
+    const altRanked = rankSeeds(
+      (await code.searchSymbols(seedQualifier.symbol, seedSearchLimit)).filter(inScope),
+      hintTokens,
+      changedFilePaths,
+      hintHasCode,
+      seedQualifier,
+    );
+    const altTop = altRanked[0]?.symbol;
+    // Only adopt the alternate when it actually satisfies the qualifier (name matches and its
+    // score reflects a container match — i.e. it outscores a bare-name-only candidate).
+    if (
+      altTop &&
+      altTop.name.toLowerCase() === seedQualifier.symbol.toLowerCase() &&
+      altTop.id !== top?.id
+    ) {
+      seeds = [altTop, ...seeds.filter((s) => s.id !== altTop.id)].slice(0, 5);
+      top = altTop;
+    }
+  }
 
   // HOR-337: if the best seed is a TYPE/DTO declaration (e.g. `SyncBrandFulfillmentsResult`),
   // the fault lives in the same-named EXECUTABLE, not the type. Search often only returns

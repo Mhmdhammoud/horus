@@ -52,6 +52,89 @@ export function executableBaseName(name: string): string | null {
   return stripped !== name && stripped.length >= 4 ? stripped : null;
 }
 
+/**
+ * A `Class.method` or `path/to/file:symbol` disambiguator parsed out of an investigate hint
+ * (HOR-337). When present, the seed whose symbol name === {@link symbol} AND whose container
+ * (class / file path) matches {@link container} must be STRONGLY preferred over an unrelated
+ * same-named symbol.
+ */
+export interface SeedQualifier {
+  /** The bare symbol/method name (the part after the dot or colon). */
+  symbol: string;
+  /** The container — a class name (`Foo.bar`) or a file-path fragment (`path:symbol`). */
+  container: string;
+  /** True when the qualifier is the `path:symbol` form (container is a path, not a class). */
+  isPath: boolean;
+}
+
+const PATH_QUALIFIER =
+  // <left>:<ident> where <left> looks like a path (contains a slash or a file extension).
+  /(?:^|[\s(])((?:[\w.@/-]*\/[\w.@/-]+)|(?:[\w@/-]+\.[A-Za-z]{1,5})):([A-Za-z_$][\w$]*)/;
+const CLASS_QUALIFIER =
+  // Capitalised container (class convention) dot method — avoids matching `file.ts` / `obj.x`.
+  /\b([A-Z][A-Za-z0-9_]*)\.([A-Za-z_$][\w$]*)\b/;
+
+/**
+ * Parse a `Class.method` or `path/to/file:symbol` disambiguator out of an investigate hint.
+ * Returns null when the hint contains no such qualified token (HOR-337).
+ */
+export function parseSeedQualifier(hint: string): SeedQualifier | null {
+  const pathMatch = PATH_QUALIFIER.exec(hint);
+  if (pathMatch && pathMatch[1] !== undefined && pathMatch[2] !== undefined) {
+    const container = pathMatch[1].replace(/^\.?\/+/, '');
+    if (container.length >= 2 && pathMatch[2].length >= 2) {
+      return { symbol: pathMatch[2], container, isPath: true };
+    }
+  }
+  const classMatch = CLASS_QUALIFIER.exec(hint);
+  if (classMatch && classMatch[1] !== undefined && classMatch[2] !== undefined) {
+    if (classMatch[1].length >= 2 && classMatch[2].length >= 2) {
+      return { symbol: classMatch[2], container: classMatch[1], isPath: false };
+    }
+  }
+  return null;
+}
+
+/** Split a camel/Pascal/snake/kebab identifier into lowercase word tokens. */
+function identTokens(s: string): string[] {
+  return s
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .split(/[\s_./-]+/)
+    .filter(Boolean)
+    .map((t) => t.toLowerCase());
+}
+
+/**
+ * Score contribution for a `Class.method` / `path:symbol` qualifier (HOR-337). The bare-name
+ * match earns a moderate boost so a qualifier-named symbol beats unrelated seeds; a name + container
+ * match earns a decisive boost so the EXACT method wins over a same-named symbol in another
+ * class/file (e.g. `ProductService.syncProduct` resolves to that method, not an unrelated `syncProduct`).
+ */
+export function qualifierBoost(s: Symbol, q: SeedQualifier): number {
+  const nameMatch = s.name.toLowerCase() === q.symbol.toLowerCase();
+  if (!nameMatch) return 0;
+  let boost = 6; // bare-name match
+  const fp = s.filePath.toLowerCase();
+  let containerMatch = false;
+  if (q.isPath) {
+    // Path form: the seed's file path must contain the given path fragment.
+    containerMatch = fp.includes(q.container.toLowerCase());
+  } else {
+    // Class form: className equals Foo, OR the file path contains a kebab/snake/camel/no-sep
+    // variant of Foo (e.g. `product.service.ts` for `ProductService`), OR the signature names Foo.
+    const want = identTokens(q.container);
+    const joined = want.join('');
+    containerMatch =
+      (s.className !== undefined && s.className.toLowerCase() === q.container.toLowerCase()) ||
+      (want.length > 0 && want.every((t) => fp.includes(t))) ||
+      (joined.length > 0 && fp.includes(joined)) ||
+      (s.signature !== undefined && s.signature.toLowerCase().includes(q.container.toLowerCase()));
+  }
+  if (containerMatch) boost += 40; // decisive: this is the exact symbol the hint named
+  return boost;
+}
+
 /** A coarse architectural role for display. */
 export function seedRole(s: Symbol): string {
   const hay = `${s.name} ${s.filePath}`;
@@ -73,6 +156,7 @@ export function scoreSeed(
   hintTokens?: string[],
   changedFiles?: Set<string>,
   hintHasCode?: boolean,
+  qualifier?: SeedQualifier | null,
 ): number {
   const hay = `${s.name} ${s.filePath}`.toLowerCase();
   let score = 0;
@@ -156,6 +240,9 @@ export function scoreSeed(
     }
     score += hintBoost;
   }
+  // Class.method / path:symbol EXACT disambiguator (HOR-337): strongly prefer the seed whose
+  // name === the qualifier symbol AND whose class/file matches the qualifier container.
+  if (qualifier) score += qualifierBoost(s, qualifier);
   return score;
 }
 
@@ -182,10 +269,11 @@ export function rankSeeds(
   hintTokens?: string[],
   changedFiles?: Set<string>,
   hintHasCode?: boolean,
+  qualifier?: SeedQualifier | null,
 ): RankedSeed[] {
   const scored = seeds.map((symbol, i) => ({
     symbol,
-    score: scoreSeed(symbol, i, hintTokens, changedFiles, hintHasCode),
+    score: scoreSeed(symbol, i, hintTokens, changedFiles, hintHasCode, qualifier),
     role: seedRole(symbol),
     i,
     deprio: isDeprioritizedSeedPath(symbol.filePath),

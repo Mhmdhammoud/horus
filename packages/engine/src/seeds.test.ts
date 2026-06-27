@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import type { Symbol } from '@horus/core';
-import { rankSeeds, seedRole, scoreSeed, executableBaseName } from './seeds.js';
+import {
+  rankSeeds,
+  seedRole,
+  scoreSeed,
+  executableBaseName,
+  parseSeedQualifier,
+  qualifierBoost,
+} from './seeds.js';
 
 function sym(name: string, filePath: string): Symbol {
   return { id: `x:${filePath}:${name}`, name, filePath };
@@ -72,6 +79,110 @@ describe('scoreSeed — test files demoted below the implementation (HOR-361)', 
         hint,
       ).map((r) => r.symbol.filePath)[0],
     ).toBe('sqlmodel/main.py');
+  });
+});
+
+describe('parseSeedQualifier (HOR-337)', () => {
+  it('parses Class.method into container + symbol', () => {
+    expect(parseSeedQualifier('ProductService.syncProduct is failing')).toEqual({
+      symbol: 'syncProduct',
+      container: 'ProductService',
+      isPath: false,
+    });
+  });
+
+  it('parses path/to/file:symbol into container path + symbol', () => {
+    expect(parseSeedQualifier('error in src/services/product.service.ts:syncProduct')).toEqual({
+      symbol: 'syncProduct',
+      container: 'src/services/product.service.ts',
+      isPath: true,
+    });
+  });
+
+  it('does not treat a lowercase obj.method or a bare file.ext as a Class.method qualifier', () => {
+    expect(parseSeedQualifier('the order.total is wrong')).toBeNull();
+    expect(parseSeedQualifier('see config.ts for details')).toBeNull();
+  });
+
+  it('ignores single-letter containers/symbols (e.g. U.S.)', () => {
+    expect(parseSeedQualifier('the U.S. region is down')).toBeNull();
+  });
+
+  it('returns null for an unqualified prose hint', () => {
+    expect(parseSeedQualifier('orders are slow in production')).toBeNull();
+  });
+});
+
+describe('qualifierBoost (HOR-337)', () => {
+  const q = parseSeedQualifier('ProductService.syncProduct')!;
+
+  it('decisively boosts the exact name + class-file match', () => {
+    const exact = sym('syncProduct', 'src/services/product.service.ts');
+    expect(qualifierBoost(exact, q)).toBeGreaterThan(40);
+  });
+
+  it('matches the container via className', () => {
+    const s: Symbol = { id: 'c', name: 'syncProduct', filePath: 'src/sync.ts', className: 'ProductService' };
+    expect(qualifierBoost(s, q)).toBeGreaterThan(40);
+  });
+
+  it('only mildly boosts a same-named symbol in an unrelated container', () => {
+    const wrong = sym('syncProduct', 'src/jobs/inventory-sync.ts');
+    const boost = qualifierBoost(wrong, q);
+    expect(boost).toBeGreaterThan(0);
+    expect(boost).toBeLessThan(40);
+  });
+
+  it('does not boost a different symbol name', () => {
+    expect(qualifierBoost(sym('syncOrder', 'src/services/product.service.ts'), q)).toBe(0);
+  });
+});
+
+describe('rankSeeds — Class.method / path:symbol EXACT disambiguator (HOR-337)', () => {
+  it('resolves ProductService.syncProduct to that exact method, not an unrelated same-named symbol', () => {
+    // The exact method lives in a plainly-named runner (no service suffix) but its className is
+    // ProductService; the unrelated one sits in a *.service.ts (architectural role + suffix boost).
+    const exact: Symbol = {
+      id: 'exact',
+      name: 'syncProduct',
+      filePath: 'src/sync/product-sync-runner.ts',
+      className: 'ProductService',
+    };
+    const unrelated = sym('syncProduct', 'src/services/catalog.service.ts');
+    const q = parseSeedQualifier('ProductService.syncProduct')!;
+    // Without the qualifier the unrelated *.service.ts wins on role; the qualifier flips it.
+    expect(rankSeeds([unrelated, exact], ['syncproduct'])[0]?.symbol.id).toBe(unrelated.id);
+    const ranked = rankSeeds([unrelated, exact], ['syncproduct'], undefined, false, q);
+    expect(ranked[0]?.symbol.id).toBe('exact');
+  });
+
+  it('prefers the path-qualified symbol over a same-named one elsewhere', () => {
+    const target = sym('handle', 'src/modules/billing/billing.controller.ts');
+    const other = sym('handle', 'src/modules/auth/auth.controller.ts');
+    const q = parseSeedQualifier('src/modules/billing/billing.controller.ts:handle')!;
+    const ranked = rankSeeds([other, target], ['handle'], undefined, false, q);
+    expect(ranked[0]?.symbol.filePath).toBe('src/modules/billing/billing.controller.ts');
+  });
+
+  it('uses the signature reference to disambiguate when the file path does not contain Foo', () => {
+    const exact: Symbol = {
+      id: 'a',
+      name: 'syncProduct',
+      filePath: 'src/sync/runner.ts',
+      signature: 'class ProductService { syncProduct(): Promise<void> }',
+    };
+    const unrelated = sym('syncProduct', 'src/jobs/inventory.ts');
+    const q = parseSeedQualifier('ProductService.syncProduct')!;
+    const ranked = rankSeeds([unrelated, exact], ['syncproduct'], undefined, false, q);
+    expect(ranked[0]?.symbol.id).toBe('a');
+  });
+
+  it('does not change ranking when no qualifier is present (no regression)', () => {
+    const a = sym('syncProduct', 'src/jobs/inventory-sync.worker.ts');
+    const b = sym('syncProduct', 'src/services/product.service.ts');
+    const ranked = rankSeeds([a, b], ['syncproduct']);
+    // service-suffix beats a plain worker file here; qualifier-free behaviour is unchanged.
+    expect(ranked[0]?.symbol.filePath).toBe('src/services/product.service.ts');
   });
 });
 
