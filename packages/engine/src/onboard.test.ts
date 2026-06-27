@@ -21,8 +21,8 @@ function makeGuide(): OnboardingGuide {
       asyncBoundaries: [
         {
           queueName: 'invoice-queue',
-          producers: ['InvoiceService'],
-          workers: ['InvoiceWorker'],
+          producers: [{ symbol: 'InvoiceService', file: null }],
+          workers: [{ symbol: 'InvoiceWorker', file: null }],
         },
       ],
       keyFlows: ['checkout-flow'],
@@ -178,8 +178,8 @@ describe('filterArchitecture', () => {
         { name: 'billing-core', members: 18 },
       ],
       asyncBoundaries: [
-        { queueName: 'shopify-sync', producers: ['ShopifyProducer'], workers: ['ShopifyWorker'] },
-        { queueName: 'invoice-queue', producers: ['InvoiceService'], workers: ['InvoiceWorker'] },
+        { queueName: 'shopify-sync', producers: [{ symbol: 'ShopifyProducer', file: null }], workers: [{ symbol: 'ShopifyWorker', file: null }] },
+        { queueName: 'invoice-queue', producers: [{ symbol: 'InvoiceService', file: null }], workers: [{ symbol: 'InvoiceWorker', file: null }] },
       ],
       keyFlows: ['shopify-checkout-flow', 'billing-renewal-flow'],
       externalSystems: [
@@ -209,8 +209,8 @@ describe('renderOnboarding — area-specific filtering', () => {
         { name: 'billing-core', members: 18 },
       ],
       asyncBoundaries: [
-        { queueName: 'shopify-sync', producers: ['ShopifyProducer'], workers: ['ShopifyWorker'] },
-        { queueName: 'invoice-queue', producers: ['InvoiceService'], workers: ['InvoiceWorker'] },
+        { queueName: 'shopify-sync', producers: [{ symbol: 'ShopifyProducer', file: null }], workers: [{ symbol: 'ShopifyWorker', file: null }] },
+        { queueName: 'invoice-queue', producers: [{ symbol: 'InvoiceService', file: null }], workers: [{ symbol: 'InvoiceWorker', file: null }] },
       ],
       keyFlows: ['shopify-checkout-flow', 'billing-renewal-flow'],
       externalSystems: [

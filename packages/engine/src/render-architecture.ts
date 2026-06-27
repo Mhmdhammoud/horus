@@ -1,4 +1,13 @@
+import type { AsyncBoundary } from './architecture.js';
 import type { ArchitectureModel } from './architecture.js';
+
+/** Render a queue's producers/workers with files so same-named ones don't read as `x -> x` (HOR-368). */
+function fmtEndpoints(endpoints: AsyncBoundary['producers']): string {
+  if (endpoints.length === 0) return '(unknown)';
+  return endpoints
+    .map((e) => (e.file ? `${e.symbol} (${e.file.split('/').pop()})` : e.symbol))
+    .join(', ');
+}
 
 export function renderArchitecture(m: ArchitectureModel): string {
   const lines: string[] = [];
@@ -27,9 +36,7 @@ export function renderArchitecture(m: ArchitectureModel): string {
     lines.push('(none)');
   } else {
     for (const b of m.asyncBoundaries) {
-      const producers = b.producers.length > 0 ? b.producers.join(', ') : '(unknown)';
-      const workers = b.workers.length > 0 ? b.workers.join(', ') : '(unknown)';
-      lines.push(`- ${b.queueName}: ${producers} -> ${workers}`);
+      lines.push(`- ${b.queueName}: ${fmtEndpoints(b.producers)} -> ${fmtEndpoints(b.workers)}`);
     }
   }
   lines.push('');

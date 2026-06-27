@@ -79,7 +79,7 @@ describe('discoverArchitecture — project scoping (HOR-207)', () => {
     expect(queues.sort()).toEqual(['POST_SEED_PRODUCT_SYNC', 'brand-webhooks']);
     expect(queues.some((q) => q.toLowerCase().includes('zoho'))).toBe(false);
     // Worker classes from the other project must not appear either.
-    const workers = m.asyncBoundaries.flatMap((b) => b.workers);
+    const workers = m.asyncBoundaries.flatMap((b) => b.workers.map((w) => w.symbol));
     expect(workers).not.toContain('ZohoBatchProcessor');
     expect(workers).not.toContain('ZohoRealtimeProcessor');
   });

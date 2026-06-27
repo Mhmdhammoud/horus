@@ -154,8 +154,8 @@ export function filterArchitecture(
     asyncBoundaries: architecture.asyncBoundaries.filter(
       (b) =>
         matchesArea(b.queueName, tokens) ||
-        b.producers.some((p) => matchesArea(p, tokens)) ||
-        b.workers.some((w) => matchesArea(w, tokens)),
+        b.producers.some((p) => matchesArea(p.symbol, tokens)) ||
+        b.workers.some((w) => matchesArea(w.symbol, tokens)),
     ),
     keyFlows: architecture.keyFlows.filter((f) => matchesArea(f, tokens)),
     externalSystems: architecture.externalSystems.filter((e) => matchesArea(e.name, tokens)),

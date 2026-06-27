@@ -46,9 +46,11 @@ export function renderOnboarding(g: OnboardingGuide): string {
   if (g.architecture.asyncBoundaries.length > 0) {
     lines.push('Async boundaries:');
     for (const b of g.architecture.asyncBoundaries) {
-      const producers = b.producers.length > 0 ? b.producers.join(', ') : '(unknown)';
-      const workers = b.workers.length > 0 ? b.workers.join(', ') : '(unknown)';
-      lines.push(`- ${b.queueName}: ${producers} -> ${workers}`);
+      const fmt = (xs: { symbol: string; file: string | null }[]): string =>
+        xs.length > 0
+          ? xs.map((x) => (x.file ? `${x.symbol} (${x.file.split('/').pop()})` : x.symbol)).join(', ')
+          : '(unknown)';
+      lines.push(`- ${b.queueName}: ${fmt(b.producers)} -> ${fmt(b.workers)}`);
     }
   } else {
     lines.push('No async boundaries detected.');
