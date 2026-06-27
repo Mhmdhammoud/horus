@@ -252,6 +252,42 @@ export function removeSpawnedHostRecord(root: string): void {
 }
 
 /**
+ * Kill the host process(es) for `root` and remove the spawn record (HOR-372). Reaps BOTH the
+ * spawn-wrapper pid (spawned-host.json) AND the detached backend server pid (source/host.json) —
+ * the latter actually holds the kùzu single-writer lock and can outlive the wrapper. SIGTERM then
+ * SIGKILL, waiting briefly so the lock is RELEASED before a retry re-opens the same kùzu (a failed
+ * spawn left running was orphaning the lock and wedging every subsequent start). Best-effort.
+ */
+export async function killSpawnedHost(root: string): Promise<void> {
+  const pids = new Set<number>();
+  const spawned = readSpawnedHost(root);
+  if (spawned?.pid) pids.add(spawned.pid);
+  const backend = readSourceHostPid(root);
+  if (backend?.pid) pids.add(backend.pid);
+  for (const pid of pids) {
+    for (const signal of ['SIGTERM', 'SIGKILL'] as const) {
+      try {
+        process.kill(pid, signal);
+      } catch {
+        break; // already gone / not permitted — stop escalating this pid
+      }
+      let dead = false;
+      for (let i = 0; i < 15; i += 1) {
+        await new Promise((r) => setTimeout(r, 200));
+        try {
+          process.kill(pid, 0);
+        } catch {
+          dead = true;
+          break;
+        }
+      }
+      if (dead) break;
+    }
+  }
+  removeSpawnedHostRecord(root);
+}
+
+/**
  * Point the ownership record (`spawned-host.json`) at the backend's ACTUAL server pid once
  * the host is healthy. `startHost` can only record the pid of the `horus-source host`
  * process it spawned, but the backend may run its real HTTP server under a different,

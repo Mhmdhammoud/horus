@@ -44,7 +44,7 @@ import {
   findFreePort,
   startHost,
   waitForHost,
-  removeSpawnedHostRecord,
+  killSpawnedHost,
   reconcileSpawnedHostPid,
 } from '@horus/connectors';
 import { openDb } from '@horus/db';
@@ -267,6 +267,11 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
       // when the host doesn't come up, which makes parallel first-index race-safe (HOR-357).
       const priorPort =
         parseHostPort(configuredHost ?? '') ?? parseHostPort(readSourceHostUrl(root) ?? '');
+      // Reuse already failed above, so any host still recorded for this repo is stale/unhealthy
+      // (e.g. a previously hard-killed host that left the kùzu lock held). Reap it BEFORE spawning
+      // so the new host can acquire the lock — otherwise it loops to "did not become healthy"
+      // and the repo stays wedged until a manual `rm -rf .horus/source` (HOR-372).
+      await killSpawnedHost(root);
       const MAX_PORT_ATTEMPTS = 4;
       let started = false;
       for (let attempt = 0; attempt < MAX_PORT_ATTEMPTS && !started; attempt += 1) {
@@ -295,9 +300,10 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
           reconcileSpawnedHostPid(root, port);
           started = true;
         } else {
-          // Didn't come up — usually a concurrent bind race on this port. Drop the
-          // ownership record (so `horus stop` won't chase a dead pid) and try a fresh port.
-          removeSpawnedHostRecord(root);
+          // Didn't come up. KILL the spawn before retrying — a slow-loading host that missed
+          // the health window would otherwise be orphaned still holding the kùzu lock, and the
+          // next attempt (same kùzu) could never acquire it (HOR-372). Killing releases the lock.
+          await killSpawnedHost(root);
         }
       }
       if (!started) {
