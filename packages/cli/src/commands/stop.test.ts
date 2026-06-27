@@ -147,9 +147,9 @@ describe('horus stop — post-SIGTERM confirmation loop', () => {
     killSpy.mockRestore();
   });
 
-  it('returns 1 when process does not exit within STOP_WAIT_MS', async () => {
+  it('escalates to SIGKILL, then returns 1 when the host never exits (HOR-364)', async () => {
     mockReadSpawnedHost.mockReturnValue(VALID_RECORD);
-    // Process always found (never exits)
+    // Process always found (ignores every signal)
     stubExecWith({
       'args=': `horus-source host --port 8420`,
       'etime=': '00:30',
@@ -158,10 +158,45 @@ describe('horus stop — post-SIGTERM confirmation loop', () => {
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
 
     const promise = runStop({});
-    // Advance past the full 5-second timeout (5000ms / 200ms poll = 25+ ticks)
-    await drainTimers(40);
+    // Advance past SIGTERM grace (5s) + SIGKILL grace (3s) at 200ms/poll.
+    await drainTimers(60);
     const code = await promise;
     expect(code).toBe(1);
+    expect(killSpy).toHaveBeenCalledWith(VALID_RECORD.pid, 'SIGTERM');
+    expect(killSpy).toHaveBeenCalledWith(VALID_RECORD.pid, 'SIGKILL');
+
+    killSpy.mockRestore();
+  });
+
+  it('escalates to SIGKILL and returns 0 when the host dies after SIGKILL (HOR-364)', async () => {
+    mockReadSpawnedHost.mockReturnValue(VALID_RECORD);
+    let sigkilled = false;
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((_pid: number, sig?: unknown) => {
+      if (sig === 'SIGKILL') sigkilled = true;
+      return true;
+    }) as typeof process.kill);
+    // Process is found until SIGKILL is sent, then gone — models a host that ignores SIGTERM.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (mockExecFile as any).mockImplementation(
+      (_cmd: unknown, args: string[], _opts: unknown, cb: ExecFileCb) => {
+        const key = (args as string[]).join(' ');
+        if (key.includes('etime=')) {
+          cb(null, { stdout: '00:30', stderr: '' });
+        } else if (key.includes('args=')) {
+          if (sigkilled) cb(new Error('no such process'), undefined);
+          else cb(null, { stdout: `horus-source host --port 8420`, stderr: '' });
+        } else {
+          cb(new Error('unknown'), undefined);
+        }
+      },
+    );
+
+    const promise = runStop({});
+    await drainTimers(60);
+    const code = await promise;
+    expect(code).toBe(0);
+    expect(killSpy).toHaveBeenCalledWith(VALID_RECORD.pid, 'SIGTERM');
+    expect(killSpy).toHaveBeenCalledWith(VALID_RECORD.pid, 'SIGKILL');
 
     killSpy.mockRestore();
   });

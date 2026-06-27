@@ -42,6 +42,8 @@ const SPAWNED_HOST_FILE = 'spawned-host.json';
 const START_TIME_TOLERANCE_S = 60;
 /** How long to wait after SIGTERM for the process to exit. */
 const STOP_WAIT_MS = 5_000;
+/** How long to wait after escalating to SIGKILL before giving up (HOR-364). */
+const STOP_KILL_WAIT_MS = 3_000;
 /** Poll interval when waiting for a process to exit. */
 const STOP_POLL_MS = 200;
 
@@ -184,45 +186,26 @@ async function stopHost(root: string, hostUrl: string): Promise<number> {
     return 1;
   }
 
-  let signaled = false;
+  // SIGTERM, then escalate to SIGKILL if the host refuses to exit — a host that ignores
+  // SIGTERM must not be left holding the port + Kùzu lock (HOR-364).
+  let terminated: boolean;
   try {
-    process.kill(spawned.pid, 'SIGTERM');
-    signaled = true;
+    terminated = await terminatePid(spawned.pid);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ESRCH') {
-      // Process exited between our getProcessInfo check and the kill call — success.
-      console.log(pc.dim(`Process pid ${spawned.pid} exited before signal — already stopped.`));
-    } else {
-      console.error(pc.red(`Failed to signal pid ${spawned.pid}: ${(err as Error).message}`));
-      return 1;
-    }
+    console.error(pc.red(`Failed to signal pid ${spawned.pid}: ${(err as Error).message}`));
+    return 1;
   }
-
-  // After SIGTERM, poll until the process exits (confirms the signal was honoured).
-  if (signaled) {
-    const deadline = Date.now() + STOP_WAIT_MS;
-    let exited = false;
-    while (Date.now() < deadline) {
-      await sleep(STOP_POLL_MS);
-      if ((await getProcessInfo(spawned.pid)) === null) {
-        exited = true;
-        break;
-      }
-    }
-    if (!exited) {
-      console.error(
-        pc.red(
-          `Host pid ${spawned.pid} did not exit within ${STOP_WAIT_MS / 1000}s after SIGTERM.`,
-        ),
-      );
-      return 1;
-    }
-    console.log(
-      `${pc.green('✓')} Stopped source-intelligence host ` +
-        pc.dim(`(pid ${spawned.pid}, port ${port})`) +
-        ` for ${root}`,
+  if (!terminated) {
+    console.error(
+      pc.red(`Host pid ${spawned.pid} did not exit even after SIGKILL — could not reclaim the port.`),
     );
+    return 1;
   }
+  console.log(
+    `${pc.green('✓')} Stopped source-intelligence host ` +
+      pc.dim(`(pid ${spawned.pid}, port ${port})`) +
+      ` for ${root}`,
+  );
 
   // The wrapper we recorded is down — but the detached backend server can be a separate,
   // still-listening pid. Reap it too so the port + Kùzu lock are actually released.
@@ -290,30 +273,25 @@ async function stopBackendServerPid(root: string, port: number): Promise<Backend
     return 'failed';
   }
 
+  let terminated: boolean;
   try {
-    process.kill(rec.pid, 'SIGTERM');
+    terminated = await terminatePid(rec.pid);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return 'stopped';
     console.error(pc.red(`Failed to signal pid ${rec.pid}: ${(err as Error).message}`));
     return 'failed';
   }
-
-  const deadline = Date.now() + STOP_WAIT_MS;
-  while (Date.now() < deadline) {
-    await sleep(STOP_POLL_MS);
-    if ((await getProcessInfo(rec.pid)) === null) {
-      console.log(
-        `${pc.green('✓')} Stopped source-intelligence host ` +
-          pc.dim(`(pid ${rec.pid}, port ${port})`) +
-          ` for ${root}`,
-      );
-      return 'stopped';
-    }
+  if (!terminated) {
+    console.error(
+      pc.red(`Host pid ${rec.pid} did not exit even after SIGKILL — could not reclaim the port.`),
+    );
+    return 'failed';
   }
-  console.error(
-    pc.red(`Host pid ${rec.pid} did not exit within ${STOP_WAIT_MS / 1000}s after SIGTERM.`),
+  console.log(
+    `${pc.green('✓')} Stopped source-intelligence host ` +
+      pc.dim(`(pid ${rec.pid}, port ${port})`) +
+      ` for ${root}`,
   );
-  return 'failed';
+  return 'stopped';
 }
 
 async function stopAll(): Promise<number> {
@@ -391,6 +369,33 @@ function validateSpawnedRecord(r: SpawnedHostRecord): string | null {
 // ---------------------------------------------------------------------------
 // Process info
 // ---------------------------------------------------------------------------
+
+/**
+ * Terminate an already-identity-verified host pid: SIGTERM, wait, then escalate to SIGKILL
+ * if it refuses to exit, so the port + Kùzu lock are actually released (HOR-364 — a host that
+ * survived SIGTERM used to be left running). Returns true once the process is gone; throws
+ * only on an unexpected (non-ESRCH) kill error.
+ */
+async function terminatePid(pid: number): Promise<boolean> {
+  const escalation: { signal: NodeJS.Signals; waitMs: number }[] = [
+    { signal: 'SIGTERM', waitMs: STOP_WAIT_MS },
+    { signal: 'SIGKILL', waitMs: STOP_KILL_WAIT_MS },
+  ];
+  for (const { signal, waitMs } of escalation) {
+    try {
+      process.kill(pid, signal);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ESRCH') return true; // already gone
+      throw err;
+    }
+    const deadline = Date.now() + waitMs;
+    while (Date.now() < deadline) {
+      await sleep(STOP_POLL_MS);
+      if ((await getProcessInfo(pid)) === null) return true;
+    }
+  }
+  return (await getProcessInfo(pid)) === null;
+}
 
 interface ProcessInfo {
   args: string;
