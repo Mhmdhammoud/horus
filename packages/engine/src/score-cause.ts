@@ -454,9 +454,11 @@ function factorRequestContext(
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /**
- * Score a single cause candidate by applying all six factors to its baseScore.
- * Returns a fully populated CauseCandidate with explanations for every
- * factor that fired.
+ * Score a single cause candidate by applying all nine factors to its baseScore:
+ * evidence-quality, source-diversity, graph-proximity, runtime-signals, blast-radius,
+ * signal-strength, finding-uncertainty, provider-reliability, and request-context (the
+ * last three are conditional). Returns a fully populated CauseCandidate with explanations
+ * for every factor that fired.
  */
 export function scoreCause(input: CauseInput, ctx: ScoringContext): CauseCandidate {
   const now = ctx.now ?? new Date().toISOString();
