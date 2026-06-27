@@ -20,6 +20,7 @@ import {
 } from './commands/knowledge-cloud.js';
 import { runQueues } from './commands/queues.js';
 import { runInvestigate } from './commands/investigate.js';
+import { runPacket } from './commands/packet.js';
 import { runWatch } from './commands/watch.js';
 import type { WatchSource } from './commands/watch.js';
 import { runChanges } from './commands/changes.js';
@@ -500,6 +501,56 @@ Examples:
   horus investigate --project atlas-payments --env production "checkout timeout"
   horus investigate --name atlas-payments "queue backlog"
   horus investigate --ai "payment failures"
+`);
+
+  program
+    .command('packet <hint|savedId>')
+    .description('Build a compact, honesty-framed agent packet from a hint (fresh run) or saved investigation id')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--name <name>', 'registered project name (resolves via the registry)')
+    .option('--project <name>', 'project name to scope to')
+    .option('--env <name>', 'environment name (e.g. production)')
+    .option('--scope <path>', 'resolve the seed only from symbols under this path (e.g. packages/core)')
+    .option('--service <name>', 'service name to scope runtime logs, e.g. leadcall-api-prod')
+    .option('--since <ref>', 'git ref/range for the change window (e.g. HEAD~5)')
+    .option('--timeout <sec>', 'overall investigation deadline in seconds (default 120)')
+    .option('--for <agent>', 'presentation preset: claude | cursor | generic (tightens caps only)')
+    .option('--json', 'emit the packet as JSON (clean for piping into agents)')
+    .action(
+      async (
+        hintOrId: string,
+        opts: {
+          config?: string;
+          name?: string;
+          project?: string;
+          env?: string;
+          scope?: string;
+          service?: string;
+          since?: string;
+          timeout?: string;
+          for?: string;
+          json?: boolean;
+        },
+      ) => {
+        process.exitCode = await runPacket(hintOrId, {
+          config: opts.config,
+          name: opts.name,
+          project: opts.project,
+          env: opts.env,
+          scope: opts.scope,
+          service: opts.service,
+          since: opts.since,
+          timeout: opts.timeout,
+          for: opts.for,
+          json: opts.json,
+        });
+      },
+    )
+    .addHelpText('after', `
+Examples:
+  horus packet "checkout latency spike"
+  horus packet "queue backlog" --for claude --json
+  horus packet <savedId> --json          # project a saved investigation (no re-query)
 `);
 
   program
