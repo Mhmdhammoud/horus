@@ -67,7 +67,11 @@ import { correlate } from './correlate.js';
 import { rankSeeds, isTypeLikeName, executableBaseName, parseSeedQualifier } from './seeds.js';
 import { normalizeEvidence } from './normalize.js';
 import { computeWeightedEvidenceConfidence } from './confidence.js';
-import { collectGitChanges } from './git-collector.js';
+import {
+  collectGitChanges,
+  defaultChangeWindowSince,
+  DEFAULT_CHANGE_WINDOW_DAYS,
+} from './git-collector.js';
 import type { BoundedGitChange } from './git-collector.js';
 
 /** Dependencies the engine needs: a code provider and a database handle. */
@@ -101,6 +105,12 @@ export interface EngineDeps {
   metrics?: MetricsProvider | null;
   /** Absolute path to the local git repository — enables ownership estimation (HOR-40). */
   repoPath?: string;
+  /**
+   * Look-back window (in days) for the auto-derived git change window used when no explicit
+   * `--since` is supplied (HOR-333). Defaults to {@link DEFAULT_CHANGE_WINDOW_DAYS}. Overridable
+   * so a caller can widen/narrow the default; ignored when `input.since` is set.
+   */
+  changeWindowDays?: number;
   /** Which connectors are configured for the env — drives honest gap text. */
   connectors?: ConnectorFlags;
 }
@@ -740,10 +750,24 @@ export async function investigate(
   // ref (HEAD~5) detectChanges can't take — AND so a --since regression investigation can
   // steer the seed toward changed code: the culprit lives in the diff, not an unrelated
   // unchanged function (HOR-328 round-3).
+  // HOR-333: an explicit --since always wins. When it is absent but a repo is available, auto-derive
+  // a bounded default window (DEFAULT_CHANGE_WINDOW_DAYS, overridable via deps.changeWindowDays) so
+  // change analysis + the deployment-regression hypothesis run instead of staying dormant. The window
+  // is anchored to the repo's LAST COMMIT (not a bare Date.now()) so it stays deterministic for a
+  // given repo state.
+  const changeWindowDays = deps.changeWindowDays ?? DEFAULT_CHANGE_WINDOW_DAYS;
+  // Human-readable range label for findings/causes — the literal range for an explicit since, or a
+  // relative phrase for the auto window (its ISO anchor would be noise in user-facing text).
+  const changeRangeLabel =
+    input.since !== undefined ? `${input.since}..HEAD` : `the last ${changeWindowDays} days`;
   let recentChanges: BoundedGitChange | undefined;
-  if (deps.repoPath && input.since) {
+  if (deps.repoPath) {
     try {
-      recentChanges = await collectGitChanges({ repoPath: deps.repoPath, since: input.since });
+      const since =
+        input.since ?? (await defaultChangeWindowSince(deps.repoPath, changeWindowDays));
+      if (since !== undefined) {
+        recentChanges = await collectGitChanges({ repoPath: deps.repoPath, since });
+      }
     } catch {
       // Best-effort; skip on error
     }
@@ -1055,7 +1079,7 @@ export async function investigate(
     const { commits, changedFiles, totalInsertions, totalDeletions } = recentChanges;
     const ev = mkEv(
       'commit',
-      `Git history ${input.since}..HEAD: ${commits.length} commit(s), ${changedFiles.length} file(s) changed (+${totalInsertions} -${totalDeletions})`,
+      `Git history ${changeRangeLabel}: ${commits.length} commit(s), ${changedFiles.length} file(s) changed (+${totalInsertions} -${totalDeletions})`,
       { commits: commits.slice(0, 10), changedFiles: changedFiles.slice(0, 30), totalInsertions, totalDeletions, source: 'git' },
       {},
     );
@@ -2043,7 +2067,7 @@ export async function investigate(
   } else if (!changes && changeEvId && recentChanges) {
     findings.push({
       kind: 'observation',
-      title: `${recentChanges.commits.length} commit(s) in ${input.since}..HEAD touching ${recentChanges.changedFiles.length} file(s)`,
+      title: `${recentChanges.commits.length} commit(s) in ${changeRangeLabel} touching ${recentChanges.changedFiles.length} file(s)`,
       confidence: clamp01(0.3 + Math.min(recentChanges.commits.length, 10) / 20),
       evidenceIds: [changeEvId],
     });
@@ -2271,10 +2295,10 @@ export async function investigate(
     // pinning it on the newest unrelated commit.
     const regressionTitle =
       top && seedInChanges
-        ? `Recent change${citation.commitClause} to ${top.name}${citation.symbolClause} in ${input.since}..HEAD may have introduced the regression`
+        ? `Recent change${citation.commitClause} to ${top.name}${citation.symbolClause} in ${changeRangeLabel} may have introduced the regression`
         : top
-          ? `Changes shipped in ${input.since}..HEAD but none touched ${top.name} — a regression here is unlikely to be a code change to the seed itself (check upstream deps, data, or config)`
-          : `Recent change${citation.commitClause}${citation.symbolClause} in ${input.since}..HEAD may have introduced the regression`;
+          ? `Changes shipped in ${changeRangeLabel} but none touched ${top.name} — a regression here is unlikely to be a code change to the seed itself (check upstream deps, data, or config)`
+          : `Recent change${citation.commitClause}${citation.symbolClause} in ${changeRangeLabel} may have introduced the regression`;
     causeInputs.push({
       id: 'cause:deployment-regression',
       title: regressionTitle,

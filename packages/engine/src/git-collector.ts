@@ -20,6 +20,15 @@ const DEFAULT_MAX_COMMITS = 50;
 const DEFAULT_MAX_FILES = 100;
 const DEFAULT_MAX_BYTES = 50_000;
 
+/**
+ * Default look-back window (in days) used when no explicit `--since` is supplied but a
+ * repo path is available (HOR-333). Auto-enables change analysis + the deployment-regression
+ * hypothesis without changing explicit-since behaviour.
+ */
+export const DEFAULT_CHANGE_WINDOW_DAYS = 14;
+
+const DAY_MS = 86_400_000;
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface GitChangeQuery {
@@ -102,6 +111,57 @@ export function parseDiffStat(stdout: string): FileStat[] {
     stats.push({ path, insertions, deletions });
   }
   return stats;
+}
+
+/**
+ * Compute an ISO-8601 `since` timestamp `days` before the given anchor instant.
+ * Pure + deterministic: the same anchor always yields the same window, so the
+ * auto-derived change window never depends on a bare wall-clock read. Returns
+ * undefined when the anchor cannot be parsed.
+ */
+export function changeWindowSinceFrom(
+  anchorIso: string,
+  days: number = DEFAULT_CHANGE_WINDOW_DAYS,
+): string | undefined {
+  const anchorMs = Date.parse(anchorIso);
+  if (Number.isNaN(anchorMs)) return undefined;
+  const span = days > 0 ? days : DEFAULT_CHANGE_WINDOW_DAYS;
+  return new Date(anchorMs - span * DAY_MS).toISOString();
+}
+
+/**
+ * Read the author date (ISO-8601) of the repo's most recent commit — the deterministic
+ * anchor for the auto change window. Never throws; returns undefined when the repo path
+ * is not absolute or git cannot be queried.
+ */
+export async function latestCommitDate(repoPath: string): Promise<string | undefined> {
+  if (!repoPath.startsWith('/')) return undefined;
+  try {
+    const { stdout } = await exec(
+      'git',
+      ['-C', repoPath, 'log', '-1', '--format=%aI'],
+      { maxBuffer: 1024 * 1024 },
+    );
+    const iso = stdout.trim();
+    return iso === '' ? undefined : iso;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Derive a default change-window `since` value when the caller supplied no explicit one,
+ * anchored to the repo's last commit rather than wall-clock time so the window is
+ * deterministic for a given repo state (HOR-333). Returns an ISO-8601 timestamp suitable
+ * for {@link collectGitChanges}, or undefined when the repo has no readable history.
+ */
+export async function defaultChangeWindowSince(
+  repoPath: string,
+  days: number = DEFAULT_CHANGE_WINDOW_DAYS,
+): Promise<string | undefined> {
+  const anchor = await latestCommitDate(repoPath);
+  if (anchor === undefined) return undefined;
+  return changeWindowSinceFrom(anchor, days);
 }
 
 // ── Core function ─────────────────────────────────────────────────────────────

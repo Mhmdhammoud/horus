@@ -29,13 +29,14 @@ import type { BoundedGitChange } from './git-collector.js';
 
 vi.mock('./git-collector.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./git-collector.js')>();
-  return { ...actual, collectGitChanges: vi.fn() };
+  return { ...actual, collectGitChanges: vi.fn(), defaultChangeWindowSince: vi.fn() };
 });
 
 import { investigate, confidenceCeilingForCause, looksExplanatory, looksPerformance, formatRegressionCitation, buildBehavioralWalkthrough, seedEmittedSeverityTier } from './engine.js';
-import { collectGitChanges } from './git-collector.js';
+import { collectGitChanges, defaultChangeWindowSince } from './git-collector.js';
 
 const mockCollectGitChanges = vi.mocked(collectGitChanges);
+const mockDefaultChangeWindowSince = vi.mocked(defaultChangeWindowSince);
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -156,6 +157,78 @@ describe('investigate() — regression cause cites commit + changed functions (H
     // Still names the seed + range.
     expect(regression?.title).toContain('SaleService');
     expect(regression?.title).toContain('a1b2c3d..HEAD');
+  });
+
+  it('auto-derives a default change window when --since is absent, enabling the deployment-regression cause', async () => {
+    // No explicit since: the engine asks for a default window anchored to the repo's last commit.
+    mockDefaultChangeWindowSince.mockResolvedValue('2025-12-18T00:00:00.000Z');
+    mockCollectGitChanges.mockResolvedValue({
+      commits: [makeCommit('a1b2c3d4e5f6', 'fix throttle')],
+      fileStats: [],
+      changedFiles: ['src/services/sale.service.ts'],
+      totalInsertions: 5,
+      totalDeletions: 1,
+      window: { since: '2025-12-18T00:00:00.000Z', until: undefined },
+      truncated: false,
+    } as BoundedGitChange);
+
+    const report = await investigate(
+      { hint: 'SaleService regression' },
+      { code: baseCode, db: fakeDb, repoPath: '/repo' },
+    );
+
+    // The default window was requested (NOT a bare wall-clock read) and the change window ran.
+    expect(mockDefaultChangeWindowSince).toHaveBeenCalledWith('/repo', 14);
+    expect(report.recentChanges).toBeDefined();
+    // The deployment-regression cause is no longer dormant; it labels the relative window.
+    const regression = report.suspectedCauses.find((c) => c.id === 'cause:deployment-regression');
+    expect(regression).toBeDefined();
+    expect(regression?.title).toContain('the last 14 days');
+    expect(regression?.title).not.toContain('undefined');
+  });
+
+  it('honors deps.changeWindowDays as an overridable default window length', async () => {
+    mockDefaultChangeWindowSince.mockResolvedValue('2025-12-25T00:00:00.000Z');
+    mockCollectGitChanges.mockResolvedValue({
+      commits: [makeCommit('a1b2c3d4e5f6', 'fix throttle')],
+      fileStats: [],
+      changedFiles: [],
+      totalInsertions: 0,
+      totalDeletions: 0,
+      window: { since: '2025-12-25T00:00:00.000Z', until: undefined },
+      truncated: false,
+    } as BoundedGitChange);
+
+    const report = await investigate(
+      { hint: 'SaleService regression' },
+      { code: baseCode, db: fakeDb, repoPath: '/repo', changeWindowDays: 7 },
+    );
+
+    expect(mockDefaultChangeWindowSince).toHaveBeenCalledWith('/repo', 7);
+    const regression = report.suspectedCauses.find((c) => c.id === 'cause:deployment-regression');
+    expect(regression?.title).toContain('the last 7 days');
+  });
+
+  it('does not auto-derive a window when --since is explicit (explicit behavior unchanged)', async () => {
+    // Call history accumulates across tests (no global clearMocks) — reset before asserting.
+    mockDefaultChangeWindowSince.mockClear();
+    mockCollectGitChanges.mockResolvedValue({
+      commits: [makeCommit('a1b2c3d4e5f6', 'fix throttle')],
+      fileStats: [],
+      changedFiles: ['src/services/sale.service.ts'],
+      totalInsertions: 1,
+      totalDeletions: 0,
+      window: { since: 'a1b2c3d', until: undefined },
+      truncated: false,
+    } as BoundedGitChange);
+
+    await investigate(
+      { hint: 'SaleService regression', since: 'a1b2c3d' },
+      { code: baseCode, db: fakeDb, repoPath: '/repo' },
+    );
+
+    expect(mockDefaultChangeWindowSince).not.toHaveBeenCalled();
+    expect(mockCollectGitChanges).toHaveBeenCalledWith({ repoPath: '/repo', since: 'a1b2c3d' });
   });
 
   it('degrades to the plain title when no commits/changed symbols are available', () => {

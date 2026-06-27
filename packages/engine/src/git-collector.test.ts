@@ -3,7 +3,15 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { isRefLike, parseDiffStat, collectGitChanges } from './git-collector.js';
+import {
+  isRefLike,
+  parseDiffStat,
+  collectGitChanges,
+  changeWindowSinceFrom,
+  latestCommitDate,
+  defaultChangeWindowSince,
+  DEFAULT_CHANGE_WINDOW_DAYS,
+} from './git-collector.js';
 import type { GitChangeQuery } from './git-collector.js';
 
 // ── isRefLike ─────────────────────────────────────────────────────────────────
@@ -311,5 +319,74 @@ describe('collectGitChanges', () => {
     expect(result.commits).toHaveLength(0);
     expect(result.truncated).toBe(true);
     expect(result.truncatedReason).toMatch(/invalid until ref/);
+  });
+});
+
+// ── HOR-333: auto change window ─────────────────────────────────────────────────
+
+describe('changeWindowSinceFrom', () => {
+  it('subtracts the default 14-day window from the anchor (deterministic)', () => {
+    expect(changeWindowSinceFrom('2024-01-15T10:00:00.000Z')).toBe('2024-01-01T10:00:00.000Z');
+  });
+
+  it('honors a custom day count', () => {
+    expect(changeWindowSinceFrom('2024-01-15T00:00:00.000Z', 7)).toBe('2024-01-08T00:00:00.000Z');
+  });
+
+  it('falls back to the default for a non-positive day count', () => {
+    expect(changeWindowSinceFrom('2024-01-15T10:00:00.000Z', 0)).toBe('2024-01-01T10:00:00.000Z');
+    expect(changeWindowSinceFrom('2024-01-15T10:00:00.000Z', -5)).toBe('2024-01-01T10:00:00.000Z');
+  });
+
+  it('returns undefined for an unparseable anchor', () => {
+    expect(changeWindowSinceFrom('not-a-date')).toBeUndefined();
+  });
+
+  it('is pure — same anchor always yields the same window', () => {
+    const a = changeWindowSinceFrom('2024-06-01T12:34:56.000Z');
+    const b = changeWindowSinceFrom('2024-06-01T12:34:56.000Z');
+    expect(a).toBe(b);
+  });
+});
+
+describe('latestCommitDate', () => {
+  it('returns the trimmed ISO date from git log', async () => {
+    stubExec('2024-01-15T10:00:00+00:00\n');
+    expect(await latestCommitDate('/repo')).toBe('2024-01-15T10:00:00+00:00');
+  });
+
+  it('returns undefined for a relative repo path (security guard)', async () => {
+    expect(await latestCommitDate('relative/path')).toBeUndefined();
+  });
+
+  it('returns undefined when git fails (empty repo / no history)', async () => {
+    stubExecError('fatal: your current branch does not have any commits yet');
+    expect(await latestCommitDate('/repo')).toBeUndefined();
+  });
+
+  it('returns undefined for empty stdout', async () => {
+    stubExec('   \n');
+    expect(await latestCommitDate('/repo')).toBeUndefined();
+  });
+});
+
+describe('defaultChangeWindowSince', () => {
+  it('anchors the window to the last commit, not wall-clock', async () => {
+    stubExec('2024-01-15T10:00:00.000Z\n');
+    expect(await defaultChangeWindowSince('/repo')).toBe('2024-01-01T10:00:00.000Z');
+  });
+
+  it('respects an overridden window length', async () => {
+    stubExec('2024-01-15T00:00:00.000Z\n');
+    expect(await defaultChangeWindowSince('/repo', 7)).toBe('2024-01-08T00:00:00.000Z');
+  });
+
+  it('returns undefined when the repo has no readable history', async () => {
+    stubExecError('fatal: bad default revision HEAD');
+    expect(await defaultChangeWindowSince('/repo')).toBeUndefined();
+  });
+
+  it('exposes a 14-day default', () => {
+    expect(DEFAULT_CHANGE_WINDOW_DAYS).toBe(14);
   });
 });
