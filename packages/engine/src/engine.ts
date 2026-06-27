@@ -45,6 +45,7 @@ import {
   hypotheses as hypothesesTable,
   investigations as investigationsTable,
   listQueueEdges,
+  listInvestigationsWithReports,
   eq,
 } from '@horus/db';
 import { buildGraph } from './graph.js';
@@ -2472,12 +2473,37 @@ export async function investigate(
     ...(deps.queue != null ? { queue: 0.90 } : {}),
     ...(deps.metrics != null ? { metrics: 0.75 } : {}),
   };
+  // Incident memory (HOR-363): code areas touched by PRIOR credible investigations corroborate
+  // a cause. Best-effort — never required, and the bounded boost can't outrun the confidence
+  // ceiling. Build a node-id → prior-count map from the recent incident store.
+  const priorIncidents = new Map<string, number>();
+  try {
+    const priors = await listInvestigationsWithReports(deps.db, 50);
+    for (const row of priors) {
+      const rep = row.report as InvestigationReport | null | undefined;
+      if (!rep || !Array.isArray(rep.evidence) || rep.evidence.length === 0) continue;
+      // Only learn from credible priors — a low-confidence prior isn't a real "incident".
+      if (typeof rep.confidence === 'number' && rep.confidence < 0.5) continue;
+      const priorGraph = buildGraph(rep.evidence);
+      const seen = new Set<string>();
+      for (const n of priorGraph.nodes) {
+        if ((n.type === 'symbol' || n.type === 'file') && !seen.has(n.id)) {
+          seen.add(n.id);
+          priorIncidents.set(n.id, (priorIncidents.get(n.id) ?? 0) + 1);
+        }
+      }
+    }
+  } catch {
+    // Incident memory is corroborating signal, never a hard dependency.
+  }
+
   const rankedCauses = rankCauses(causeInputs, {
     evidence,
     graph,
     findings,
     providerReliability,
     request: { hint: input.hint, service: input.service },
+    ...(priorIncidents.size > 0 ? { priorIncidents } : {}),
   });
 
   // g. confidence

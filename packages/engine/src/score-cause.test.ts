@@ -64,6 +64,78 @@ function makeCtx(
 // Scenario 1: No evidence attached
 // ---------------------------------------------------------------------------
 
+describe('scoreCause — incident-history factor (HOR-363)', () => {
+  const symGraph: InvestigationGraph = {
+    nodes: [
+      {
+        id: 'symbol:authenticateToken',
+        type: 'symbol',
+        label: 'authenticateToken',
+        evidenceIds: ['ev-sym'],
+        implicated: false,
+        implicationScore: 0,
+      },
+    ],
+    edges: [],
+  };
+  const symEvidence = [makeEvidence('ev-sym', 'symbol', 'code', 0.8)];
+  const input = makeInput({ baseScore: 0.4, sourceEvidenceIds: ['ev-sym'] });
+
+  it('boosts a cause whose code has a prior-incident history', () => {
+    const ctx: ScoringContext = {
+      evidence: symEvidence,
+      graph: symGraph,
+      now: FIXED_NOW,
+      priorIncidents: new Map([['symbol:authenticateToken', 2]]),
+    };
+    const result = scoreCause(input, ctx);
+    const f = result.explanations.find((e) => e.factor === 'incident-history');
+    expect(f).toBeDefined();
+    expect(f!.delta).toBeGreaterThan(0);
+    expect(f!.reason).toContain('authenticateToken');
+    expect(f!.reason).toContain('2 prior investigation');
+  });
+
+  it('does not fire without priorIncidents', () => {
+    const result = scoreCause(input, { evidence: symEvidence, graph: symGraph, now: FIXED_NOW });
+    expect(result.explanations.some((e) => e.factor === 'incident-history')).toBe(false);
+  });
+
+  it('does not fire when the cause code is not in prior incidents', () => {
+    const ctx: ScoringContext = {
+      evidence: symEvidence,
+      graph: symGraph,
+      now: FIXED_NOW,
+      priorIncidents: new Map([['symbol:unrelated', 3]]),
+    };
+    expect(scoreCause(input, ctx).explanations.some((e) => e.factor === 'incident-history')).toBe(
+      false,
+    );
+  });
+
+  it('caps the boost at +0.10 for many matched nodes', () => {
+    const manyNodes: InvestigationGraph = {
+      nodes: Array.from({ length: 5 }, (_, i) => ({
+        id: `symbol:s${i}`,
+        type: 'symbol' as const,
+        label: `s${i}`,
+        evidenceIds: ['ev-sym'],
+        implicated: false,
+        implicationScore: 0,
+      })),
+      edges: [],
+    };
+    const ctx: ScoringContext = {
+      evidence: symEvidence,
+      graph: manyNodes,
+      now: FIXED_NOW,
+      priorIncidents: new Map(Array.from({ length: 5 }, (_, i) => [`symbol:s${i}`, 1] as const)),
+    };
+    const f = scoreCause(input, ctx).explanations.find((e) => e.factor === 'incident-history');
+    expect(f!.delta).toBeLessThanOrEqual(0.1);
+  });
+});
+
 describe('scoreCause — scenario 1: no evidence attached', () => {
   it('finalScore equals baseScore when no evidence is attached', () => {
     const input = makeInput({ baseScore: 0.40, sourceEvidenceIds: [] });

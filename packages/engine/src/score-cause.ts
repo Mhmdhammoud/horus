@@ -124,6 +124,12 @@ export interface ScoringContext {
    * Inject a fixed value in tests to ensure determinism.
    */
   now?: string;
+  /**
+   * Incident memory (HOR-363): graph node id (`symbol:<name>` / `file:<path>`) → number of
+   * PRIOR investigations that touched it. Built by the engine from the incident store. When
+   * present, Factor 10 boosts a cause whose code has a prior-incident history. Omit to skip.
+   */
+  priorIncidents?: Map<string, number>;
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -451,14 +457,60 @@ function factorRequestContext(
   };
 }
 
+/**
+ * Factor 10 — Incident memory.
+ *
+ * Horus persists every investigation. When a candidate cause's code (the symbol/file graph
+ * nodes touching its evidence) was also touched by PRIOR investigations, that history is
+ * corroborating signal — this area has been investigated before. `ctx.priorIncidents` maps
+ * graph node id → prior-investigation count (built by the engine from the incident store).
+ *
+ * NOTE: symbol/file nodes are never marked `implicated` (that flag is infra-only), so this
+ * matches on code nodes attached to the cause's evidence, not `implicatedNodeIds`.
+ *
+ * Bounded to +0.10 so history can never manufacture a confident headline on thin current
+ * evidence — the confidence ceiling still governs the result.
+ */
+function factorIncidentHistory(
+  sourceEvidenceIds: string[],
+  graph: InvestigationGraph,
+  priorIncidents: Map<string, number>,
+): ScoreExplanation | null {
+  if (priorIncidents.size === 0) return null;
+  const idSet = new Set(sourceEvidenceIds);
+  const codeNodes = graph.nodes.filter(
+    (n) =>
+      (n.type === 'symbol' || n.type === 'file') &&
+      n.evidenceIds.some((eid) => idSet.has(eid)),
+  );
+  const matched: typeof codeNodes = [];
+  let totalPrior = 0;
+  for (const n of codeNodes) {
+    const count = priorIncidents.get(n.id);
+    if (count && count > 0) {
+      matched.push(n);
+      totalPrior += count;
+    }
+  }
+  if (matched.length === 0) return null;
+  // +0.04 per distinct matched code node, capped at +0.10.
+  const delta = +Math.min(matched.length * 0.04, 0.1).toFixed(3);
+  const names = matched.slice(0, 3).map((n) => n.label);
+  return {
+    factor: 'incident-history',
+    delta,
+    reason: `Implicated code has a prior-incident history (${totalPrior} prior investigation(s) on ${names.join(', ')}${matched.length > 3 ? ', …' : ''})`,
+  };
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /**
- * Score a single cause candidate by applying all nine factors to its baseScore:
+ * Score a single cause candidate by applying all ten factors to its baseScore:
  * evidence-quality, source-diversity, graph-proximity, runtime-signals, blast-radius,
- * signal-strength, finding-uncertainty, provider-reliability, and request-context (the
- * last three are conditional). Returns a fully populated CauseCandidate with explanations
- * for every factor that fired.
+ * signal-strength, finding-uncertainty, provider-reliability, request-context, and
+ * incident-history (the last four are conditional on context). Returns a fully populated
+ * CauseCandidate with explanations for every factor that fired.
  */
 export function scoreCause(input: CauseInput, ctx: ScoringContext): CauseCandidate {
   const now = ctx.now ?? new Date().toISOString();
@@ -476,6 +528,9 @@ export function scoreCause(input: CauseInput, ctx: ScoringContext): CauseCandida
     factorFindingUncertainty(input.sourceEvidenceIds, ctx.findings ?? []),
     ctx.providerReliability ? factorProviderReliability(attached, ctx.providerReliability) : null,
     ctx.request ? factorRequestContext(input.sourceEvidenceIds, ctx.graph, ctx.request) : null,
+    ctx.priorIncidents
+      ? factorIncidentHistory(input.sourceEvidenceIds, ctx.graph, ctx.priorIncidents)
+      : null,
   ];
 
   const explanations = rawFactors.filter((f): f is ScoreExplanation => f !== null);
