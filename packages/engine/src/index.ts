@@ -20,6 +20,8 @@ export * from './render-architecture.js';
 export * from './blast-radius.js';
 export * from './render-blast-radius.js';
 export * from './memory.js';
+export * from './memory-view.js';
+export * from './render-memory.js';
 export * from './gaps.js';
 export * from './multi-repo.js';
 export * from './ownership.js';

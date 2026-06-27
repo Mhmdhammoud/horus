@@ -107,7 +107,7 @@ export function buildAreaTokens(area: string, symbols: Symbol[]): Set<string> {
 }
 
 /** True when text contains at least one area token. */
-function matchesArea(text: string, tokens: Set<string>): boolean {
+export function matchesArea(text: string, tokens: Set<string>): boolean {
   const textTokens = new Set(tokenize(text));
   for (const t of tokens) {
     if (textTokens.has(t)) return true;
