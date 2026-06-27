@@ -131,6 +131,29 @@ describe('investigate() — seed evidence uses real line ranges (HOR-206)', () =
 // ("sits on a high-fan-out path (1 affected)"). Require genuine fan-out (>=3).
 // ---------------------------------------------------------------------------
 
+describe('investigate() — seed finding confidence reflects match strength (HOR-367)', () => {
+  it('is never a hardcoded 1.00', async () => {
+    const report = await investigate({ hint: 'getSaleWithLink' }, { code: fakeCode, db: fakeDb });
+    const sf = report.findings.find((f) => f.title.startsWith('Seed resolves to'));
+    expect(sf).toBeDefined();
+    expect(sf!.confidence).toBeLessThan(1);
+    expect(sf!.confidence).toBeGreaterThan(0);
+  });
+
+  it('tracks search relevance for a strong, hint-matching seed', async () => {
+    const scored: Symbol = { ...SEED_SYMBOL, score: 0.9 };
+    const code: CodeProvider = {
+      ...fakeCode,
+      async searchSymbols() { return [scored]; },
+      async context() { return { ...fakeCtx, symbol: scored }; },
+    };
+    const report = await investigate({ hint: 'getSaleWithLink' }, { code, db: fakeDb });
+    const sf = report.findings.find((f) => f.title.startsWith('Seed resolves to'));
+    expect(sf!.confidence).toBeGreaterThanOrEqual(0.5);
+    expect(sf!.confidence).toBeLessThan(1);
+  });
+});
+
 describe('investigate() — blast-radius cause requires genuine fan-out (HOR-340)', () => {
   const codeWithAffected = (affected: number): CodeProvider => ({
     ...fakeCode,

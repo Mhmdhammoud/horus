@@ -1929,11 +1929,18 @@ export async function investigate(
   // The seed is the best-ranked candidate (architectural entry point preferred).
   // Structural seed findings are present only on a full run (HOR-319 layer-2).
   if (top && seedEv) {
+    // Reflect the REAL seed match strength — never a hardcoded 1.00 (HOR-367). A weak/closest
+    // match must not read as certainty (it contradicted the "low-confidence closest match"
+    // disclaimer in the same report). Low-confidence seeds cap low; otherwise use the search
+    // relevance, floored/ceilinged so seed resolution is never presented as absolute certainty.
+    const seedConfidence = seedIsLowConfidence
+      ? Math.min(0.4, top.score ?? 0.3)
+      : Math.min(0.95, Math.max(0.5, top.score ?? 0.75));
     findings.push({
       kind: 'observation',
       title: `Seed resolves to ${label} at ${seedLoc}`,
       detail: top.signature ?? undefined,
-      confidence: 1,
+      confidence: +seedConfidence.toFixed(2),
       evidenceIds: [seedEv.id],
     });
   }
