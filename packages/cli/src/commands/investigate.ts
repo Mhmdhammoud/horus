@@ -13,7 +13,7 @@ import { track } from '../lib/telemetry/client.js';
 import { isContentSharingEnabled } from '../lib/telemetry/consent.js';
 import { maybePromptFeedback } from '../lib/telemetry/feedback.js';
 import { reportCloudError } from './context.js';
-import { computeFreshness, renderFreshness } from '../lib/freshness.js';
+import { computeFreshness, renderFreshness, readIndexMeta, commitsSince } from '../lib/freshness.js';
 import {
   buildInvestigationContext,
   runOneInvestigation,
@@ -247,11 +247,18 @@ export async function runInvestigate(
       const db = ctx.dbHandle.db;
       // --json is back-compat for --format json.
       const format = opts.json ? 'json' : (opts.format ?? 'text');
-      // HOR-362: how fresh are the inputs behind this report? (code index age + runtime window)
+      // HOR-362: how fresh are the inputs behind this report? (code index age, git drift,
+      // runtime window). Index drift = commits on HEAD since the index was built.
+      const fmeta = readIndexMeta(repoRoot);
+      const commitsSinceIndex = fmeta?.lastIndexedAt
+        ? await commitsSince(repoRoot, fmeta.lastIndexedAt)
+        : null;
       const freshness = computeFreshness({
         repoRoot,
         evidence: report.evidence,
         nowIso: new Date().toISOString(),
+        meta: fmeta,
+        commitsSinceIndex,
       });
       if (format === 'json') {
         const obj = JSON.parse(reportToJSON(report)) as Record<string, unknown>;

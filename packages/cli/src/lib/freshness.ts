@@ -8,9 +8,31 @@
  * trust (or distrust) the headline accordingly.
  */
 
+import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import pc from 'picocolors';
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * How many commits on HEAD landed after `sinceIso` — i.e. how far the code index is behind
+ * the working tree. Returns null when it can't be determined (not a git repo, bad date, etc.).
+ */
+export async function commitsSince(repoRoot: string, sinceIso: string): Promise<number | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-C', repoRoot, 'rev-list', '--count', `--since=${sinceIso}`, 'HEAD'],
+      { timeout: 5000 },
+    );
+    const n = parseInt(stdout.trim(), 10);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Runtime evidence ages; code/history don't carry a meaningful "window". */
 const RUNTIME_SOURCES = new Set(['logs', 'metrics', 'state', 'queue']);
@@ -43,6 +65,8 @@ export interface Freshness {
   indexAgeMs: number | null;
   indexAgeLabel: string;
   indexStale: boolean;
+  /** Commits on HEAD since the index was built (how far behind the working tree it is). */
+  commitsSinceIndex: number | null;
   /** Span of runtime evidence actually used, when any carried timestamps. */
   runtimeWindow: { fromIso: string; toIso: string } | null;
   /** Distinct runtime sources that contributed evidence (logs/metrics/state/queue). */
@@ -73,9 +97,12 @@ export function computeFreshness(opts: {
   nowIso: string;
   /** Injectable for tests; defaults to reading meta.json under repoRoot. */
   meta?: IndexMeta | null;
+  /** Commits since the index was built (from `commitsSince`); null/undefined when unknown. */
+  commitsSinceIndex?: number | null;
 }): Freshness {
   const now = Date.parse(opts.nowIso);
   const meta = opts.meta !== undefined ? opts.meta : readIndexMeta(opts.repoRoot);
+  const commitsSinceIndex = opts.commitsSinceIndex ?? null;
   const caveats: string[] = [];
 
   // ── Code index age ──────────────────────────────────────────────────────
@@ -96,6 +123,14 @@ export function computeFreshness(opts: {
     caveats.push('code index age unknown (no .horus/source/meta.json) — freshness unverified');
   }
 
+  // ── Index drift vs git ───────────────────────────────────────────────────
+  // Even a recently-built index can be behind new commits; flag that explicitly.
+  if (typeof commitsSinceIndex === 'number' && commitsSinceIndex > 0) {
+    caveats.push(
+      `${commitsSinceIndex} commit(s) since the last index — re-run \`horus index\` so analysis reflects current code`,
+    );
+  }
+
   // ── Runtime evidence window ─────────────────────────────────────────────
   const runtime = opts.evidence.filter((e) => e.source && RUNTIME_SOURCES.has(e.source));
   const runtimeSources = [...new Set(runtime.map((e) => e.source as string))].sort();
@@ -113,13 +148,23 @@ export function computeFreshness(opts: {
     );
   }
 
-  return { indexAgeMs, indexAgeLabel, indexStale, runtimeWindow, runtimeSources, caveats };
+  return {
+    indexAgeMs,
+    indexAgeLabel,
+    indexStale,
+    commitsSinceIndex,
+    runtimeWindow,
+    runtimeSources,
+    caveats,
+  };
 }
 
 /** Render the freshness summary as a dim banner (text/markdown output). */
 export function renderFreshness(f: Freshness): string {
   const lines: string[] = [];
-  const idx = f.indexStale ? pc.yellow(f.indexAgeLabel) : f.indexAgeLabel;
+  const behind = f.commitsSinceIndex && f.commitsSinceIndex > 0 ? ` (${f.commitsSinceIndex} behind)` : '';
+  const label = f.indexAgeLabel + behind;
+  const idx = f.indexStale || behind ? pc.yellow(label) : label;
   const runtime =
     f.runtimeWindow !== null
       ? `runtime ${f.runtimeWindow.fromIso.slice(0, 10)}→${f.runtimeWindow.toIso.slice(0, 10)}` +

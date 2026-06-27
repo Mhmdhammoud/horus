@@ -106,6 +106,31 @@ describe('computeFreshness', () => {
     expect(f.runtimeSources).toEqual([]);
     expect(f.caveats.some((c) => /no runtime evidence/.test(c))).toBe(true);
   });
+
+  it('caveats when the index is behind new commits (drift)', () => {
+    const f = computeFreshness({
+      repoRoot: '/x',
+      nowIso: NOW,
+      meta: { lastIndexedAt: NOW },
+      evidence: [{ source: 'logs', timestamp: NOW }],
+      commitsSinceIndex: 5,
+    });
+    expect(f.commitsSinceIndex).toBe(5);
+    expect(f.caveats.some((c) => /5 commit\(s\) since the last index/.test(c))).toBe(true);
+  });
+
+  it('no drift caveat when commitsSinceIndex is 0 or unknown', () => {
+    const zero = computeFreshness({
+      repoRoot: '/x',
+      nowIso: NOW,
+      meta: { lastIndexedAt: NOW },
+      evidence: [{ source: 'logs', timestamp: NOW }],
+      commitsSinceIndex: 0,
+    });
+    expect(zero.caveats.some((c) => /since the last index/.test(c))).toBe(false);
+    const unknown = computeFreshness({ repoRoot: '/x', nowIso: NOW, meta: { lastIndexedAt: NOW }, evidence: [] });
+    expect(unknown.commitsSinceIndex).toBeNull();
+  });
 });
 
 describe('renderFreshness', () => {
@@ -115,5 +140,18 @@ describe('renderFreshness', () => {
     );
     expect(out).toContain('Freshness:');
     expect(out).toContain('age unknown');
+  });
+
+  it('shows commits-behind in the banner', () => {
+    const out = renderFreshness(
+      computeFreshness({
+        repoRoot: '/x',
+        nowIso: NOW,
+        meta: { lastIndexedAt: NOW },
+        evidence: [{ source: 'logs', timestamp: NOW }],
+        commitsSinceIndex: 3,
+      }),
+    );
+    expect(out).toContain('3 behind');
   });
 });
