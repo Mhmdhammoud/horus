@@ -16,15 +16,28 @@ import type { SourceHttpClient } from '@horus/connectors';
 
 function makeSourceClient(producerContent: string, workerContent: string): SourceHttpClient {
   return {
-    cypher: vi.fn(async (query: string) => {
-      if (query.includes('@InjectQueue(') || query.includes('new Queue(')) {
-        return {
-          rows: [['NotificationService', 'src/notification.service.ts', producerContent]],
-        };
+    contentSearch: vi.fn(async (tokens: string[]) => {
+      if (tokens.includes('@InjectQueue(')) {
+        return [
+          {
+            nodeId: 'class:src/notification.service.ts:NotificationService',
+            name: 'NotificationService',
+            filePath: 'src/notification.service.ts',
+            content: producerContent,
+          },
+        ];
       }
-      return {
-        rows: [['EmailProcessor', 'src/email.processor.ts', workerContent]],
-      };
+      if (tokens.includes('@Processor(')) {
+        return [
+          {
+            nodeId: 'class:src/email.processor.ts:EmailProcessor',
+            name: 'EmailProcessor',
+            filePath: 'src/email.processor.ts',
+            content: workerContent,
+          },
+        ];
+      }
+      return []; // Python task-queue (celery/...) pre-filter — nothing for these fixtures.
     }),
   } as unknown as SourceHttpClient;
 }
@@ -82,30 +95,38 @@ describe('stitch — project scoping (HOR-38)', () => {
     }
   });
 
-  it('widened CONTAINS pre-filter fetches and stitches a procrastinate .defer() edge (HOR-380)', () => {
+  it('widened content-search pre-filter fetches and stitches a procrastinate .defer() edge (HOR-380)', () => {
     // The pre-filter must request the new producer verbs / @actor in lockstep with extract.ts,
     // or the candidate nodes are never fetched and the regex never fires.
-    const seen: string[] = [];
+    const seen: string[][] = [];
     const client = {
-      cypher: vi.fn(async (query: string) => {
-        seen.push(query);
-        if (query.includes('@InjectQueue(') || query.includes('new Queue(')) return { rows: [] };
-        if (query.includes('@Processor(') || query.includes('new Worker')) return { rows: [] };
-        // The Python task-queue query: return a procrastinate worker + producer.
-        return {
-          rows: [
-            ['sum_task', 'app/tasks.py', '@app.task\ndef sum_task(a, b):\n    return a + b'],
-            ['handler', 'app/views.py', 'def handler():\n    sum_task.defer(a=1, b=2)'],
-          ],
-        };
+      contentSearch: vi.fn(async (tokens: string[]) => {
+        seen.push(tokens);
+        if (tokens.includes('@InjectQueue(')) return [];
+        if (tokens.includes('@Processor(')) return [];
+        // The Python task-queue pre-filter: return a procrastinate worker + producer.
+        return [
+          {
+            nodeId: 'function:app/tasks.py:sum_task',
+            name: 'sum_task',
+            filePath: 'app/tasks.py',
+            content: '@app.task\ndef sum_task(a, b):\n    return a + b',
+          },
+          {
+            nodeId: 'function:app/views.py:handler',
+            name: 'handler',
+            filePath: 'app/views.py',
+            content: 'def handler():\n    sum_task.defer(a=1, b=2)',
+          },
+        ];
       }),
     } as unknown as SourceHttpClient;
 
     return stitch(client, fakeDb, { project: 'queue-demo' }).then(() => {
-      const celeryQuery = seen.find((q) => q.includes('.delay('));
-      expect(celeryQuery).toBeDefined();
+      const celeryTokens = seen.find((t) => t.includes('.delay('));
+      expect(celeryTokens).toBeDefined();
       for (const needle of ['.defer(', '.defer_async(', '.send(', '.enqueue_job(', '.enqueue(', '@actor']) {
-        expect(celeryQuery).toContain(needle);
+        expect(celeryTokens).toContain(needle);
       }
       const [, edges] = replaceSpy.mock.calls[0] as [
         unknown,

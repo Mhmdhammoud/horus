@@ -746,28 +746,14 @@ function isClassSymbol(sym: Symbol | undefined): boolean {
 /**
  * Fetch the methods of a class symbol from the source graph (dogfood GAP C). A class node
  * has no outgoing calls, so a behavioral walkthrough rooted at a class needs its methods to
- * be useful. Best-effort: returns [] on any error. The class name/file are graph
- * identifiers, but quotes/backslashes are stripped defensively before interpolation.
+ * be useful. Uses the typed /api/class-methods endpoint (HOR-392). Best-effort: returns []
+ * on any error or when the provider doesn't expose class-method lookup.
  */
 async function fetchClassMethods(code: CodeProvider, cls: Symbol): Promise<Symbol[]> {
-  const safe = (s: string): string => s.replace(/["\\]/g, '');
-  const name = safe(cls.name);
-  if (!name) return [];
-  const file = safe(cls.filePath);
+  const name = cls.name?.trim();
+  if (!name || typeof code.classMethods !== 'function') return [];
   try {
-    const res = await code.cypher(
-      `MATCH (m:Method) WHERE m.class_name = "${name}"` +
-        (file ? ` AND m.file_path = "${file}"` : '') +
-        ' RETURN m.id, m.name, m.file_path, m.start_line ORDER BY m.start_line LIMIT 40',
-    );
-    return res.rows
-      .map((r) => ({
-        id: String(r[0] ?? ''),
-        name: String(r[1] ?? ''),
-        filePath: String(r[2] ?? ''),
-        ...(typeof r[3] === 'number' ? { startLine: r[3] } : {}),
-      }))
-      .filter((s) => s.id !== '' && s.name !== '');
+    return await code.classMethods(cls.filePath ?? '', name);
   } catch {
     return [];
   }

@@ -50,6 +50,104 @@ export interface SourceOverview {
   totalEdges: number;
 }
 
+// ---------------------------------------------------------------------------
+// Typed read-path endpoints (HOR-392) — the host now serves these instead of the
+// CLI emitting raw Cypher. Shapes mirror horus-source (kuzu-retire) route serializers.
+// ---------------------------------------------------------------------------
+
+/** POST /api/content-search result row — full (untruncated) node content. */
+export interface SourceContentHit {
+  nodeId: string;
+  name: string;
+  filePath: string;
+  content: string;
+}
+
+/** GET /api/symbols/exact result row — exact-name hit with line ranges (file label excluded). */
+export interface SourceExactSymbol {
+  nodeId: string;
+  name: string;
+  filePath: string;
+  label: string;
+  startLine: number;
+  endLine: number;
+}
+
+/** GET /api/symbols result row — symbol node for the requested label(s). */
+export interface SourceLabelSymbol {
+  id: string;
+  label: string;
+  name: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  className: string;
+  isEntryPoint: boolean;
+  isExported: boolean;
+  signature: string;
+}
+
+/** POST /api/nodes/lines value — line range for one resolved node id. */
+export interface SourceNodeLine {
+  filePath: string;
+  startLine: number;
+  endLine: number;
+}
+
+/** GET /api/flows/{id} step — a flow step carrying its symbol name/file (no second round-trip). */
+export interface SourceFlowStep {
+  nodeId: string;
+  name: string;
+  filePath: string;
+  startLine: number;
+  stepNumber: number | null;
+}
+
+/** GET /api/flows/{id} response — the processes a symbol is a step in + their merged ordered steps. */
+export interface SourceFlowsResult {
+  processes: { id: string; name: string }[];
+  steps: SourceFlowStep[];
+}
+
+/** GET /api/communities response. */
+export interface SourceCommunitiesResult {
+  communities: {
+    id: string;
+    name: string;
+    memberCount: number;
+    cohesion: number | null;
+    members: string[];
+  }[];
+}
+
+/** GET /api/processes response. */
+export interface SourceProcessesResult {
+  processes: {
+    name: string;
+    kind: string | null;
+    stepCount: number;
+    steps: { nodeId: string; stepNumber: number | null }[];
+  }[];
+}
+
+/** One caller/callee neighbour with its edge confidence (GET /api/node). */
+export interface SourceNeighbour {
+  node: SourceNode;
+  confidence: number;
+}
+
+/** GET /api/node/{id} extended detail — node + content + neighbours + file context + communities. */
+export interface SourceNodeDetail {
+  node: SourceNode & { content?: string | null };
+  callers: SourceNeighbour[];
+  callees: SourceNeighbour[];
+  typeRefs: SourceNode[];
+  processMemberships?: unknown[];
+  imports: string[];
+  coupledWith: { file: string; strength: number | null; coChanges: number }[];
+  communities: { id: string; name: string }[];
+}
+
 export interface SourceHostInfo {
   repoPath: string;
   hostUrl: string;

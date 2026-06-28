@@ -1,10 +1,10 @@
 /**
  * SourceCodeProvider — the code-graph `CodeProvider` backed by a running `horus-source host`.
  *
- * All traversals go through the source-intelligence HTTP `/api/cypher` surface (or the
- * typed `/api/impact` and `/api/diff` endpoints). Cypher has NO parameter binding, so node
- * ids are escaped and inlined into each query string. Rows come back as positional
- * arrays aligned to the RETURN columns, so every indexed access is guarded.
+ * The read path goes through the host's TYPED endpoints (HOR-392): exact-name lookup,
+ * batch line hydration, the extended node-detail endpoint, and the flows endpoint. The
+ * CLI no longer emits or escapes raw Cypher — `cypher()` remains ONLY as a passthrough
+ * for the user-facing SQL-console path.
  */
 
 import type {
@@ -31,14 +31,6 @@ export class SourceCodeProvider implements CodeProvider {
 
   // --- helpers -------------------------------------------------------------
 
-  /**
-   * Escape a node id for inlining inside a double-quoted Cypher string literal:
-   * first double every backslash, then escape every double-quote.
-   */
-  private escapeId(id: string): string {
-    return id.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  }
-
   private nodeToSymbol(n: SourceNode): Symbol {
     return {
       id: n.id,
@@ -52,41 +44,34 @@ export class SourceCodeProvider implements CodeProvider {
     };
   }
 
-  private async rows(query: string): Promise<unknown[][]> {
+  /** Map a serialized graph node to a `Symbol`, coercing the host's `0` line sentinel to undefined. */
+  private serializedToSymbol(n: SourceNode): Symbol {
+    const sym: Symbol = {
+      id: n.id ?? '',
+      name: n.name ?? '',
+      filePath: n.filePath ?? '',
+    };
+    if (typeof n.startLine === 'number' && n.startLine > 0) sym.startLine = n.startLine;
+    if (typeof n.endLine === 'number' && n.endLine > 0) sym.endLine = n.endLine;
+    if (n.className) sym.className = n.className;
+    if (n.signature) sym.signature = n.signature;
+    if (n.language) sym.language = n.language;
+    return sym;
+  }
+
+  /**
+   * Graceful degradation (HOR-353): a 4xx for THIS repo's graph shape must not abort the
+   * whole investigation. The caller passes a default the slice degrades to.
+   */
+  private async degrade<T>(p: Promise<T>, fallback: T): Promise<T> {
     try {
-      return (await this.client.cypher(query)).rows;
+      return await p;
     } catch (err) {
-      // Graceful degradation (HOR-353): a query the backend rejects for THIS repo's
-      // graph shape (HTTP 4xx) must not abort the whole investigation. Degrade that one
-      // piece of structural evidence to empty so the engine still produces an honest,
-      // partial report instead of surfacing a raw "POST /api/cypher -> HTTP 400".
       if (err instanceof SourceHttpError && err.status >= 400 && err.status < 500) {
-        return [];
+        return fallback;
       }
       throw err;
     }
-  }
-
-  private cypherRowToSymbol(
-    row: unknown[],
-    idIdx: number,
-    nameIdx: number,
-    fileIdx: number,
-    lineIdx?: number,
-    classNameIdx?: number,
-  ): Symbol {
-    const startLine =
-      lineIdx != null && row[lineIdx] != null ? Number(row[lineIdx]) : undefined;
-    const sym: Symbol = {
-      id: String(row[idIdx] ?? ''),
-      name: String(row[nameIdx] ?? ''),
-      filePath: String(row[fileIdx] ?? ''),
-      startLine,
-    };
-    if (classNameIdx != null && row[classNameIdx] != null) {
-      sym.className = String(row[classNameIdx]);
-    }
-    return sym;
   }
 
   // --- contract ------------------------------------------------------------
@@ -100,31 +85,26 @@ export class SourceCodeProvider implements CodeProvider {
   }
 
   async searchSymbols(query: string, limit = 10): Promise<Symbol[]> {
-    const E = this.escapeId(query);
-
-    // Phase 1: deterministic exact-name lookup via Cypher.
+    // Phase 1: deterministic exact-name lookup via the typed endpoint.
     // Vector search can rank unrelated symbols above exact-name hits when embedding
-    // similarity is misleading (HOR-164). An exact Cypher match is always authoritative.
-    // NB: Kùzu rejects the label-negation predicate `NOT n:File` with a parser error
-    // (HOR-208) — that silently made this whole exact-match phase throw and fall back to
-    // fuzzy search, so e.g. `GaiaController` resolved to `SchedulerController`. Use the
-    // portable `label(n) <> "File"` form instead.
-    const exactQuery =
-      `MATCH (n) WHERE toLower(n.name) = toLower("${E}") AND label(n) <> "File" ` +
-      `RETURN n.id, n.name, n.file_path LIMIT ${limit}`;
-
+    // similarity is misleading (HOR-164). An exact-name hit is always authoritative.
     // Phase 2: semantic search — run in parallel with Phase 1.
-    const [exactRows, semanticRes] = await Promise.all([
-      this.rows(exactQuery).catch((): unknown[][] => []),
+    const [exactHits, semanticRes] = await Promise.all([
+      this.degrade(this.client.exactSymbols(query, limit), []),
       this.client.search(query, limit),
     ]);
 
-    const exactSymbols: Symbol[] = exactRows.map((row) => ({
-      id: String(row[0] ?? ''),
-      name: String(row[1] ?? ''),
-      filePath: String(row[2] ?? ''),
-      score: 1, // an exact-name Cypher hit is authoritative
-    }));
+    const exactSymbols: Symbol[] = exactHits.map((h) => {
+      const sym: Symbol = {
+        id: h.nodeId,
+        name: h.name,
+        filePath: h.filePath,
+        score: 1, // an exact-name hit is authoritative
+      };
+      if (h.startLine > 0) sym.startLine = h.startLine;
+      if (h.endLine > 0) sym.endLine = h.endLine;
+      return sym;
+    });
 
     const exactIds = new Set(exactSymbols.map((s) => s.id));
     const ql = query.toLowerCase();
@@ -149,9 +129,9 @@ export class SourceCodeProvider implements CodeProvider {
       ...semantic.map(({ r }) => ({ id: r.nodeId, name: r.name, filePath: r.filePath, score: r.score })),
     ];
 
-    // Hydrate start/end lines from the graph (HOR-211). The exact-match Cypher and the
-    // semantic search both return only id/name/file, so without this seeds/evidence render
-    // as `file:0`. One batched lookup by id fills in real line ranges for the page.
+    // Hydrate start/end lines from the graph (HOR-211). Exact hits already carry lines, but
+    // semantic results return only id/name/file — without this they render as `file:0`. One
+    // batched lookup by id fills real line ranges for the page.
     return this.hydrateLines(combined.slice(0, limit));
   }
 
@@ -159,114 +139,69 @@ export class SourceCodeProvider implements CodeProvider {
   private async hydrateLines(symbols: Symbol[]): Promise<Symbol[]> {
     const ids = symbols.map((s) => s.id).filter(Boolean);
     if (ids.length === 0) return symbols;
-    const idList = ids.map((id) => `"${this.escapeId(id)}"`).join(', ');
-    const rows = await this
-      .rows(`MATCH (n) WHERE n.id IN [${idList}] RETURN n.id, n.start_line, n.end_line`)
-      .catch((): unknown[][] => []);
-    const lineById = new Map<string, { start?: number; end?: number }>();
-    for (const row of rows) {
-      const id = String(row[0] ?? '');
-      const start = row[1] != null ? Number(row[1]) : undefined;
-      const end = row[2] != null ? Number(row[2]) : undefined;
-      lineById.set(id, { start, end });
-    }
+    const lines = await this.degrade(this.client.nodesLines(ids), {});
     return symbols.map((s) => {
-      const l = lineById.get(s.id);
+      const l = lines[s.id];
       if (l === undefined) return s;
       const out = { ...s };
-      if (l.start !== undefined && Number.isFinite(l.start)) out.startLine = l.start;
-      if (l.end !== undefined && Number.isFinite(l.end)) out.endLine = l.end;
+      if (typeof l.startLine === 'number' && l.startLine > 0) out.startLine = l.startLine;
+      if (typeof l.endLine === 'number' && l.endLine > 0) out.endLine = l.endLine;
       return out;
     });
   }
 
   async context(symbolId: string): Promise<SymbolContext> {
-    const E = this.escapeId(symbolId);
+    // One round-trip: the extended node-detail endpoint returns the node + content +
+    // callers/callees/typeRefs + file imports + git coupling + communities (HOR-392).
+    const detail = await this.degrade(this.client.node(symbolId), null);
 
-    const nodeQuery =
-      `MATCH (n) WHERE n.id = "${E}" ` +
-      `RETURN n.id, n.name, n.file_path, n.start_line, n.end_line, ` +
-      `n.signature, n.class_name, n.language, n.is_dead, n.content LIMIT 1`;
-    const calleesQuery =
-      `MATCH (n)-[r:CodeRelation]->(m) WHERE n.id = "${E}" AND r.rel_type = "calls" ` +
-      `RETURN m.id, m.name, m.file_path, m.start_line, m.class_name`;
-    const callersQuery =
-      `MATCH (m)-[r:CodeRelation]->(n) WHERE n.id = "${E}" AND r.rel_type = "calls" ` +
-      `RETURN m.id, m.name, m.file_path, m.start_line, m.class_name`;
-    const usesTypeQuery =
-      `MATCH (n)-[r:CodeRelation]->(t) WHERE n.id = "${E}" AND r.rel_type = "uses_type" ` +
-      `RETURN t.id, t.name, t.file_path, t.start_line`;
-    const communityQuery =
-      `MATCH (n)-[r:CodeRelation]->(c:Community) WHERE n.id = "${E}" ` +
-      `AND r.rel_type = "member_of" RETURN c.id, c.name LIMIT 1`;
-    const fileQuery =
-      `MATCH (f:File)-[r:CodeRelation]->(n) WHERE n.id = "${E}" ` +
-      `AND r.rel_type = "defines" RETURN f.id, f.file_path LIMIT 1`;
+    if (detail === null) {
+      // 4xx / unknown node — degrade to an empty-but-honest context.
+      return {
+        symbol: { id: symbolId, name: '', filePath: '' },
+        callers: [],
+        callees: [],
+        imports: [],
+        usesType: [],
+        community: null,
+        coupledWith: [],
+        isDead: false,
+      };
+    }
 
-    const [nodeRows, calleeRows, callerRows, usesTypeRows, communityRows, fileRows] =
-      await Promise.all([
-        this.rows(nodeQuery),
-        this.rows(calleesQuery),
-        this.rows(callersQuery),
-        this.rows(usesTypeQuery),
-        this.rows(communityQuery),
-        this.rows(fileQuery),
-      ]);
-
-    const node = nodeRows[0];
+    const n = detail.node;
     const symbol: Symbol = {
-      id: String(node?.[0] ?? symbolId),
-      name: String(node?.[1] ?? ''),
-      filePath: String(node?.[2] ?? ''),
-      startLine: node?.[3] != null ? Number(node[3]) : undefined,
-      endLine: node?.[4] != null ? Number(node[4]) : undefined,
-      signature: node?.[5] != null ? String(node[5]) : undefined,
-      className: node?.[6] != null ? String(node[6]) : undefined,
-      language: node?.[7] != null ? String(node[7]) : undefined,
+      id: n.id ?? symbolId,
+      name: n.name ?? '',
+      filePath: n.filePath ?? '',
     };
-    const isDead = Boolean(node?.[8]);
-    const content = node?.[9];
-    const snippet =
-      typeof content === 'string' ? content.slice(0, 600) : undefined;
+    if (typeof n.startLine === 'number' && n.startLine > 0) symbol.startLine = n.startLine;
+    if (typeof n.endLine === 'number' && n.endLine > 0) symbol.endLine = n.endLine;
+    if (n.signature) symbol.signature = n.signature;
+    if (n.className) symbol.className = n.className;
+    if (n.language) symbol.language = n.language;
+
+    const content = n.content;
+    const snippet = typeof content === 'string' ? content.slice(0, 600) : undefined;
     // Full body for analysis that must scan the whole function (e.g. detecting runtime
     // error codes RAISED FROM the seed, whose literal often sits near the end — past the
     // snippet cutoff). Bounded generously so very large symbols don't bloat memory.
-    const sourceBody =
-      typeof content === 'string' ? content.slice(0, 20000) : undefined;
+    const sourceBody = typeof content === 'string' ? content.slice(0, 20000) : undefined;
 
-    const callees = calleeRows.map((row) => this.cypherRowToSymbol(row, 0, 1, 2, 3, 4));
-    const callers = callerRows.map((row) => this.cypherRowToSymbol(row, 0, 1, 2, 3, 4));
-    const usesType = usesTypeRows.map((row) => this.cypherRowToSymbol(row, 0, 1, 2, 3));
+    const callees = (detail.callees ?? []).map((c) => this.serializedToSymbol(c.node));
+    const callers = (detail.callers ?? []).map((c) => this.serializedToSymbol(c.node));
+    const usesType = (detail.typeRefs ?? []).map((t) => this.serializedToSymbol(t));
 
-    const communityRow = communityRows[0];
+    const communityRow = (detail.communities ?? [])[0];
     const community: CommunityRef | null = communityRow
-      ? { id: String(communityRow[0] ?? ''), name: String(communityRow[1] ?? '') }
+      ? { id: String(communityRow.id ?? ''), name: String(communityRow.name ?? '') }
       : null;
 
-    let imports: string[] = [];
-    let coupledWith: CoupledFile[] = [];
-    const fileRow = fileRows[0];
-    const fileId = fileRow?.[0];
-    if (fileId != null) {
-      const FE = this.escapeId(String(fileId));
-      const importsQuery =
-        `MATCH (f)-[r:CodeRelation]->(g:File) WHERE f.id = "${FE}" ` +
-        `AND r.rel_type = "imports" RETURN g.file_path`;
-      const coupledQuery =
-        `MATCH (f)-[r:CodeRelation]->(g:File) WHERE f.id = "${FE}" ` +
-        `AND r.rel_type = "coupled_with" RETURN g.file_path, r.co_changes`;
-
-      const [importRows, coupledRows] = await Promise.all([
-        this.rows(importsQuery),
-        this.rows(coupledQuery),
-      ]);
-
-      imports = importRows.map((row) => String(row[0] ?? ''));
-      coupledWith = coupledRows.map((row) => ({
-        file: String(row[0] ?? ''),
-        coChanges: Number(row[1] ?? 0),
-      }));
-    }
+    const imports = (detail.imports ?? []).map((i) => String(i));
+    const coupledWith: CoupledFile[] = (detail.coupledWith ?? []).map((c) => ({
+      file: String(c.file ?? ''),
+      coChanges: Number(c.coChanges ?? 0),
+    }));
 
     return {
       symbol,
@@ -278,7 +213,7 @@ export class SourceCodeProvider implements CodeProvider {
       usesType,
       community,
       coupledWith,
-      isDead,
+      isDead: Boolean(n.isDead),
     };
   }
 
@@ -297,29 +232,28 @@ export class SourceCodeProvider implements CodeProvider {
   }
 
   async flowsFor(symbolId: string): Promise<Flow[]> {
-    const E = this.escapeId(symbolId);
-    const procQuery =
-      `MATCH (s)-[r:CodeRelation]->(p:Process) WHERE s.id = "${E}" ` +
-      `AND r.rel_type = "step_in_process" RETURN p.id, p.name`;
-    const procRows = await this.rows(procQuery);
+    // The typed flows endpoint returns the processes a symbol is a step in, plus the
+    // merged ordered steps (each step carries its name/file). The host merges steps across
+    // a symbol's processes, so each Flow shares that ordered step list.
+    const res = await this.degrade(this.client.flows(symbolId), { processes: [], steps: [] });
+    const steps: Symbol[] = (res.steps ?? []).map((s) => {
+      const sym: Symbol = { id: s.nodeId, name: s.name, filePath: s.filePath };
+      if (typeof s.startLine === 'number' && s.startLine > 0) sym.startLine = s.startLine;
+      return sym;
+    });
+    return (res.processes ?? []).map((p) => ({
+      id: String(p.id ?? ''),
+      name: String(p.name ?? ''),
+      steps,
+    }));
+  }
 
-    const flows = await Promise.all(
-      procRows.map(async (proc): Promise<Flow> => {
-        const pid = proc[0];
-        const pname = proc[1];
-        const PE = this.escapeId(String(pid ?? ''));
-        const stepQuery =
-          `MATCH (s)-[r:CodeRelation]->(p:Process) WHERE p.id = "${PE}" ` +
-          `AND r.rel_type = "step_in_process" ` +
-          `RETURN s.id, s.name, s.file_path, s.start_line, r.step_number ` +
-          `ORDER BY r.step_number`;
-        const stepRows = await this.rows(stepQuery);
-        const steps = stepRows.map((row) => this.cypherRowToSymbol(row, 0, 1, 2, 3));
-        return { id: String(pid ?? ''), name: String(pname ?? ''), steps };
-      }),
-    );
-
-    return flows;
+  /** Method symbols of a class (typed /api/class-methods). Used for class-seed walkthroughs. */
+  async classMethods(file: string, className: string): Promise<Symbol[]> {
+    const methods = await this.degrade(this.client.classMethods(file, className), []);
+    return methods
+      .map((m) => this.serializedToSymbol(m))
+      .filter((s) => s.id !== '' && s.name !== '');
   }
 
   async detectChanges(diff: { base: string; compare: string }): Promise<ChangeSet> {
