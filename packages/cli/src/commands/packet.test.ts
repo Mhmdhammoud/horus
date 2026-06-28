@@ -22,8 +22,22 @@ const runner = vi.hoisted(() => ({
   runOneInvestigation: vi.fn(),
   disposeInvestigationContext: vi.fn(async () => {}),
 }));
+// Memory recall is the only async I/O the packet adds. Stub the store + recall so the test stays
+// fully offline; buildPacket/packetToJSON/migrateReport remain the REAL engine projection.
+const engineMocks = vi.hoisted(() => ({
+  createLocalMemoryStore: vi.fn((..._args: unknown[]) => ({})),
+  recallMemory: vi.fn(async (..._args: unknown[]): Promise<unknown[]> => []),
+}));
 
 vi.mock('@horus/db', () => db);
+vi.mock('@horus/engine', async (importActual) => {
+  const actual = await importActual<typeof import('@horus/engine')>();
+  return {
+    ...actual,
+    createLocalMemoryStore: engineMocks.createLocalMemoryStore,
+    recallMemory: engineMocks.recallMemory,
+  };
+});
 vi.mock('../lib/db-url.js', () => ({ resolveDbUrl: vi.fn(async () => 'postgres://x') }));
 vi.mock('../lib/investigation-runner.js', () => runner);
 // Pin repoRoot so freshness reads no real files / git — deterministic + offline.
@@ -229,5 +243,76 @@ describe('runPacket — hint path', () => {
       expect.anything(),
       expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
+  });
+});
+
+describe('runPacket — remembered context (memory)', () => {
+  // A recalled item shaped as the engine's RecalledMemory (what recallMemory returns).
+  function recalled(over: { id?: string; claim?: string } = {}) {
+    return {
+      item: {
+        id: over.id ?? 'mem_1',
+        kind: 'pitfall',
+        claim: over.claim ?? 'payments retries are not idempotent',
+        scope: 'repo',
+        confidence: 0.9,
+        status: 'fresh',
+      },
+      relevance: 0,
+      freshness: { status: 'fresh', label: 'recent', ageDays: 12, verified: true, decay: 0.8, driftDetected: false },
+      rank: 0.7,
+    };
+  }
+
+  it('recalls memory scoped to the report project and surfaces it in --json (clean memory field)', async () => {
+    const reportWithRepo = { ...FIXTURE, input: { ...FIXTURE.input, repo: 'my-api' } };
+    db.getInvestigation.mockResolvedValueOnce({ id: UUID, report: reportWithRepo });
+    engineMocks.recallMemory.mockResolvedValueOnce([recalled({ claim: 'queue is at-least-once' })]);
+
+    const code = await runPacket(UUID, { json: true });
+    expect(code).toBe(0);
+    // Recall was scoped by repo (HOR-46) + a relevance text built from the hint/seed/cause.
+    expect(engineMocks.recallMemory).toHaveBeenCalledTimes(1);
+    const query = engineMocks.recallMemory.mock.calls[0]?.[1] as { repo: string; text: string };
+    expect(query.repo).toBe('my-api');
+    expect(query.text).toContain('checkout latency spike');
+
+    const parsed = JSON.parse(stdout());
+    expect(parsed.memory.items).toHaveLength(1);
+    expect(parsed.memory.items[0].claim).toBe('queue is at-least-once');
+    expect(parsed.memory).toHaveProperty('truncatedCount');
+  });
+
+  it('renders the remembered-context section in Markdown, clearly marked as not live evidence', async () => {
+    const reportWithRepo = { ...FIXTURE, input: { ...FIXTURE.input, repo: 'my-api' } };
+    db.getInvestigation.mockResolvedValueOnce({ id: UUID, report: reportWithRepo });
+    engineMocks.recallMemory.mockResolvedValueOnce([recalled({ claim: 'consumers must dedupe' })]);
+
+    const code = await runPacket(UUID, {});
+    expect(code).toBe(0);
+    const out = stdout();
+    expect(out).toContain('## Remembered context (not live evidence)');
+    expect(out).toContain('- consumers must dedupe');
+  });
+
+  it('does not recall (and emits no memory) when the report has no project — fail-closed', async () => {
+    db.getInvestigation.mockResolvedValueOnce({ id: UUID, report: FIXTURE }); // FIXTURE has no input.repo
+    const code = await runPacket(UUID, { json: true });
+    expect(code).toBe(0);
+    expect(engineMocks.recallMemory).not.toHaveBeenCalled();
+    const parsed = JSON.parse(stdout());
+    expect(parsed.memory.items).toEqual([]);
+  });
+
+  it('is best-effort: a recall failure never breaks the packet', async () => {
+    const reportWithRepo = { ...FIXTURE, input: { ...FIXTURE.input, repo: 'my-api' } };
+    db.getInvestigation.mockResolvedValueOnce({ id: UUID, report: reportWithRepo });
+    engineMocks.recallMemory.mockRejectedValueOnce(new Error('store down'));
+
+    const code = await runPacket(UUID, { json: true });
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout());
+    expect(parsed.memory.items).toEqual([]);
+    expect(parsed.problem.hint).toBe('checkout latency spike');
   });
 });

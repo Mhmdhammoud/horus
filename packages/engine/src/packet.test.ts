@@ -8,8 +8,10 @@
 
 import { describe, it, expect } from 'vitest';
 import type { Evidence, Symbol } from '@horus/core';
+import type { MemoryItem } from '@horus/db';
 import type { InvestigationReport } from './types.js';
 import type { CauseCandidate } from './score-cause.js';
+import type { RecalledMemory, MemoryFreshness } from './memory-recall.js';
 import {
   buildPacket,
   renderPacketMarkdown,
@@ -431,6 +433,135 @@ describe('buildPacket — lower-priority section', () => {
     });
     const p = buildPacket(report, { now: NOW });
     expect(p.lowerPriority).toEqual([]);
+  });
+});
+
+// ── Remembered context (memory) ────────────────────────────────────────────────
+
+function makeMemItem(over: Partial<MemoryItem> = {}): MemoryItem {
+  return {
+    id: 'mem_1',
+    kind: 'pitfall',
+    claim: 'PaymentService retries are not idempotent',
+    scope: 'repo',
+    source: 'human',
+    evidence: [],
+    confidence: 0.9,
+    status: 'fresh',
+    createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    lastVerifiedAt: null,
+    lastVerifiedHash: null,
+    orgId: null,
+    workspaceId: null,
+    repo: 'r',
+    userId: null,
+    visibility: 'private',
+    payload: null,
+    ...over,
+  } as MemoryItem;
+}
+
+function makeFreshness(over: Partial<MemoryFreshness> = {}): MemoryFreshness {
+  return {
+    status: 'fresh',
+    ageDays: 12,
+    verified: true,
+    decay: 0.8,
+    driftDetected: false,
+    label: 'recent',
+    ...over,
+  };
+}
+
+function makeRecalled(
+  item: Partial<MemoryItem> = {},
+  freshness: Partial<MemoryFreshness> = {},
+  rank = 0.7,
+): RecalledMemory {
+  return { item: makeMemItem(item), relevance: 0, freshness: makeFreshness(freshness), rank };
+}
+
+describe('buildPacket — remembered context (memory)', () => {
+  it('projects recalled memory into the packet, carrying claim/kind/scope/status/freshness/confidence', () => {
+    const recalled = makeRecalled(
+      { id: 'mem_a', claim: 'retries not idempotent', kind: 'pitfall', scope: 'symbol:charge', confidence: 0.9 },
+      { status: 'fresh', label: 'recent', ageDays: 12, driftDetected: false },
+    );
+    const p = buildPacket(makeReport(), { now: NOW, memory: [recalled] });
+    expect(p.memory).toHaveLength(1);
+    expect(p.memory[0]).toEqual({
+      id: 'mem_a',
+      claim: 'retries not idempotent',
+      kind: 'pitfall',
+      scope: 'symbol:charge',
+      confidence: 0.9,
+      status: 'fresh',
+      freshness: 'recent',
+      ageDays: 12,
+      driftDetected: false,
+    });
+  });
+
+  it('uses the EFFECTIVE (display) status + the claim\'s OWN confidence — never the report confidence', () => {
+    // report confidence is low; memory claim confidence is high + recall downgraded it to stale.
+    const recalled = makeRecalled(
+      { confidence: 0.95 },
+      { status: 'possibly-stale', label: 'possibly-stale', driftDetected: true },
+    );
+    const p = buildPacket(makeReport({ confidence: 0.2 }), { now: NOW, memory: [recalled] });
+    expect(p.honesty.confidence).toBe(0.2); // memory NEVER moves the headline confidence
+    expect(p.memory[0]?.confidence).toBe(0.95);
+    expect(p.memory[0]?.status).toBe('possibly-stale');
+    expect(p.memory[0]?.driftDetected).toBe(true);
+  });
+
+  it('preserves recall order verbatim (the packet never re-ranks remembered context)', () => {
+    const a = makeRecalled({ id: 'a', claim: 'A' }, {}, 0.9);
+    const b = makeRecalled({ id: 'b', claim: 'B' }, {}, 0.1);
+    const p = buildPacket(makeReport(), { now: NOW, memory: [a, b] });
+    expect(p.memory.map((m) => m.id)).toEqual(['a', 'b']);
+  });
+
+  it('caps the surfaced subset at topMemory and records the truncated count', () => {
+    const items = Array.from({ length: 7 }, (_, i) => makeRecalled({ id: `m${i}`, claim: `c${i}` }));
+    const p = buildPacket(makeReport(), { now: NOW, memory: items, topMemory: 5 });
+    expect(p.memory).toHaveLength(5);
+    expect(p.truncation.memory).toBe(2);
+    expect(p.meta.truncated).toBe(true);
+  });
+
+  it('with no recalled memory, the section is empty and not truncated', () => {
+    const p = buildPacket(makeReport(), { now: NOW });
+    expect(p.memory).toEqual([]);
+    expect(p.truncation.memory).toBe(0);
+  });
+
+  it('renders a clearly-labelled "not live evidence" section with an honesty disclaimer', () => {
+    const recalled = makeRecalled({ claim: 'queue is at-least-once; consumers must dedupe' });
+    const md = renderPacketMarkdown(buildPacket(makeReport(), { now: NOW, memory: [recalled] }));
+    expect(md).toContain('## Remembered context (not live evidence)');
+    expect(md).toContain("never overrides the current run's evidence");
+    expect(md).toContain('- queue is at-least-once; consumers must dedupe');
+  });
+
+  it('omits the memory section from Markdown entirely when there is nothing remembered', () => {
+    const md = renderPacketMarkdown(buildPacket(makeReport(), { now: NOW }));
+    expect(md).not.toContain('Remembered context');
+  });
+
+  it('serialises memory as a clean PacketSection with a sibling truncatedCount', () => {
+    const items = Array.from({ length: 6 }, (_, i) => makeRecalled({ id: `m${i}`, claim: `c${i}` }));
+    const json = packetToJSON(buildPacket(makeReport(), { now: NOW, memory: items, topMemory: 4 }));
+    expect(json.memory.items).toHaveLength(4);
+    expect(json.memory.truncatedCount).toBe(2);
+    expect(Array.isArray(json.memory.items)).toBe(true);
+  });
+
+  it('a preset lowers the memory cap (claude → 4) without dropping data from the section count', () => {
+    const items = Array.from({ length: 6 }, (_, i) => makeRecalled({ id: `m${i}`, claim: `c${i}` }));
+    const p = buildPacket(makeReport(), { now: NOW, memory: items, preset: 'claude' });
+    expect(p.memory).toHaveLength(4);
+    expect(p.truncation.memory).toBe(2);
   });
 });
 

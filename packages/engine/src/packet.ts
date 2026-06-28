@@ -11,6 +11,14 @@
  * through `opts.freshness`; this module depends only on `types.ts`, `score-cause.ts`
  * (band thresholds), `gaps.ts` types, and `render.ts` formatting helpers — never the
  * connector/DB layer.
+ *
+ * Remembered context (memory) follows the SAME discipline: `recallMemory` is async I/O against
+ * the MemoryStore, so the recall runs in the CLI and the already-recalled items are passed in
+ * through `opts.memory` (only their TYPES — `RecalledMemory`/`MemoryStatus`/`FreshnessLabel` — are
+ * imported here). The packet surfaces them as CONTEXT ONLY: never live evidence, never fed to the
+ * confidence/verdict scoring path, and never allowed to override the current run's evidence
+ * (honesty invariant, Memory spec §8). The packet preserves recall's order verbatim — it never
+ * re-ranks remembered context.
  */
 
 import type {
@@ -21,6 +29,8 @@ import type {
 } from '@horus/core';
 import type { InvestigationReport, RouteStep } from './types.js';
 import type { CauseBand } from './score-cause.js';
+import type { RecalledMemory, FreshnessLabel } from './memory-recall.js';
+import type { MemoryStatus } from './memory-store.js';
 import { getBand } from './score-cause.js';
 import { formatSymbolLocation } from './render.js';
 import { formatRouteStep } from './router.js';
@@ -94,18 +104,45 @@ export interface LowerPriorityArea {
   reasons: string[];
 }
 
+/**
+ * A remembered claim surfaced as CONTEXT in the packet — prior knowledge Horus has already stored
+ * for this area. NOT live evidence: it never feeds the confidence/verdict scoring path and never
+ * overrides the current run's evidence (honesty invariant, Memory spec §8). It carries the
+ * read-time freshness/status so a months-old or drifted claim reads as exactly that, never as a
+ * confident present-tense fact.
+ */
+export interface MemoryContextItem {
+  id: string;
+  claim: string;
+  kind: string;
+  scope: string;
+  /** The claim's OWN stored confidence (0..1) — never the investigation's confidence. */
+  confidence: number;
+  /** EFFECTIVE (display) status from read-time freshness — may differ from the stored status. */
+  status: MemoryStatus;
+  /** Human freshness label (fresh/recent/aging/stale/possibly-stale/pinned/unverified). */
+  freshness: FreshnessLabel;
+  /** Days since last verification (or creation when never verified); null when no anchor. */
+  ageDays: number | null;
+  /** True when a read-time re-hash detected the linked symbol changed underneath. */
+  driftDetected: boolean;
+}
+
 export interface Packet {
   honesty: HonestyHeader;
   problem: ProblemSection;
   relevantFiles: RelevantFile[];
   evidence: EvidenceItem[];
   lowerPriority: LowerPriorityArea[];
+  /** Remembered context — prior knowledge, clearly marked as NOT live evidence. */
+  memory: MemoryContextItem[];
   nextSteps: string[];
   /** Per-section drop counts (how many items were cut by the hard caps). */
   truncation: {
     relevantFiles: number;
     evidence: number;
     lowerPriority: number;
+    memory: number;
     nextSteps: number;
   };
   meta: {
@@ -139,8 +176,14 @@ export interface PacketOptions {
   topEvidence?: number; // default 5
   topLower?: number; // default 3
   topSteps?: number; // default 5
+  topMemory?: number; // default 5
   preset?: AgentPreset;
   freshness?: PacketFreshness;
+  /**
+   * Remembered context, ALREADY recalled in the CLI (`recallMemory` is async I/O) and passed in so
+   * `buildPacket` stays pure + synchronous. Order is honoured verbatim — the packet never re-ranks.
+   */
+  memory?: RecalledMemory[];
   /** Injectable clock for deterministic `meta.generatedAt`. Defaults to now. */
   now?: string;
 }
@@ -157,6 +200,7 @@ export interface PacketJSON {
   relevantFiles: PacketSection<RelevantFile>;
   evidence: PacketSection<EvidenceItem>;
   lowerPriority: PacketSection<LowerPriorityArea>;
+  memory: PacketSection<MemoryContextItem>;
   nextSteps: PacketSection<string>;
   meta: Packet['meta'];
 }
@@ -167,11 +211,15 @@ const DEFAULT_TOP_FILES = 5;
 const DEFAULT_TOP_EVIDENCE = 5;
 const DEFAULT_TOP_LOWER = 3;
 const DEFAULT_TOP_STEPS = 5;
+const DEFAULT_TOP_MEMORY = 5;
 
 /** Thin presentation presets — only lower caps and toggle render verbosity. */
-const PRESETS: Record<AgentPreset, { topFiles?: number; topEvidence?: number; showTimestamps: boolean }> = {
-  claude: { topFiles: 4, topEvidence: 4, showTimestamps: false },
-  cursor: { topFiles: 3, topEvidence: 3, showTimestamps: false },
+const PRESETS: Record<
+  AgentPreset,
+  { topFiles?: number; topEvidence?: number; topMemory?: number; showTimestamps: boolean }
+> = {
+  claude: { topFiles: 4, topEvidence: 4, topMemory: 4, showTimestamps: false },
+  cursor: { topFiles: 3, topEvidence: 3, topMemory: 3, showTimestamps: false },
   generic: { showTimestamps: true },
 };
 
@@ -597,6 +645,35 @@ function buildLowerPriority(
   return { items, total: out.length };
 }
 
+// ── Remembered context (memory) ───────────────────────────────────────────────
+
+/**
+ * Project recalled memory into the packet's CONTEXT section. The recall itself (async I/O against
+ * the MemoryStore) runs in the CLI; here we only flatten the already-ranked `RecalledMemory[]` into
+ * the compact, honesty-framed `MemoryContextItem` shape, capped. Order is preserved verbatim from
+ * `recallMemory` (confidence × read-time freshness, status-adjusted) — the packet never re-ranks.
+ */
+function buildMemoryContext(
+  recalled: RecalledMemory[],
+  cap: number,
+): { items: MemoryContextItem[]; total: number } {
+  if (cap <= 0 || recalled.length === 0) return { items: [], total: recalled.length };
+  const items: MemoryContextItem[] = recalled.slice(0, cap).map((r) => ({
+    id: r.item.id,
+    claim: r.item.claim,
+    kind: r.item.kind,
+    scope: r.item.scope,
+    // The claim's own stored confidence — NEVER the investigation's confidence.
+    confidence: r.item.confidence,
+    // EFFECTIVE (display) status + freshness from the read-time recall (may be downgraded vs stored).
+    status: r.freshness.status,
+    freshness: r.freshness.label,
+    ageDays: r.freshness.ageDays,
+    driftDetected: r.freshness.driftDetected,
+  }));
+  return { items, total: recalled.length };
+}
+
 // ── buildPacket ──────────────────────────────────────────────────────────────
 
 export function buildPacket(report: InvestigationReport, opts: PacketOptions = {}): Packet {
@@ -611,6 +688,7 @@ export function buildPacket(report: InvestigationReport, opts: PacketOptions = {
   const topFiles = cap(opts.topFiles, DEFAULT_TOP_FILES, preset?.topFiles);
   const topEvidence = cap(opts.topEvidence, DEFAULT_TOP_EVIDENCE, preset?.topEvidence);
   const topSteps = cap(opts.topSteps, DEFAULT_TOP_STEPS, undefined);
+  const topMemory = cap(opts.topMemory, DEFAULT_TOP_MEMORY, preset?.topMemory);
   const baseTopLower = cap(opts.topLower, DEFAULT_TOP_LOWER, undefined);
 
   const seedLowConfidence = isSeedLowConfidence(report);
@@ -657,14 +735,19 @@ export function buildPacket(report: InvestigationReport, opts: PacketOptions = {
   const lower = buildLowerPriority(report, seedLowConfidence, effectiveTopLower);
   const lowerTrunc = Math.max(0, lower.total - lower.items.length);
 
+  // Remembered context — recalled in the CLI, passed in via opts.memory (context only, not evidence).
+  const mem = buildMemoryContext(opts.memory ?? [], topMemory);
+  const memoryTrunc = Math.max(0, mem.total - mem.items.length);
+
   const truncation = {
     relevantFiles: filesTrunc,
     evidence: evidenceTrunc,
     lowerPriority: lowerTrunc,
+    memory: memoryTrunc,
     nextSteps: stepsTrunc,
   };
   const truncated =
-    filesTrunc > 0 || evidenceTrunc > 0 || lowerTrunc > 0 || stepsTrunc > 0;
+    filesTrunc > 0 || evidenceTrunc > 0 || lowerTrunc > 0 || memoryTrunc > 0 || stepsTrunc > 0;
 
   const meta: Packet['meta'] = {
     generatedAt: opts.now ?? new Date().toISOString(),
@@ -681,6 +764,7 @@ export function buildPacket(report: InvestigationReport, opts: PacketOptions = {
     relevantFiles,
     evidence,
     lowerPriority: lower.items,
+    memory: mem.items,
     nextSteps,
     truncation,
     meta,
@@ -773,6 +857,25 @@ export function renderPacketMarkdown(packet: Packet): string {
   }
   out.push('');
 
+  // ── Remembered context (memory) — prior knowledge, NOT live evidence ─────────
+  // Omitted entirely when there is nothing remembered (keeps the packet compact); when present it
+  // carries its own honesty disclaimer so an agent can never mistake it for current-run evidence.
+  if (packet.memory.length > 0) {
+    out.push('## Remembered context (not live evidence)');
+    out.push(
+      "_Prior knowledge Horus has stored for this area. Context only — it does not feed " +
+        "confidence and never overrides the current run's evidence; it may be stale._",
+    );
+    for (const m of packet.memory) {
+      const conf = `${Math.round(m.confidence * 100)}%`;
+      const drift = m.driftDetected ? ', drift-detected' : '';
+      const age = showTimestamps && m.ageDays !== null ? `, ${Math.round(m.ageDays)}d old` : '';
+      out.push(`- ${m.claim} _(${m.kind} · ${m.freshness}${drift}${age} · ${conf} confidence)_`);
+    }
+    moreLine(out, packet.truncation.memory);
+    out.push('');
+  }
+
   // ── Next steps ─────────────────────────────────────────────────────────────
   out.push('## Suggested next steps');
   if (packet.nextSteps.length === 0 && packet.honesty.routing.length === 0) {
@@ -796,6 +899,7 @@ export function packetToJSON(packet: Packet): PacketJSON {
     relevantFiles: { items: packet.relevantFiles, truncatedCount: packet.truncation.relevantFiles },
     evidence: { items: packet.evidence, truncatedCount: packet.truncation.evidence },
     lowerPriority: { items: packet.lowerPriority, truncatedCount: packet.truncation.lowerPriority },
+    memory: { items: packet.memory, truncatedCount: packet.truncation.memory },
     nextSteps: { items: packet.nextSteps, truncatedCount: packet.truncation.nextSteps },
     meta: packet.meta,
   };
