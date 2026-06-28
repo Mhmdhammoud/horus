@@ -7,6 +7,7 @@ import {
 } from "./investigation-sync.js";
 import type { CloudConfig } from "./context-store.js";
 import type { InvestigationReport } from "@horus/engine";
+import { HORUS_VERSION } from "@horus/core";
 
 const API = "https://api.test";
 
@@ -175,11 +176,18 @@ describe("investigation-sync", () => {
       (c: unknown[]) => (c[0] as string).includes("/agent-runs") && (c[1] as RequestInit)?.method === "POST",
     );
     expect(createRun).toBeDefined();
-    expect(JSON.parse((createRun![1] as RequestInit).body as string)).toMatchObject({
+    const runBody = JSON.parse((createRun![1] as RequestInit).body as string);
+    expect(runBody).toMatchObject({
       repositoryId: "r1",
       status: "completed",
       summary: "test summary",
+      agent: "Horus CLI",
     });
+    // HOR-313 #3: agent runs must report the real, build-injected CLI version
+    // (HORUS_VERSION) — not the stale "0.0.0" that npm_package_version yields for
+    // the built binary.
+    expect(runBody.cliVersion).toBe(HORUS_VERSION);
+    expect(runBody.cliVersion).not.toBe("0.0.0");
 
     const update = fetchSpy.mock.calls.find(
       (c: unknown[]) => (c[0] as string).includes("/investigations/") && (c[1] as RequestInit)?.method === "PATCH",
