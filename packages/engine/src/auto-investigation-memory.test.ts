@@ -1,19 +1,23 @@
 /**
- * HOR-432 — auto-create a recurrence-aware memory from EVERY investigation.
+ * HOR-432 — auto-capture a recurrence-CONSOLIDATING memory from EVERY investigation.
  *
  * Exercised against the embedded pglite db (so the bundled memory_item/_link/_audit migrations and the
  * incident-family signature/tags write-gate are proven end-to-end) plus an `investigate()` integration
  * pass that proves the capture is NON-BLOCKING and CONTEXT-ONLY.
  *
  * Cases:
- *   (a) an investigation creates ONE `investigation` memory with the HONEST confidence + signature/tags;
- *   (b) a RECURRING investigation (same signature/tags) LINKS via `recurs-with` and creates NO duplicate
- *       (idempotent, resync-stable edge id);
- *   (c) a genuinely different incident does NOT link;
- *   (d) a blank repo ⇒ NO memory (HOR-46 fail-closed);
- *   (e) a store error is swallowed and the investigation still returns (non-blocking);
- *   (f) the memory is never consulted by scoring (confidence is byte-identical with/without the store,
- *       and the capture touches the write/read seam only — never a status/scoring mutation).
+ *   (a) a first investigation creates ONE `investigation` memory with the HONEST confidence +
+ *       signature/tags + payload.recurrenceCount = 1 + an about-incident link;
+ *   (b) a RECURRING investigation (same fingerprint) UPDATES the existing memory IN PLACE — count
+ *       increments, exactly ONE item remains, the latest finding/confidence is reflected, and NO new
+ *       item + NO `recurs-with` edge are created;
+ *   (c) a genuinely different incident CREATES a new item (two items, each count 1);
+ *   (d) recall surfaces the SINGLE consolidated item with its count (N recurrences ⇒ one item, count N);
+ *   (e) HONESTY — a consolidation refreshes confidence to the LATEST report VERBATIM (never inflated);
+ *   (f) a blank repo ⇒ NO memory (HOR-46 fail-closed);
+ *   (g) the capture touches only add/update/query/addLink — never a status/scoring mutation;
+ *   (h) a store error is swallowed and the investigation still returns (non-blocking);
+ *   (i) the memory is never consulted by scoring (confidence identical with/without the store).
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -24,12 +28,15 @@ import type { Symbol, SymbolContext, ImpactResult, ChangeSet, CypherResult } fro
 import type { CodeProvider } from '@horus/connectors';
 import { createLocalDb, type HorusDb, type QueueEdge } from '@horus/db';
 import { createLocalMemoryStore } from './memory.js';
-import { recurrenceEdgeId } from './memory-detect.js';
+import { recallMemory } from './memory-recall.js';
 import {
   autoInvestigationMemoryEnabled,
+  captureInvestigationMemory,
   createInvestigationMemory,
+  consolidateRecurrence,
   detectRecurrence,
-  linkRecurrence,
+  deriveInvestigationFields,
+  recurrenceCountOf,
 } from './auto-investigation-memory.js';
 import { investigate } from './engine.js';
 import type { AuditCtx, MemoryItem, MemoryStore } from './memory-store.js';
@@ -37,6 +44,7 @@ import type { InvestigationReport } from './types.js';
 
 const actor = { kind: 'system' as const };
 const audit: AuditCtx = { actor, note: 'test' };
+const REPORT_TIME = new Date('2026-06-28T12:00:00.000Z');
 
 // ---------------------------------------------------------------------------
 // Minimal InvestigationReport factory (only the fields the capture path reads)
@@ -49,6 +57,7 @@ function makeReport(over: {
   seedFile?: string;
   topCategory?: string;
   service?: string;
+  statement?: string;
 } = {}): InvestigationReport {
   return {
     id: 'inv_test',
@@ -75,7 +84,7 @@ function makeReport(over: {
       {
         id: 'h1',
         category: over.topCategory ?? 'orders-stall',
-        statement: 'the orders worker stalls on a slow downstream call',
+        statement: over.statement ?? 'the orders worker stalls on a slow downstream call',
         confidence: 0.7,
         supportingEvidenceIds: [],
         contradictingEvidenceIds: [],
@@ -106,7 +115,7 @@ describe('autoInvestigationMemoryEnabled — default ON, explicit off disables',
     else process.env.HORUS_AUTO_INVESTIGATION_MEMORY = prev;
   });
 
-  it('is ON when unset (every investigation creates a memory)', () => {
+  it('is ON when unset (every investigation contributes to memory)', () => {
     delete process.env.HORUS_AUTO_INVESTIGATION_MEMORY;
     expect(autoInvestigationMemoryEnabled()).toBe(true);
   });
@@ -124,10 +133,10 @@ describe('autoInvestigationMemoryEnabled — default ON, explicit off disables',
 });
 
 // ---------------------------------------------------------------------------
-// (a)-(d) against the real local store (embedded pglite)
+// (a)-(f) against the real local store (embedded pglite)
 // ---------------------------------------------------------------------------
 
-describe('auto-investigation-memory — local store', () => {
+describe('auto-investigation-memory — local store (consolidation)', () => {
   let dir: string;
   let close: () => Promise<void>;
   let db: HorusDb;
@@ -145,55 +154,98 @@ describe('auto-investigation-memory — local store', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('(a) creates ONE investigation memory with the honest confidence + signature/tags', async () => {
+  it('(a) a first investigation creates ONE memory: honest confidence, signature/tags, count=1, link', async () => {
     const report = makeReport({ confidence: 0.31, service: 'orders' });
-    const mem = await createInvestigationMemory(store, 'inv_a', report, audit);
+    const res = await captureInvestigationMemory(store, 'inv_a', report, REPORT_TIME, audit);
 
-    expect(mem).not.toBeNull();
-    expect(mem!.kind).toBe('investigation');
-    expect(mem!.source).toBe('investigation');
-    expect(mem!.scope).toBe('repo');
-    expect(mem!.visibility).toBe('private');
-    // HONEST confidence — the report's own value, never inflated.
-    expect(mem!.confidence).toBeCloseTo(0.31, 5);
-    expect(mem!.claim).toContain('Investigation:');
-    expect(mem!.claim).toContain('orders are failing');
-    // Incident-family recall keys persisted (NOT nulled) for the investigation kind.
-    expect(mem!.signature).toBe('src/modules/orders|orders-stall|');
-    expect(mem!.tags).toEqual(expect.arrayContaining(['orders-stall', 'src/modules/orders', 'orders']));
+    expect(res.action).toBe('created');
+    expect(res.recurrenceCount).toBe(1);
+    expect(res.memoryId).not.toBeNull();
 
-    // Exactly one investigation memory exists in the repo.
     const all = await store.query({ repo: 'r', kind: ['investigation'] });
     expect(all).toHaveLength(1);
+    const mem = all[0]!;
+    expect(mem.kind).toBe('investigation');
+    expect(mem.source).toBe('investigation');
+    expect(mem.scope).toBe('repo');
+    expect(mem.visibility).toBe('private');
+    // HONEST confidence — the report's own value, never inflated.
+    expect(mem.confidence).toBeCloseTo(0.31, 5);
+    expect(mem.claim).toContain('Investigation:');
+    expect(mem.claim).toContain('orders are failing');
+    // Incident-family recall keys persisted (NOT nulled) for the investigation kind.
+    expect(mem.signature).toBe('src/modules/orders|orders-stall|');
+    expect(mem.tags).toEqual(expect.arrayContaining(['orders-stall', 'src/modules/orders', 'orders']));
+    // First sighting ⇒ recurrenceCount = 1.
+    expect(recurrenceCountOf(mem.payload)).toBe(1);
 
     // about-incident link back to the source investigation (structural).
-    const links = await store.links(mem!.id, { direction: 'both' });
+    const links = await store.links(mem.id, { direction: 'both' });
     const back = links.find((l) => l.rel === 'about-incident' && l.toKind === 'incident');
     expect(back?.toRef).toBe('inv_a');
   });
 
-  it('(b) a recurring investigation links via recurs-with, idempotently (no duplicate edge)', async () => {
-    const first = await createInvestigationMemory(store, 'inv_a', makeReport(), audit);
-    const second = await createInvestigationMemory(store, 'inv_b', makeReport(), audit);
-    expect(first).not.toBeNull();
-    expect(second).not.toBeNull();
+  it('(b) a recurrence UPDATES the existing item in place: count++, ONE item, latest finding, no new item, no recurs-with', async () => {
+    const first = await captureInvestigationMemory(
+      store,
+      'inv_a',
+      makeReport({ confidence: 0.7, hint: 'orders are failing' }),
+      REPORT_TIME,
+      audit,
+    );
+    expect(first.action).toBe('created');
 
-    const matchId = await detectRecurrence(store, second!, 'r');
-    expect(matchId).toBe(first!.id); // same signature/tags ⇒ recurs
+    // Same incident fingerprint (seedFile/topCategory unchanged ⇒ same signature/tags), newer finding.
+    const second = await captureInvestigationMemory(
+      store,
+      'inv_b',
+      makeReport({
+        confidence: 0.55,
+        hint: 'orders failing AGAIN',
+        statement: 'the orders worker stalls — now confirmed on the downstream call',
+      }),
+      new Date('2026-06-29T09:30:00.000Z'),
+      audit,
+    );
 
-    await linkRecurrence(store, second!.id, first!.id, 'inv_b');
-    // Re-running must NOT mint a twin (resync-stable canonical edge id dedupes).
-    await linkRecurrence(store, second!.id, first!.id, 'inv_b');
+    expect(second.action).toBe('consolidated');
+    expect(second.recurrenceCount).toBe(2);
+    // The consolidation reused the SAME memory id — no twin minted.
+    expect(second.memoryId).toBe(first.memoryId);
 
-    const links = await store.links(second!.id, { direction: 'both' });
-    const recurs = links.filter((l) => l.rel === 'recurs-with' && l.toKind === 'memory');
-    expect(recurs).toHaveLength(1);
-    expect(recurs[0]!.id).toBe(recurrenceEdgeId(second!.id, first!.id));
+    // Exactly ONE investigation memory exists (the recurrence did NOT add a row).
+    const all = await store.query({ repo: 'r', kind: ['investigation'] });
+    expect(all).toHaveLength(1);
+    const mem = all[0]!;
+
+    // Count bumped + last-seen + investigation ids rolled forward in the payload (additive, no schema change).
+    expect(recurrenceCountOf(mem.payload)).toBe(2);
+    const payload = mem.payload as Record<string, unknown>;
+    expect(payload.lastSeenAt).toBe('2026-06-29T09:30:00.000Z');
+    expect(payload.investigationIds).toEqual(['inv_a', 'inv_b']);
+
+    // Latest finding reflected (claim + confidence refreshed to the most recent report).
+    expect(mem.claim).toContain('orders failing AGAIN');
+    expect(mem.claim).toContain('now confirmed on the downstream call');
+    expect(mem.confidence).toBeCloseTo(0.55, 5);
+
+    // NO recurs-with edge between duplicates (there are no duplicates to link).
+    const links = await store.links(mem.id, { direction: 'both' });
+    expect(links.some((l) => l.rel === 'recurs-with')).toBe(false);
+    // An about-incident link to EACH source investigation (latest one added on consolidation).
+    const incidents = links.filter((l) => l.rel === 'about-incident').map((l) => l.toRef).sort();
+    expect(incidents).toEqual(['inv_a', 'inv_b']);
+
+    // A recurrence audit row was appended with the honest consolidation provenance.
+    const trail = await store.history(mem.id);
+    const recurrence = trail.find((a) => a.action === 'recurrence');
+    expect(recurrence).toBeDefined();
+    expect((recurrence!.detail as Record<string, unknown>).detection).toBe('auto:recurrence-consolidate');
   });
 
-  it('(c) a genuinely different incident does NOT link', async () => {
-    const orders = await createInvestigationMemory(store, 'inv_a', makeReport(), audit);
-    const billing = await createInvestigationMemory(
+  it('(c) a genuinely different incident CREATES a new item (two items, each count 1)', async () => {
+    const orders = await captureInvestigationMemory(store, 'inv_a', makeReport(), REPORT_TIME, audit);
+    const billing = await captureInvestigationMemory(
       store,
       'inv_b',
       makeReport({
@@ -201,27 +253,56 @@ describe('auto-investigation-memory — local store', () => {
         seedFile: 'src/modules/billing/billing.service.ts',
         topCategory: 'billing-stuck',
       }),
+      REPORT_TIME,
       audit,
     );
-    expect(orders).not.toBeNull();
-    expect(billing).not.toBeNull();
 
-    const matchId = await detectRecurrence(store, billing!, 'r');
-    expect(matchId).toBeNull();
+    expect(orders.action).toBe('created');
+    expect(billing.action).toBe('created');
+    expect(billing.memoryId).not.toBe(orders.memoryId);
+
+    const all = await store.query({ repo: 'r', kind: ['investigation'] });
+    expect(all).toHaveLength(2);
+    for (const m of all) expect(recurrenceCountOf(m.payload)).toBe(1);
   });
 
-  it('(d) a blank repo creates NO memory (HOR-46 fail-closed)', async () => {
-    expect(await createInvestigationMemory(store, 'inv_a', makeReport({ repo: '' }), audit)).toBeNull();
-    expect(await createInvestigationMemory(store, 'inv_a', makeReport({ repo: '   ' }), audit)).toBeNull();
+  it('(d) recall surfaces the SINGLE consolidated item with its count (3 recurrences ⇒ one item, count 3)', async () => {
+    await captureInvestigationMemory(store, 'inv_a', makeReport(), REPORT_TIME, audit);
+    await captureInvestigationMemory(store, 'inv_b', makeReport({ hint: 'orders failing #2' }), REPORT_TIME, audit);
+    await captureInvestigationMemory(store, 'inv_c', makeReport({ hint: 'orders failing #3' }), REPORT_TIME, audit);
+
+    const recalled = await recallMemory(store, { repo: 'r', kind: ['investigation'] });
+    expect(recalled).toHaveLength(1);
+    expect(recurrenceCountOf(recalled[0]!.item.payload)).toBe(3);
+    // The single item shows the LATEST finding.
+    expect(recalled[0]!.item.claim).toContain('orders failing #3');
+  });
+
+  it('(e) HONESTY — a consolidation refreshes confidence to the LATEST report verbatim (never inflated)', async () => {
+    // First run is HIGH confidence; the recurrence is LOWER. The stored value must follow the latest,
+    // never keep/raise to the prior maximum.
+    await captureInvestigationMemory(store, 'inv_a', makeReport({ confidence: 0.9 }), REPORT_TIME, audit);
+    await captureInvestigationMemory(store, 'inv_b', makeReport({ confidence: 0.2 }), REPORT_TIME, audit);
+
+    const all = await store.query({ repo: 'r', kind: ['investigation'] });
+    expect(all).toHaveLength(1);
+    expect(all[0]!.confidence).toBeCloseTo(0.2, 5); // latest verbatim, NOT max(0.9, 0.2)
+  });
+
+  it('(f) a blank repo creates NO memory (HOR-46 fail-closed)', async () => {
+    expect((await captureInvestigationMemory(store, 'inv_a', makeReport({ repo: '' }), REPORT_TIME, audit)).action).toBe('skipped');
+    expect((await captureInvestigationMemory(store, 'inv_a', makeReport({ repo: '   ' }), REPORT_TIME, audit)).action).toBe('skipped');
     expect(await createInvestigationMemory(store, 'inv_a', makeReport({ repo: undefined }), audit)).toBeNull();
+    // Nothing landed (a blank repo query fails closed and returns nothing anyway).
+    expect(await store.query({ repo: 'r', kind: ['investigation'] })).toHaveLength(0);
   });
 });
 
 // ---------------------------------------------------------------------------
-// (f) seam-only: the capture never touches a status/scoring mutation
+// (g) seam-only: the capture never touches a status/scoring mutation
 // ---------------------------------------------------------------------------
 
-describe('auto-investigation-memory — context-only seam usage (f)', () => {
+describe('auto-investigation-memory — context-only seam usage (g)', () => {
   function makeItem(over: Partial<MemoryItem> = {}): MemoryItem {
     return {
       id: 'mem_new',
@@ -240,7 +321,7 @@ describe('auto-investigation-memory — context-only seam usage (f)', () => {
       repo: 'r',
       userId: null,
       visibility: 'private',
-      payload: null,
+      payload: { recurrenceCount: 1, investigationId: 'inv_prior' },
       signature: 'src/modules/orders|orders-stall|',
       tags: ['orders-stall', 'src/modules/orders'],
       ...over,
@@ -253,6 +334,7 @@ describe('auto-investigation-memory — context-only seam usage (f)', () => {
       record: vi.fn(),
       loadScoped: vi.fn(),
       add: vi.fn(async (item) => makeItem({ id: 'mem_new', ...(item as Partial<MemoryItem>) })),
+      update: vi.fn(async (id, patch) => makeItem({ id, ...(patch as Partial<MemoryItem>) })),
       get: vi.fn(),
       query: vi.fn(async () => queryResult),
       setStatus: vi.fn(),
@@ -265,30 +347,38 @@ describe('auto-investigation-memory — context-only seam usage (f)', () => {
     } as unknown as MemoryStore;
   }
 
-  it('createInvestigationMemory + detectRecurrence + linkRecurrence call ONLY add/addLink/query — never a status/scoring mutation', async () => {
+  it('a recurrence path calls ONLY query/update/addLink — never a status/scoring mutation', async () => {
     const prior = makeItem({ id: 'mem_prior' });
     const store = spyStore([prior]);
+    const fields = deriveInvestigationFields(makeReport());
 
-    const mem = await createInvestigationMemory(store, 'inv_a', makeReport(), audit);
-    expect(mem).not.toBeNull();
-    const existingId = await detectRecurrence(store, mem!, 'r');
-    expect(existingId).toBe('mem_prior');
-    await linkRecurrence(store, mem!.id, existingId!, 'inv_a');
+    const existing = await detectRecurrence(store, fields, 'r');
+    expect(existing?.id).toBe('mem_prior');
+    await consolidateRecurrence(store, existing!, 'inv_a', fields, REPORT_TIME, audit);
 
-    // Write/read seam only.
-    expect(store.add).toHaveBeenCalledTimes(1);
-    expect(store.query).toHaveBeenCalledWith(expect.objectContaining({ repo: 'r' }));
+    // Read/refresh/link seam only.
+    expect(store.query).toHaveBeenCalledWith(expect.objectContaining({ repo: 'r', kind: ['investigation'] }));
+    expect(store.update).toHaveBeenCalledTimes(1);
     expect(store.addLink).toHaveBeenCalled();
+    expect(store.add).not.toHaveBeenCalled(); // a recurrence never inserts a new row
     // NEVER a status/visibility/verify/remove mutation — the capture cannot touch scoring/verdict.
     expect(store.setStatus).not.toHaveBeenCalled();
     expect(store.setVisibility).not.toHaveBeenCalled();
     expect(store.verify).not.toHaveBeenCalled();
     expect(store.removeLink).not.toHaveBeenCalled();
   });
+
+  it('a fresh fingerprint path creates (add) without update', async () => {
+    const store = spyStore([]); // nothing to recur with
+    await captureInvestigationMemory(store, 'inv_a', makeReport(), REPORT_TIME, audit);
+    expect(store.add).toHaveBeenCalledTimes(1);
+    expect(store.update).not.toHaveBeenCalled();
+    expect(store.setStatus).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
-// (e)+(f) engine integration — non-blocking + scoring untouched
+// (h)+(i) engine integration — non-blocking + scoring untouched
 // ---------------------------------------------------------------------------
 
 const FAKE_SYMBOL: Symbol = {
@@ -347,6 +437,7 @@ function noopStore(): MemoryStore {
       status: 'fresh',
       createdAt: new Date(),
     })),
+    update: vi.fn(async (id, patch) => ({ ...(patch as object), id, status: 'fresh', createdAt: new Date() })),
     get: vi.fn(),
     query: vi.fn(async () => []),
     setStatus: vi.fn(),
@@ -360,7 +451,7 @@ function noopStore(): MemoryStore {
 }
 
 describe('auto-investigation-memory — engine integration', () => {
-  it('(e) a store error is swallowed — investigate() still returns a report (non-blocking)', async () => {
+  it('(h) a store error is swallowed — investigate() still returns a report (non-blocking)', async () => {
     const throwing = noopStore();
     (throwing.add as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('memory store down'));
 
@@ -375,7 +466,7 @@ describe('auto-investigation-memory — engine integration', () => {
     expect(throwing.add).toHaveBeenCalled();
   });
 
-  it('(f) the memory is never consulted by scoring — confidence is identical with/without the store', async () => {
+  it('(i) the memory is never consulted by scoring — confidence is identical with/without the store', async () => {
     const withoutStore = await investigate(
       { hint: 'zoho', repo: 'r' },
       { code: fakeCode, db: makeDb() },
@@ -390,5 +481,19 @@ describe('auto-investigation-memory — engine integration', () => {
     expect(withStore.confidence).toBe(withoutStore.confidence);
     // The memory WAS written (capture ran) yet it never fed back into the score.
     expect(store.add).toHaveBeenCalled();
+  });
+
+  it('(i) the escape hatch disables capture entirely', async () => {
+    const prev = process.env.HORUS_AUTO_INVESTIGATION_MEMORY;
+    process.env.HORUS_AUTO_INVESTIGATION_MEMORY = '0';
+    try {
+      const store = noopStore();
+      await investigate({ hint: 'zoho', repo: 'r' }, { code: fakeCode, db: makeDb(), store });
+      expect(store.add).not.toHaveBeenCalled();
+      expect(store.update).not.toHaveBeenCalled();
+    } finally {
+      if (prev === undefined) delete process.env.HORUS_AUTO_INVESTIGATION_MEMORY;
+      else process.env.HORUS_AUTO_INVESTIGATION_MEMORY = prev;
+    }
   });
 });

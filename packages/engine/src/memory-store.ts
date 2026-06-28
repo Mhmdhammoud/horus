@@ -96,6 +96,10 @@ export type LinkDetection =
   // HOR-432: a `recurs-with` edge authored automatically when a freshly-captured investigation memory
   // matches a prior one. CONTEXT-ONLY — it records the recurrence, never feeds confidence/verdict.
   | 'auto:investigation-recurrence'
+  // HOR-432: the audit provenance stamped when a recurring investigation is CONSOLIDATED into its
+  // existing memory IN PLACE (bump count + refresh latest finding) rather than minting a duplicate.
+  // CONTEXT-ONLY — it records the consolidation, never feeds confidence/verdict scoring.
+  | 'auto:recurrence-consolidate'
   | 'structural';
 
 /** Per-edge traversal direction relative to the queried item (`out` = authored from it). */
@@ -135,6 +139,31 @@ export interface RemoveLinkSpec {
 /** Options for {@link MemoryStore.removeLink}. `audit` is the actor/note recorded on the `unlink` row. */
 export interface RemoveLinkOpts {
   audit?: AuditCtx;
+}
+
+/**
+ * The mutable authored fields {@link MemoryStore.update} may refresh IN PLACE. Every field is
+ * optional — an absent field is left untouched. `payload` is the additive, schema-free extension blob
+ * (HOR-432 stashes `recurrenceCount`/`lastSeenAt`/`investigationIds` here). Status is DELIBERATELY not
+ * updatable through this path — status transitions go through `setStatus`, never a field refresh.
+ */
+export interface MemoryUpdate {
+  claim?: string;
+  confidence?: number;
+  payload?: Record<string, unknown> | null;
+}
+
+/**
+ * Options for {@link MemoryStore.update}. `audit` is required (every mutation is audited). `action` is
+ * the audit action recorded for this update (e.g. `recurrence`); it defaults to `update`. `detection`
+ * is the HONEST provenance label folded into the audit detail (e.g. `auto:recurrence-consolidate`).
+ * `detail` is extra structured provenance merged into the audit detail. None of this feeds scoring.
+ */
+export interface UpdateOpts {
+  audit: AuditCtx;
+  action?: string;
+  detection?: LinkDetection;
+  detail?: Record<string, unknown>;
 }
 
 /** Options for {@link MemoryStore.links}. `direction` defaults to `both`; `rels` filters by relation. */
@@ -211,6 +240,13 @@ export interface MemoryStore {
   // ---- MemoryItem substrate (new) — backed by memory_item/_link/_audit ----
   /** Insert an authored item (appends an `add` audit row). */
   add(item: NewMemoryItem, audit: AuditCtx): Promise<MemoryItem>;
+  /**
+   * Refresh an existing item's mutable authored fields ({@link MemoryUpdate}) IN PLACE and append an
+   * audit row. Used by HOR-432 to CONSOLIDATE a recurring investigation into its existing memory
+   * (bump count + refresh latest finding) rather than minting a duplicate. CONTEXT-ONLY: it never
+   * touches `status` or the confidence/verdict scoring path. Returns the updated row.
+   */
+  update(id: string, patch: MemoryUpdate, opts: UpdateOpts): Promise<MemoryItem>;
   get(id: string): Promise<MemoryItem | null>;
   /** Scope/tenancy/status/visibility query. Fails closed on a missing repo (HOR-46). */
   query(q: MemoryQuery): Promise<MemoryItem[]>;
