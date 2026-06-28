@@ -29,6 +29,12 @@ describe('isBotAuthor (HOR-369)', () => {
       expect(isBotAuthor(human)).toBe(false);
     }
   });
+
+  it('flags additional CI/automation accounts', () => {
+    for (const bot of ['pre-commit-ci[bot]', 'dependabot-preview[bot]', 'imgbot', 'whitesource-bolt']) {
+      expect(isBotAuthor(bot)).toBe(true);
+    }
+  });
 });
 
 const mockGitFileContributors = vi.mocked(connectors.gitFileContributors);
@@ -172,6 +178,75 @@ describe('estimateOwnership — file-path queries (HOR-185)', () => {
 
     expect(o.confidence).toBeGreaterThan(0);
     expect(o.likelyMaintainer).toBe('Dev');
+  });
+});
+
+describe('estimateOwnership — bot author filtering (HOR-369)', () => {
+  it('routes to the top human even when a bot has the highest commit share', async () => {
+    const sym = makeSymbol('handler', 'src/controllers/shopify-app-webhook.controller.ts');
+    const code = makeCode([[sym]]);
+
+    // renovate[bot] dominates the raw commit count; a human must still be chosen.
+    mockGitFileContributors.mockResolvedValueOnce([
+      { author: 'renovate[bot]', commits: 40, firstDate: '2025-01-01', lastDate: '2026-06-01' },
+      { author: 'dependabot[bot]', commits: 25, firstDate: '2025-02-01', lastDate: '2026-05-01' },
+      { author: 'Alice Dev', commits: 8, firstDate: '2025-03-01', lastDate: '2026-04-01' },
+      { author: 'Bob Maintainer', commits: 3, firstDate: '2025-04-01', lastDate: '2026-03-01' },
+    ]);
+
+    const o = await estimateOwnership('shopify-app-webhook.controller.ts', {
+      code,
+      repoPath: '/repo',
+    });
+
+    expect(o.likelyMaintainer).toBe('Alice Dev');
+    expect(o.mostActiveRecent).toBe('Alice Dev');
+    // Share is computed over HUMAN commits only (8 of 11), never diluted by bot commits.
+    expect(o.maintainerShare).toBeCloseTo(8 / 11);
+    expect(o.confidence).toBeGreaterThan(0);
+    // Full contributor list (including bots) is still returned for evidence.
+    expect(o.contributors).toHaveLength(4);
+    expect(o.evidence.some((e) => e.includes('human commit'))).toBe(true);
+  });
+
+  it('reports ownership unavailable when ONLY bots have touched the file', async () => {
+    const sym = makeSymbol('handler', 'src/generated/schema.ts');
+    const code = makeCode([[sym]]);
+
+    mockGitFileContributors.mockResolvedValueOnce([
+      { author: 'renovate[bot]', commits: 12, firstDate: '2025-01-01', lastDate: '2026-06-01' },
+      { author: 'dependabot[bot]', commits: 9, firstDate: '2025-02-01', lastDate: '2026-05-01' },
+    ]);
+
+    const o = await estimateOwnership('schema.ts', {
+      code,
+      repoPath: '/repo',
+    });
+
+    expect(o.likelyMaintainer).toBeNull();
+    expect(o.mostActiveRecent).toBeNull();
+    expect(o.maintainerShare).toBe(0);
+    expect(o.confidence).toBe(0);
+    expect(o.note).toContain('Only automated/bot contributors');
+    // The bot identities are surfaced as evidence but never crowned as maintainer.
+    expect(o.contributors).toHaveLength(2);
+    expect(o.evidence.join(' ')).toContain('renovate[bot]');
+  });
+
+  it('reports no commit history when the file has no contributors at all', async () => {
+    const sym = makeSymbol('handler', 'src/empty.ts');
+    const code = makeCode([[sym]]);
+
+    mockGitFileContributors.mockResolvedValueOnce([]);
+
+    const o = await estimateOwnership('empty.ts', {
+      code,
+      repoPath: '/repo',
+    });
+
+    expect(o.likelyMaintainer).toBeNull();
+    expect(o.confidence).toBe(0);
+    expect(o.note).toContain('No commit history');
   });
 });
 
