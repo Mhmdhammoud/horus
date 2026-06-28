@@ -32,7 +32,7 @@ vi.mock('./git-collector.js', async (importOriginal) => {
   return { ...actual, collectGitChanges: vi.fn(), defaultChangeWindowSince: vi.fn() };
 });
 
-import { investigate, confidenceCeilingForCause, looksExplanatory, looksPerformance, classifyIntent, looksSourceImpact, looksVerifyIsolation, INCIDENT_SYMPTOM_RE, formatRegressionCitation, buildBehavioralWalkthrough, seedEmittedSeverityTier } from './engine.js';
+import { investigate, confidenceCeilingForCause, looksExplanatory, looksPerformance, classifyIntent, looksSourceImpact, looksVerifyIsolation, INCIDENT_SYMPTOM_RE, formatRegressionCitation, buildBehavioralWalkthrough, seedEmittedSeverityTier, isNoiseCommit, seedTouchedByRelevantChange } from './engine.js';
 import { collectGitChanges, defaultChangeWindowSince } from './git-collector.js';
 
 const mockCollectGitChanges = vi.mocked(collectGitChanges);
@@ -298,6 +298,168 @@ describe('investigate() — regression cause cites commit + changed functions (H
     // Changed symbols restricted to the seed file.
     expect(symbolClause).toContain('manageSales');
     expect(symbolClause).not.toContain('unrelatedFn');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-406: a recent-but-irrelevant commit must NOT inflate the regression cause.
+// ---------------------------------------------------------------------------
+
+describe('isNoiseCommit (HOR-406)', () => {
+  it('flags dependency-bot bumps (author + subject shapes)', () => {
+    expect(isNoiseCommit({ subject: 'Bump actions/checkout from 6 to 7', author: 'dependabot[bot]' })).toBe(true);
+    expect(isNoiseCommit({ subject: 'Bump lodash from 4.17.20 to 4.17.21', author: 'Dev' })).toBe(true);
+    expect(isNoiseCommit({ subject: 'chore(deps): update eslint', author: 'renovate[bot]' })).toBe(true);
+    expect(isNoiseCommit({ subject: 'build(deps-dev): bump vitest', author: 'Dev' })).toBe(true);
+  });
+
+  it('flags pure merge, release-prep, and pre-commit autoupdate commits', () => {
+    expect(isNoiseCommit({ subject: 'Merge branch main into release', author: 'Dev' })).toBe(true);
+    expect(isNoiseCommit({ subject: 'Merge pull request #42 from foo/bar', author: 'Dev' })).toBe(true);
+    expect(isNoiseCommit({ subject: 'Prepare release 1.2.0', author: 'Dev' })).toBe(true);
+    expect(isNoiseCommit({ subject: 'chore(release): 0.0.53 [skip ci]', author: 'Dev' })).toBe(true);
+    expect(isNoiseCommit({ subject: '[pre-commit.ci] pre-commit autoupdate', author: 'pre-commit-ci[bot]' })).toBe(true);
+  });
+
+  it('does NOT flag an ordinary code-change commit', () => {
+    expect(isNoiseCommit({ subject: 'fix throttle on SaleService', author: 'Dev' })).toBe(false);
+    expect(isNoiseCommit({ subject: 'add retry to activateSale', author: 'Dev' })).toBe(false);
+    // "release" must be at the start to count as release-prep — a fix mentioning it is real work.
+    expect(isNoiseCommit({ subject: 'fix the release-blocking sale bug', author: 'Dev' })).toBe(false);
+  });
+});
+
+describe('seedTouchedByRelevantChange (HOR-406)', () => {
+  const seedFile = 'src/services/sale.service.ts';
+  const change = (over: Partial<BoundedGitChange>): BoundedGitChange => ({
+    commits: [],
+    fileStats: [],
+    changedFiles: [],
+    totalInsertions: 0,
+    totalDeletions: 0,
+    window: { since: 'x', until: undefined },
+    truncated: false,
+    ...over,
+  });
+
+  it('returns true for a non-noise commit that touches the seed within a non-trivial diff', () => {
+    const rc = change({
+      commits: [makeCommit('real001', 'fix throttle', [seedFile])],
+      changedFiles: [seedFile],
+      totalInsertions: 8,
+      totalDeletions: 2,
+    });
+    expect(seedTouchedByRelevantChange(rc, seedFile)).toBe(true);
+  });
+
+  it('returns false for a +0/-0 no-op window even when the seed file is listed (pure merge)', () => {
+    const rc = change({
+      commits: [makeCommit('merge01', 'Merge branch main', [seedFile, 'a.ts', 'b.ts'])],
+      changedFiles: [seedFile, 'a.ts', 'b.ts'],
+      totalInsertions: 0,
+      totalDeletions: 0,
+    });
+    expect(seedTouchedByRelevantChange(rc, seedFile)).toBe(false);
+  });
+
+  it('returns false when only a bot/noise commit touches the seed', () => {
+    const rc = change({
+      commits: [makeCommit('bot0001', 'Bump actions/checkout from 6 to 7', [seedFile])],
+      changedFiles: [seedFile],
+      totalInsertions: 2,
+      totalDeletions: 2,
+    });
+    expect(seedTouchedByRelevantChange(rc, seedFile)).toBe(false);
+  });
+
+  it('returns false when a real commit shipped but did not touch the seed', () => {
+    const rc = change({
+      commits: [makeCommit('real002', 'tweak CI', ['.github/workflows/ci.yml'])],
+      changedFiles: ['.github/workflows/ci.yml'],
+      totalInsertions: 4,
+      totalDeletions: 1,
+    });
+    expect(seedTouchedByRelevantChange(rc, seedFile)).toBe(false);
+  });
+
+  it('returns false when there is no change window or no seed', () => {
+    expect(seedTouchedByRelevantChange(undefined, seedFile)).toBe(false);
+    expect(seedTouchedByRelevantChange(change({ totalInsertions: 5 }), undefined)).toBe(false);
+  });
+});
+
+describe('investigate() — irrelevant most-recent commit does not inflate the regression cause (HOR-406)', () => {
+  it('a dependabot CI bump (does not touch the seed) leaves the cause un-boosted and honest', async () => {
+    mockCollectGitChanges.mockResolvedValue({
+      commits: [makeCommit('deadbee1', 'Bump actions/checkout from 6 to 7', ['.github/workflows/ci.yml'])],
+      fileStats: [],
+      changedFiles: ['.github/workflows/ci.yml'],
+      totalInsertions: 2,
+      totalDeletions: 2,
+      window: { since: 'deadbee', until: undefined },
+      truncated: false,
+    } as BoundedGitChange);
+
+    const report = await investigate(
+      { hint: 'SaleService regression', since: 'deadbee' },
+      { code: baseCode, db: fakeDb, repoPath: '/repo' },
+    );
+
+    const regression = report.suspectedCauses.find((c) => c.id === 'cause:deployment-regression');
+    expect(regression).toBeDefined();
+    // Un-boosted base score (0.18, not the 0.45 seed-touched boost).
+    expect(regression!.baseScore).toBeCloseTo(0.18, 5);
+    // Stays in the weak band — a bot bump cannot headline as a likely regression.
+    expect(regression!.finalScore).toBeLessThan(0.4);
+    // Honest title: changes shipped, but none touched the seed; the bot commit is not cited.
+    expect(regression!.title).toContain('none touched SaleService');
+    expect(regression!.title).not.toContain('checkout');
+  });
+
+  it('a +0/-0 no-op merge that lists the seed file still does not boost', async () => {
+    mockCollectGitChanges.mockResolvedValue({
+      commits: [makeCommit('merge001', 'Merge branch main into release', ['src/services/sale.service.ts'])],
+      fileStats: [],
+      changedFiles: ['src/services/sale.service.ts'],
+      totalInsertions: 0,
+      totalDeletions: 0,
+      window: { since: 'merge001', until: undefined },
+      truncated: false,
+    } as BoundedGitChange);
+
+    const report = await investigate(
+      { hint: 'SaleService regression', since: 'merge001' },
+      { code: baseCode, db: fakeDb, repoPath: '/repo' },
+    );
+
+    const regression = report.suspectedCauses.find((c) => c.id === 'cause:deployment-regression');
+    expect(regression).toBeDefined();
+    expect(regression!.baseScore).toBeCloseTo(0.18, 5);
+    expect(regression!.title).toContain('none touched SaleService');
+  });
+
+  it('a real commit that DOES touch the seed still earns the boost (no regression in behaviour)', async () => {
+    mockCollectGitChanges.mockResolvedValue({
+      commits: [makeCommit('real0001', 'fix throttle on activateSale', ['src/services/sale.service.ts'])],
+      fileStats: [],
+      changedFiles: ['src/services/sale.service.ts'],
+      totalInsertions: 12,
+      totalDeletions: 4,
+      window: { since: 'real0001', until: undefined },
+      truncated: false,
+    } as BoundedGitChange);
+
+    const report = await investigate(
+      { hint: 'SaleService regression', since: 'real0001' },
+      { code: baseCode, db: fakeDb, repoPath: '/repo' },
+    );
+
+    const regression = report.suspectedCauses.find((c) => c.id === 'cause:deployment-regression');
+    expect(regression).toBeDefined();
+    // Seed-touched boost preserved (0.45 base).
+    expect(regression!.baseScore).toBeCloseTo(0.45, 5);
+    expect(regression!.title).toContain('Recent change');
+    expect(regression!.title).toContain('real000');
   });
 });
 

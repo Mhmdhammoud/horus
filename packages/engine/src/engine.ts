@@ -23,6 +23,7 @@ import type {
 } from '@horus/core';
 import type {
   CodeProvider,
+  GitCommit,
   LogsProvider,
   LogAnalysis,
   StateProvider,
@@ -730,6 +731,63 @@ async function fetchClassMethods(code: CodeProvider, cls: Symbol): Promise<Symbo
 }
 
 /**
+ * HOR-406: a commit is "noise" for deployment-regression attribution when it could not
+ * plausibly have introduced a runtime fault — a dependency-bot bump, a pure merge, a
+ * release-prep / version bump, or a pre-commit autoupdate. Such a commit being the most
+ * recent change in the window must NOT inflate the regression cause. Pure + deterministic;
+ * only the subject and author are consulted (no I/O).
+ */
+export function isNoiseCommit(commit: Pick<GitCommit, 'subject' | 'author'>): boolean {
+  const subject = (commit.subject ?? '').trim();
+  const author = (commit.author ?? '').trim();
+
+  // Bot authors — dependabot[bot], renovate[bot], github-actions[bot], pre-commit-ci[bot], …
+  if (/\[bot\]/i.test(author)) return true;
+  if (/\b(dependabot|renovate)\b/i.test(author)) return true;
+
+  // Dependency bumps — dependabot/renovate subjects, "Bump X from a to b", build/chore(deps).
+  if (/^bump\s/i.test(subject)) return true;
+  if (/\b(dependabot|renovate)\b/i.test(subject)) return true;
+  if (/^(build|chore|fix|deps)\(deps(-dev)?\)/i.test(subject)) return true;
+
+  // Pure merge commits — "Merge branch …", "Merge pull request …".
+  if (/^merge\b/i.test(subject)) return true;
+
+  // Release-prep / version bumps — "Prepare release", "chore(release): 1.2.3", "Bump version".
+  if (/^(prepare release|release|bump version|version bump|chore\(release\))/i.test(subject)) {
+    return true;
+  }
+
+  // pre-commit autoupdate / pre-commit.ci.
+  if (/pre-commit.*autoupdate/i.test(subject) || /\[pre-commit\.ci\]/i.test(subject)) return true;
+
+  return false;
+}
+
+/**
+ * HOR-406: the deployment-regression cause earns its full base score ONLY when a RELEVANT
+ * change shipped — a commit that (a) actually touches the seed's file, (b) is part of a
+ * non-trivial diff (the change window is not a +0/-0 no-op), and (c) is not bot / merge /
+ * release / autoupdate noise. A recent-but-irrelevant commit (a dependabot bump, a pure
+ * merge across many files, a "Prepare release", a pre-commit autoupdate, or a +0/-0 no-op)
+ * no longer inflates the cause — it gets the un-boosted base score and an honest title.
+ * Pure + deterministic.
+ */
+export function seedTouchedByRelevantChange(
+  recentChanges: BoundedGitChange | undefined,
+  seedFile: string | undefined,
+): boolean {
+  if (recentChanges === undefined || seedFile === undefined) return false;
+  // No-op window: nothing actually changed (e.g. a pure merge: +0/-0 across many files).
+  if (recentChanges.totalInsertions + recentChanges.totalDeletions === 0) return false;
+  const matchesSeed = (f: string): boolean =>
+    f === seedFile || seedFile.endsWith(f) || f.endsWith(seedFile);
+  return recentChanges.commits.some(
+    (c) => !isNoiseCommit(c) && c.files.some(matchesSeed),
+  );
+}
+
+/**
  * HOR-333: build the commit + changed-symbol citation clauses for the regression
  * cause title. Cites the most-recent 1-2 commits (short SHA + subject) from the
  * bounded git history and the changed symbol name(s) from the source-backend
@@ -749,7 +807,9 @@ export function formatRegressionCitation(
   // tripped the off-by-one release-tag trap (the touching commit is an ancestor of the tag). When
   // no in-window commit touched the seed, cite nothing — the caller frames that honestly rather
   // than fabricating a culprit.
-  const all = recentChanges?.commits ?? [];
+  // HOR-406: never cite bot/merge/release/autoupdate noise as the culprit — the score gate
+  // ignores those commits, so the headline must not name one either.
+  const all = (recentChanges?.commits ?? []).filter((c) => !isNoiseCommit(c));
   const seedCommits = seedFile ? all.filter((c) => c.files.some(matchesSeed)) : all;
   const commits = seedCommits.slice(0, 2);
   const commitParts = commits.map((c) => {
@@ -2446,16 +2506,15 @@ export async function investigate(
   // HOR-385: source-impact mode never frames a structural question as a deployment regression —
   // suppress the cause at its source (the hypothesis is suppressed in generateHypotheses).
   if (changeEvId && !sourceImpactHint) {
-    // File-overlap boost: if the seed's file appears among changed files, the
-    // deployment-regression hypothesis is more likely — raise base score to 0.45.
-    // In degraded runtime-only mode there is no seed, so the cause is offered
-    // generically off the git-history evidence alone.
-    const gitChangedFiles = recentChanges?.changedFiles ?? [];
+    // Relevance-gated boost (HOR-406): the seed's file appearing among changed files is NOT
+    // enough — a recent-but-irrelevant commit (dependabot bump, pure merge, "Prepare release",
+    // pre-commit autoupdate, or a +0/-0 no-op) used to inflate this cause to 0.45–0.80 off the
+    // single most-recent commit even when the seed was never touched. The boost now requires a
+    // RELEVANT change: a non-noise commit that actually touches the seed's file within a
+    // non-trivial diff window. In degraded runtime-only mode there is no seed, so the cause is
+    // offered generically off the git-history evidence alone (un-boosted).
     const seedFile = top?.filePath;
-    const seedInChanges =
-      seedFile !== undefined &&
-      gitChangedFiles.length > 0 &&
-      gitChangedFiles.some((f) => f === seedFile || seedFile.endsWith(f) || f.endsWith(seedFile));
+    const seedInChanges = seedTouchedByRelevantChange(recentChanges, seedFile);
     // HOR-333: cite the actual culprit — the most-recent commit(s) (short SHA + subject)
     // and the changed symbol name(s) — so the cause names what to look at, not just the
     // seed + range. Bounded to 1-2 commits and a few symbols to stay scannable.
