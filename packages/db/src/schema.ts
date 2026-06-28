@@ -265,6 +265,42 @@ export const memoryAudit = pgTable(
   (t) => [index('memory_audit_memory_idx').on(t.memoryId)],
 );
 
+/**
+ * Outcome-label / eval store (HOR-390) — the queryable record of Horus's own investigation
+ * accuracy, keyed by `investigationId`. This labeled dataset IS the flywheel's eval/training
+ * set (the prerequisite for a reranker/model in the HOR-AI layer). It converges the two
+ * entry points that attest an outcome — `horus feedback` and `horus memory confirm` — into
+ * ONE persisted, queryable record, where today `feedback` is telemetry-only (no DB row) and
+ * `confirm` is not-yet-built.
+ *
+ * Append-only: every attestation is its own row, so re-confirming or correcting a label keeps
+ * the full history rather than overwriting a data point (use `getLatestOutcomeLabel` for the
+ * current verdict). `project` is denormalized (like `incident_memory`) so the common
+ * "accuracy by project / over a date range" query is a single indexed scan, and survives the
+ * investigation row being pruned (the FK is ON DELETE cascade, so labels follow their run).
+ */
+export const outcomeLabel = pgTable(
+  'outcome_label',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    investigationId: uuid('investigation_id').references(() => investigations.id, {
+      onDelete: 'cascade',
+    }),
+    project: text('project'), // denormalized repo/project scope, for accuracy-by-project queries
+    resolved: text('resolved').notNull(), // 'yes' | 'partly' | 'no' — did Horus point at the cause?
+    confirmedCause: text('confirmed_cause'), // the actual root cause, when known
+    note: text('note'), // free-text context from the attester
+    source: text('source').notNull(), // 'feedback' | 'confirm' — which entry point attested it
+    payload: jsonb('payload'), // forward-compat (e.g. manualEstimateMinutes, horusSeconds)
+    at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('outcome_label_investigation_idx').on(t.investigationId),
+    index('outcome_label_project_idx').on(t.project),
+    index('outcome_label_at_idx').on(t.at),
+  ],
+);
+
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
 export type Repository = typeof repositories.$inferSelect;
@@ -285,3 +321,5 @@ export type MemoryLink = typeof memoryLink.$inferSelect;
 export type NewMemoryLink = typeof memoryLink.$inferInsert;
 export type MemoryAudit = typeof memoryAudit.$inferSelect;
 export type NewMemoryAudit = typeof memoryAudit.$inferInsert;
+export type OutcomeLabel = typeof outcomeLabel.$inferSelect;
+export type NewOutcomeLabel = typeof outcomeLabel.$inferInsert;

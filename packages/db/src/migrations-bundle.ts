@@ -93,5 +93,15 @@ export const EMBEDDED_MIGRATIONS: readonly EmbeddedMigration[] = [
       "CREATE INDEX \"memory_link_to_idx\" ON \"memory_link\" USING btree (\"to_kind\",\"to_ref\");",
       "CREATE INDEX \"memory_audit_memory_idx\" ON \"memory_audit\" USING btree (\"memory_id\");"
     ]
+  },
+  {
+    "tag": "0008_outcome_label",
+    "statements": [
+      "CREATE TABLE \"outcome_label\" (\n\t\"id\" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,\n\t\"investigation_id\" uuid,\n\t\"project\" text,\n\t\"resolved\" text NOT NULL,\n\t\"confirmed_cause\" text,\n\t\"note\" text,\n\t\"source\" text NOT NULL,\n\t\"payload\" jsonb,\n\t\"at\" timestamp with time zone DEFAULT now() NOT NULL\n);",
+      "ALTER TABLE \"outcome_label\" ADD CONSTRAINT \"outcome_label_investigation_id_investigations_id_fk\" FOREIGN KEY (\"investigation_id\") REFERENCES \"public\".\"investigations\"(\"id\") ON DELETE cascade ON UPDATE no action;",
+      "CREATE INDEX \"outcome_label_investigation_idx\" ON \"outcome_label\" USING btree (\"investigation_id\");",
+      "CREATE INDEX \"outcome_label_project_idx\" ON \"outcome_label\" USING btree (\"project\");",
+      "CREATE INDEX \"outcome_label_at_idx\" ON \"outcome_label\" USING btree (\"at\");"
+    ]
   }
 ];

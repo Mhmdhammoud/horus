@@ -12,6 +12,7 @@ export const EXPECTED_TABLES = [
   'memory_item',
   'memory_link',
   'memory_audit',
+  'outcome_label',
   'queue_edges',
   'provider_cache',
 ] as const;

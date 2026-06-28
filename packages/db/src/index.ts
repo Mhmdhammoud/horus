@@ -10,6 +10,7 @@ export {
   memoryItem,
   memoryLink,
   memoryAudit,
+  outcomeLabel,
   queueEdges,
   providerCache,
 } from './schema.js';
@@ -31,6 +32,8 @@ export type {
   NewMemoryLink,
   MemoryAudit,
   NewMemoryAudit,
+  OutcomeLabel,
+  NewOutcomeLabel,
   QueueEdge,
   NewQueueEdge,
   ProviderCacheRow,
@@ -52,6 +55,19 @@ export {
 } from './guard.js';
 export { eq, desc, sql, and, or } from 'drizzle-orm';
 export { replaceQueueEdges, listQueueEdges } from './queue.js';
+export {
+  recordOutcomeLabel,
+  listOutcomeLabels,
+  getLatestOutcomeLabel,
+  isOutcomeResolved,
+  isOutcomeSource,
+  OUTCOME_RESOLVED,
+  OUTCOME_SOURCE,
+  type OutcomeResolved,
+  type OutcomeSource,
+  type OutcomeLabelInput,
+  type OutcomeLabelQuery,
+} from './outcome.js';
 export {
   getInvestigation,
   listInvestigations,
