@@ -49,6 +49,18 @@ export type EvidenceKind =
   | 'state' // application/DB state (MongoDB)
   | 'impact';
 
+/**
+ * The entity an evidence item pertains to — the service and/or environment scope.
+ * Assigned by the NORMALIZATION layer (never by providers), derived from connector
+ * config + investigation scope; the same discipline as `priority`/`category`.
+ * Inert when unknown: a field is present only when a real value is known, never
+ * fabricated.
+ */
+export interface EvidenceSubject {
+  service?: string;
+  environment?: string;
+}
+
 /** Graph back-references that let a human (or the engine) jump to the source. */
 export interface EvidenceLinks {
   file?: string;
@@ -79,6 +91,12 @@ export interface Evidence {
   priority?: EvidencePriority;
   /** Broad functional grouping; assigned by the normalization layer. */
   category?: EvidenceCategory;
+  /**
+   * Entity under investigation this item pertains to (service/environment).
+   * Assigned by the normalization layer from connector config + investigation
+   * scope — never by providers. Absent when unknown (inert, never fabricated).
+   */
+  subject?: EvidenceSubject;
   /**
    * Normalized recurrence signal: true when this error/event is a brand-new
    * signature that has never been seen before. Providers set this field so the

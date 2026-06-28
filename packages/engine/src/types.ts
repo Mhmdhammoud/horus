@@ -3,7 +3,7 @@
  * No AI/LLM yet — every field is computed from typed provider evidence.
  */
 
-import type { Evidence, Symbol, Flow } from '@horus/core';
+import type { Evidence, Symbol, Flow, EvidenceSubject } from '@horus/core';
 import type { Timeline } from './timeline.js';
 import type { CorrelationResult } from './correlate.js';
 import type { ValidatedHypothesis } from './validate.js';
@@ -35,6 +35,12 @@ export interface InvestigationInput {
   /** Optional service name scope. */
   service?: string;
   /**
+   * Optional environment-name scope (e.g. `production`, `staging`). Part of the
+   * investigation scope used to stamp the subject (service/environment) onto the
+   * report and its evidence at normalization time. Additive; never enters scoring.
+   */
+  environment?: string;
+  /**
    * Optional path scope (e.g. `packages/core` or `apps/api`) — resolve the seed only from
    * symbols whose file is under this directory. Lets a backend hint avoid seeding a co-located
    * frontend in a monorepo (HOR-356).
@@ -56,10 +62,18 @@ export interface RouteStep {
   reason: string;
 }
 
+/**
+ * Coarse classification of a deterministic finding. Promoted (Stage 0) from a
+ * free string to a closed union so the set is typed at compile time; the members
+ * are exactly the values the engine emits today. Typing-only and additive — the
+ * `kind` is never read by the scoring/confidence/verdict path.
+ */
+export type FindingKind = 'observation' | 'anomaly' | 'correlation';
+
 /** A deterministic, evidence-backed finding asserted by the engine. */
 export interface ReportFinding {
-  /** Coarse classification, e.g. 'observation' | 'anomaly' | 'correlation'. */
-  kind: string;
+  /** Coarse classification of the assertion. */
+  kind: FindingKind;
   title: string;
   detail?: string;
   /** 0–1 confidence in the assertion. */
@@ -78,6 +92,13 @@ export interface InvestigationReport {
    */
   persisted?: boolean;
   input: InvestigationInput;
+  /**
+   * The entity under investigation — the service and/or environment scope this
+   * report concerns (Stage 0). Derived from the investigation scope; absent when
+   * neither is known (inert, never fabricated). Additive; never enters the
+   * scoring/confidence/verdict path.
+   */
+  subject?: EvidenceSubject;
   summary: string;
   /**
    * HOR-385: the deterministic structural intent the engine classified the hint as
@@ -200,4 +221,4 @@ export interface StoredAIJudgment {
 }
 
 /** Re-exported for convenience so callers can type flow steps without @horus/core. */
-export type { Evidence, Symbol, Flow };
+export type { Evidence, Symbol, Flow, EvidenceSubject };

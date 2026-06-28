@@ -208,6 +208,12 @@ describe('normalizeEvidence — contract', () => {
     expect(() => normalizeEvidence([])).not.toThrow();
   });
 
+  it('does not stamp a subject when no context is supplied', () => {
+    const ev = makeEv({ id: 'ev-no-ctx', source: 'logs', kind: 'log', relevance: 0.9 });
+    normalizeEvidence([ev]);
+    expect(ev.subject).toBeUndefined();
+  });
+
   it('normalizes a mixed batch from multiple providers', () => {
     const evs = [
       makeEv({ id: 'a', source: 'logs', kind: 'log', relevance: 1.0 }),
@@ -225,5 +231,77 @@ describe('normalizeEvidence — contract', () => {
     expect(queue!.priority).toBe('medium');
     expect(db!.priority).toBe('high');
     expect(code!.priority).toBe('info');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Subject derivation (Stage 0)
+// ---------------------------------------------------------------------------
+
+describe('normalizeEvidence — subject derivation', () => {
+  it('stamps service + environment from the investigation scope', () => {
+    const ev = makeEv({ id: 's1', source: 'logs', kind: 'log', relevance: 0.9 });
+    normalizeEvidence([ev], { service: 'checkout', environment: 'production' });
+    expect(ev.subject).toEqual({ service: 'checkout', environment: 'production' });
+  });
+
+  it('omits the missing dimension (service-only scope)', () => {
+    const ev = makeEv({ id: 's2', source: 'logs', kind: 'log', relevance: 0.9 });
+    normalizeEvidence([ev], { service: 'checkout' });
+    expect(ev.subject).toEqual({ service: 'checkout' });
+    expect(ev.subject!.environment).toBeUndefined();
+  });
+
+  it('omits the missing dimension (environment-only scope)', () => {
+    const ev = makeEv({ id: 's3', source: 'metrics', kind: 'metric', relevance: 0.9 });
+    normalizeEvidence([ev], { environment: 'staging' });
+    expect(ev.subject).toEqual({ environment: 'staging' });
+  });
+
+  it('stays inert when the context resolves to no real values', () => {
+    const ev = makeEv({ id: 's4', source: 'logs', kind: 'log', relevance: 0.9 });
+    normalizeEvidence([ev], { service: '', environment: '' });
+    expect(ev.subject).toBeUndefined();
+  });
+
+  it('preserves an explicitly set subject (idempotent)', () => {
+    const ev = makeEv({ id: 's5', source: 'logs', kind: 'log', relevance: 0.9,
+      subject: { service: 'pre-set' } });
+    normalizeEvidence([ev], { service: 'checkout', environment: 'production' });
+    expect(ev.subject).toEqual({ service: 'pre-set' });
+  });
+
+  it('gives each item its own subject object (no shared reference)', () => {
+    const a = makeEv({ id: 's6a', source: 'logs', kind: 'log', relevance: 0.9 });
+    const b = makeEv({ id: 's6b', source: 'logs', kind: 'log', relevance: 0.9 });
+    normalizeEvidence([a, b], { service: 'checkout' });
+    expect(a.subject).toEqual(b.subject);
+    expect(a.subject).not.toBe(b.subject);
+  });
+});
+
+describe('normalizeEvidence — subject is additive (priority/category untouched)', () => {
+  const fresh = () => [
+    makeEv({ id: 'a', source: 'logs', kind: 'log', relevance: 1.0 }),
+    makeEv({ id: 'b', source: 'queue', kind: 'queue-state', relevance: 0.7 }),
+    makeEv({ id: 'c', source: 'state', kind: 'state', relevance: 0.85 }),
+    makeEv({ id: 'd', source: 'code', kind: 'symbol', relevance: 0.9 }),
+  ];
+
+  it('priority/category are identical with and without a subject context', () => {
+    const without = fresh();
+    normalizeEvidence(without);
+    const withCtx = fresh();
+    normalizeEvidence(withCtx, { service: 'checkout', environment: 'production' });
+
+    // Stripping the new subject field, the normalized rows are byte-identical —
+    // proving the subject context never perturbs the priority/category outputs.
+    const strip = (evs: typeof without) =>
+      evs.map(({ subject: _subject, ...rest }) => rest);
+    expect(strip(withCtx)).toEqual(strip(without));
+
+    // And the subject is present only on the context-supplied run.
+    expect(without.every((e) => e.subject === undefined)).toBe(true);
+    expect(withCtx.every((e) => e.subject?.service === 'checkout')).toBe(true);
   });
 });

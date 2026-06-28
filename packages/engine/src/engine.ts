@@ -15,6 +15,7 @@ import type {
   Evidence,
   EvidenceKind,
   EvidenceLinks,
+  EvidenceSubject,
   ImpactResult,
   ProviderKind,
   Symbol,
@@ -136,6 +137,21 @@ function sourceForKind(kind: EvidenceKind): ProviderKind {
     default:
       return 'code';
   }
+}
+
+/**
+ * The entity under investigation, derived from the investigation scope (Stage 0).
+ * Returns `undefined` (inert) when neither a service nor an environment is given —
+ * a subject field is emitted only with a real value, never fabricated. Used to
+ * stamp the report subject and, via `normalizeEvidence`, each evidence item.
+ */
+function investigationSubject(input: InvestigationInput): EvidenceSubject | undefined {
+  const subject: EvidenceSubject = {};
+  if (input.service !== undefined && input.service !== '') subject.service = input.service;
+  if (input.environment !== undefined && input.environment !== '') {
+    subject.environment = input.environment;
+  }
+  return subject.service !== undefined || subject.environment !== undefined ? subject : undefined;
 }
 
 /** Clamp a number into the inclusive [0, 1] range. */
@@ -1071,6 +1087,9 @@ export async function investigate(
     const report: InvestigationReport = {
       id: globalThis.crypto.randomUUID(),
       input,
+      ...(investigationSubject(input) !== undefined
+        ? { subject: investigationSubject(input) }
+        : {}),
       summary: 'No source symbols matched the hint',
       seeds: [],
       evidence: [],
@@ -2166,10 +2185,11 @@ export async function investigate(
     }
   }
 
-  // e0f. NORMALIZE — fill in cross-provider priority + category before any
-  // downstream step reads them. Idempotent; safe to call even if a provider
-  // failed and contributed zero items.
-  normalizeEvidence(evidence);
+  // e0f. NORMALIZE — fill in cross-provider priority + category (and, when the
+  // scope is known, the subject) before any downstream step reads them. Idempotent;
+  // safe to call even if a provider failed and contributed zero items. Subject is
+  // derived from the investigation scope, the same discipline as priority/category.
+  normalizeEvidence(evidence, { service: input.service, environment: input.environment });
 
   // e0g. GRAPH — derive infrastructure topology from normalized evidence. Built
   // here so implication scores are available when scoring suspected causes below.
@@ -3031,6 +3051,9 @@ export async function investigate(
   const report: InvestigationReport = {
     id: globalThis.crypto.randomUUID(),
     input,
+    ...(investigationSubject(input) !== undefined
+      ? { subject: investigationSubject(input) }
+      : {}),
     summary,
     intent,
     seeds,
