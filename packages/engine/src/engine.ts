@@ -51,7 +51,7 @@ import {
 } from '@horus/db';
 import { buildGraph } from './graph.js';
 import { buildCauseChains } from './cause-chain.js';
-import { rankCauses, type CauseInput } from './score-cause.js';
+import { rankCauses, selectHeadlineCause, type CauseInput } from './score-cause.js';
 import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
 import { recallSimilar, storeIncidentMemory, deriveTags } from './memory.js';
@@ -2172,7 +2172,10 @@ export async function investigate(
   const recentChangeRelevant = seedTouchedByRelevantChange(recentChanges, top?.filePath);
 
   // e2. CORRELATION (deterministic grouping + cause chains + missing evidence)
-  const correlation = correlate(evidence, { recentChangeRelevant });
+  // HOR-410 (round 2): pass real queue topology so the missing-evidence list does not
+  // fabricate a queue subsystem (and its Redis/BullMQ tooling) on non-queue stacks.
+  const hasQueueTopology = queueEvByName.size > 0;
+  const correlation = correlate(evidence, { recentChangeRelevant, hasQueueTopology });
 
   // e3. HYPOTHESES (HOR-24) — deterministic competing set
   const queueNames = [...queueEvByName.keys()];
@@ -2835,7 +2838,6 @@ export async function investigate(
 
   // h. summary
   const area = ctx?.community?.name ?? top?.filePath ?? (input.service ?? 'runtime evidence');
-  const topCause = rankedCauses[0];
   // HOR — gate the headline on a STRUCTURAL LINK to the seed. A cause is "linked" when it cites
   // the seed's own evidence (its symbol / blast-impact) or a direct (seed-tied) log signature —
   // as opposed to purely co-occurring runtime noise (an unrelated stale queue, a data-state
@@ -2851,14 +2853,11 @@ export async function investigate(
     ...(looksPerformance(hint) ? latencyMetricEvIds : []),
   ]);
   const isLinkedToSeed = (ids: string[]): boolean => ids.some((id) => seedLinkedEvIds.has(id));
-  // HOR-340/336: a sub-threshold cause (e.g. a weak blast-radius ~0.09) must not headline as a
-  // confident diagnosis; below the bar it stays listed but the summary says "no dominant".
-  const topLinkedCause = rankedCauses.find(
-    (c) => c.finalScore >= 0.2 && isLinkedToSeed(c.sourceEvidenceIds),
-  );
-  const headlineCause =
-    topLinkedCause ?? (topCause && topCause.finalScore >= 0.2 ? topCause : undefined);
-  const headlineLinked = headlineCause !== undefined && isLinkedToSeed(headlineCause.sourceEvidenceIds);
+  // HOR-402 substage-1a: select the headline by finalScore ARGMAX (not array position) so the
+  // confidence + unlinked-headline cap below stay correct even if rankCauses' output order ever
+  // changes. No-op today — rankCauses already sorts by finalScore desc, so argmax == [0].
+  // (HOR-340/336: a sub-threshold cause must not headline; selectHeadlineCause enforces the ≥0.2 bar.)
+  const { headlineCause, headlineLinked } = selectHeadlineCause(rankedCauses, isLinkedToSeed);
   // #2 calibration — a headline that isn't structurally linked to the seed is a co-occurring
   // signal, not a verified diagnosis: cap it in the "possible" band so it never reads as a
   // confident "likely" diagnosis (and so confidence actually discriminates linked vs not).

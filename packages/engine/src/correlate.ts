@@ -52,6 +52,14 @@ export interface CorrelateOptions {
    * deployment-regression hypothesis. Absent/undefined ⇒ treated as relevant (legacy behaviour).
    */
   recentChangeRelevant?: boolean;
+  /**
+   * HOR-410 (round 2): whether the investigated repo has any queue topology (≥1 detected
+   * queue edge). When false, the `queue-state` missing-evidence note is suppressed entirely —
+   * a synchronous / non-queue stack (most Python web, Kafka-only, or library repos) has no
+   * queue subsystem, so listing "no live queue depth/failure data" fabricates one. Absent/
+   * undefined ⇒ treated as having topology (legacy behaviour) for callers that don't compute it.
+   */
+  hasQueueTopology?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -298,20 +306,28 @@ function buildChains(evidence: Evidence[], recentChangeRelevant: boolean): Corre
 // Missing evidence
 // ---------------------------------------------------------------------------
 
+// HOR-410 (round 2): missing-evidence notes are stack-neutral — they name the `horus`
+// command that would collect the data, not a specific backend (Elasticsearch/Grafana/
+// Redis/BullMQ). Naming a Node-stack backend on a Python/Kafka/0-queue repo fabricates
+// infrastructure the repo doesn't have. The `queue-state` note is additionally gated on
+// real queue topology (see buildMissing) so it never fires for non-queue codebases.
 const MISSING_NOTES: Record<string, string> = {
-  log: 'No error logs collected for this investigation (Elasticsearch)',
-  metric: 'No metrics collected — run `horus metrics "<hint>"` (Grafana)',
-  'queue-state': 'No live queue depth/failure data (Redis/BullMQ)',
-  'redis-key': 'No Redis state collected',
+  log: 'No error logs collected for this investigation — run `horus logs "<hint>"`',
+  metric: 'No metrics collected — run `horus metrics "<hint>"`',
+  'queue-state': 'No live queue depth/failure data — run `horus queues --live`',
+  'redis-key': 'No cache/state evidence collected',
 };
 
 const RUNTIME_KINDS: EvidenceKind[] = ['log', 'metric', 'queue-state', 'redis-key'];
 
-function buildMissing(evidence: Evidence[]): MissingEvidence[] {
+function buildMissing(evidence: Evidence[], hasQueueTopology: boolean): MissingEvidence[] {
   const presentKinds = new Set<string>(evidence.map((e) => e.kind));
   const missing: MissingEvidence[] = [];
 
   for (const kind of RUNTIME_KINDS) {
+    // Suppress the queue-state note on repos with no queue topology — there is no queue
+    // subsystem to report as "missing". Mirrors the gaps.ts queue-runtime-state gate (HOR-410).
+    if (kind === 'queue-state' && !hasQueueTopology) continue;
     if (!presentKinds.has(kind)) {
       const note = MISSING_NOTES[kind] ?? `No ${kind} evidence yet`;
       missing.push({ kind, note });
@@ -329,9 +345,10 @@ export function correlate(evidence: Evidence[], opts?: CorrelateOptions): Correl
   // HOR-406 (round 2): default to relevant when the caller does not supply a verdict, preserving
   // the legacy "commit present ⇒ recent-change chain" behaviour for callers that don't gate.
   const recentChangeRelevant = opts?.recentChangeRelevant !== false;
+  const hasQueueTopology = opts?.hasQueueTopology !== false;
   return {
     groups: buildGroups(evidence),
     chains: buildChains(evidence, recentChangeRelevant),
-    missing: buildMissing(evidence),
+    missing: buildMissing(evidence, hasQueueTopology),
   };
 }

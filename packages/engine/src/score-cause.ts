@@ -616,3 +616,46 @@ export function rankCauses(
   });
   return scored.slice(0, limit);
 }
+
+/**
+ * SCORE-BASED headline selection (HOR-402 substage-1a, reorder-safe).
+ *
+ * Picks the headline cause — and whether it is structurally linked to the seed — by finalScore
+ * ARGMAX rather than ARRAY POSITION, so the downstream confidence value and the "unlinked headline"
+ * cap stay correct regardless of the order `rankCauses` (or any future reorder) hands the causes
+ * back in. This is behavior-preserving today: rankCauses already sorts by finalScore desc, so the
+ * argmax IS element [0]. Ties keep the FIRST occurrence in the given order (strict `>` comparison),
+ * matching the previous `[0]` / `.find()` semantics on equal scores.
+ *
+ *   - topCause:       highest-finalScore cause overall.
+ *   - topLinkedCause: highest-finalScore cause that clears the ≥0.2 bar AND is seed-linked.
+ *   - headlineCause:  the linked one if any; else the top cause iff it clears ≥0.2 (HOR-340/336).
+ *   - headlineLinked: whether the chosen headline is itself seed-linked.
+ */
+export function selectHeadlineCause(
+  rankedCauses: readonly CauseCandidate[],
+  isLinkedToSeed: (sourceEvidenceIds: string[]) => boolean,
+): {
+  topCause: CauseCandidate | undefined;
+  topLinkedCause: CauseCandidate | undefined;
+  headlineCause: CauseCandidate | undefined;
+  headlineLinked: boolean;
+} {
+  let topCause: CauseCandidate | undefined;
+  let topLinkedCause: CauseCandidate | undefined;
+  for (const c of rankedCauses) {
+    if (topCause === undefined || c.finalScore > topCause.finalScore) topCause = c;
+    if (
+      c.finalScore >= 0.2 &&
+      isLinkedToSeed(c.sourceEvidenceIds) &&
+      (topLinkedCause === undefined || c.finalScore > topLinkedCause.finalScore)
+    ) {
+      topLinkedCause = c;
+    }
+  }
+  const headlineCause =
+    topLinkedCause ?? (topCause && topCause.finalScore >= 0.2 ? topCause : undefined);
+  const headlineLinked =
+    headlineCause !== undefined && isLinkedToSeed(headlineCause.sourceEvidenceIds);
+  return { topCause, topLinkedCause, headlineCause, headlineLinked };
+}

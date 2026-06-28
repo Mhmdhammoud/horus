@@ -108,6 +108,14 @@ export function generateHypotheses(
   const hasCommit = commitEvs.length > 0;
   const { queues } = ctx;
 
+  // HOR-410 (round 2): only name queue-runtime tooling when the repo actually has queue
+  // topology. On synchronous / non-queue stacks (0 detected queues — most Python web,
+  // Kafka-only, or library repos) the report must not invent a queue subsystem in its
+  // missing-evidence/hypothesis phrasing. When topology IS present we still keep the
+  // wording stack-neutral (`horus queues`) rather than asserting a specific broker
+  // (BullMQ/Redis) we cannot confirm from edge topology alone.
+  const hasQueueTopology = queues.length > 0;
+
   // ── Pre-compute cross-hypothesis signals ─────────────────────────────────────
 
   // Log spikes (ratio >= 2.0): doubled error rate is consistent with retry
@@ -199,7 +207,7 @@ export function generateHypotheses(
       contradictingEvidenceIds: [],
       missingEvidence: backlogEvIds.length > 0
         ? []
-        : ['Live queue depth + failed/delayed counts (Redis/BullMQ — `horus queues`)'],
+        : ['Live queue depth + failed/delayed counts (`horus queues`)'],
     });
 
     const metricEvIds = ctx.queueMetricEvIdsByQueue?.get(queueName) ?? [];
@@ -235,7 +243,7 @@ export function generateHypotheses(
     contradictingEvidenceIds: [],
     missingEvidence: latencyMetricEvIds.length > 0
       ? []
-      : ['Request latency metrics (Grafana) + error logs (Elasticsearch)'],
+      : ['Request latency metrics + error logs (`horus metrics` / `horus logs`)'],
   });
 
   // e. retry-storm — always emitted
@@ -253,7 +261,9 @@ export function generateHypotheses(
     contradictingEvidenceIds: allQueueStarvationEvIds,
     missingEvidence: retryStormSupport.length > 0
       ? []
-      : ['Retry/error logs + queue retry statistics (Elasticsearch + BullMQ)'],
+      : hasQueueTopology
+        ? ['Retry/error logs + queue retry statistics (`horus logs` / `horus queues`)']
+        : ['Retry/error logs (`horus logs`)'],
   });
 
   // f. infrastructure — always emitted
@@ -272,13 +282,13 @@ export function generateHypotheses(
     id: globalThis.crypto.randomUUID(),
     category: 'infrastructure',
     statement:
-      'An infrastructure issue (database, Redis, or network) is degrading processing.',
+      'An infrastructure issue (database, cache, or network) is degrading processing.',
     confidence: infraSupport.length > 0 ? 0.35 : 0.15,
     supportingEvidenceIds: infraSupport,
     contradictingEvidenceIds: [],
     missingEvidence: infraSupport.length > 0
       ? []
-      : ['Infra/Redis metrics (Grafana) + Redis state'],
+      : ['Infrastructure metrics + datastore/cache state (`horus metrics`)'],
   });
 
   // Sort by confidence descending (stable — JS Array.sort is stable in V8 / Node 11+)

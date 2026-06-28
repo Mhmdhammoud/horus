@@ -278,6 +278,31 @@ describe('generateHypotheses', () => {
     expect(categories).not.toContain('worker-slowdown');
   });
 
+  // HOR-410 (round 2): a 0-queue (e.g. synchronous Python) repo must not surface
+  // Node-stack queue/log backends (BullMQ / Redis / Elasticsearch) in any hypothesis
+  // statement or missing-evidence line — that fabricates infrastructure the repo lacks.
+  it('(HOR-410) 0-queue repo → no BullMQ/Redis/Elasticsearch literals in statements or missing evidence', () => {
+    const evidence: Evidence[] = [makeEvidence('symbol')];
+    const hyps = generateHypotheses(evidence, emptyCorrelation, {
+      seedLabel: 'UserService',
+      queues: [],
+    });
+
+    const stackRe = /bullmq|redis|elasticsearch/i;
+    for (const h of hyps) {
+      expect(h.statement).not.toMatch(stackRe);
+      for (const m of h.missingEvidence) {
+        expect(m).not.toMatch(stackRe);
+      }
+    }
+
+    // Sanity: the always-emitted runtime hypotheses are still present (just stack-neutral).
+    const categories = new Set(hyps.map((h) => h.category));
+    expect(categories.has('retry-storm')).toBe(true);
+    expect(categories.has('infrastructure')).toBe(true);
+    expect(categories.has('external-api-latency')).toBe(true);
+  });
+
   it('returns at least 4 hypotheses even with no queue evidence (always-emitted ones)', () => {
     const evidence: Evidence[] = [makeEvidence('symbol')];
 

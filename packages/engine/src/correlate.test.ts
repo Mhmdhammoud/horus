@@ -217,11 +217,26 @@ describe('correlate()', () => {
       expect(queueStateEntry!.note).toMatch(/queue/i);
     });
 
-    it('reports missing redis-key evidence', () => {
+    it('reports missing cache/state (redis-key) evidence with stack-neutral wording', () => {
       const { missing } = correlate(makeEvidence());
       const redisEntry = missing.find((m) => m.kind === 'redis-key');
       expect(redisEntry).toBeDefined();
-      expect(redisEntry!.note).toMatch(/redis/i);
+      expect(redisEntry!.note).toMatch(/cache|state/i);
+      // HOR-410 (round 2): the note must NOT name a specific backend (Redis) — that
+      // fabricates a Node-stack datastore on repos that don't have one.
+      expect(redisEntry!.note).not.toMatch(/redis/i);
+    });
+
+    // HOR-410 (round 2): a repo with NO queue topology must not surface a queue-state
+    // missing note, and no missing note may name BullMQ / Redis / Elasticsearch — naming
+    // a Node queue/log stack on a Python / Kafka / 0-queue repo is fabricated boilerplate.
+    it('(HOR-410) 0-queue repo → no queue-state note and no BullMQ/Redis/Elasticsearch literals', () => {
+      const { missing } = correlate(makeEvidence(), { hasQueueTopology: false });
+      expect(missing.find((m) => m.kind === 'queue-state')).toBeUndefined();
+      const stackRe = /bullmq|redis|elasticsearch/i;
+      for (const m of missing) {
+        expect(m.note).not.toMatch(stackRe);
+      }
     });
 
     it('contains entries for all four runtime kinds', () => {

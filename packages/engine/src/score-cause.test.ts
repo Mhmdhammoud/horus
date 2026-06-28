@@ -7,8 +7,14 @@
 import { describe, it, expect } from 'vitest';
 import type { Evidence } from '@horus/core';
 import type { InvestigationGraph } from './graph.js';
-import type { CauseInput, ScoringContext, ScoringFinding, ScoringRequest } from './score-cause.js';
-import { scoreCause, rankCauses } from './score-cause.js';
+import type {
+  CauseCandidate,
+  CauseInput,
+  ScoringContext,
+  ScoringFinding,
+  ScoringRequest,
+} from './score-cause.js';
+import { scoreCause, rankCauses, selectHeadlineCause } from './score-cause.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -999,5 +1005,89 @@ describe('rankCauses', () => {
     }));
     const results = rankCauses(inputs, makeCtx([]));
     expect(results).toHaveLength(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-402 substage-1a — selectHeadlineCause is reorder-safe (score-based, not positional)
+// ---------------------------------------------------------------------------
+
+describe('selectHeadlineCause — reorder-safe headline selection', () => {
+  function cand(id: string, finalScore: number, sourceEvidenceIds: string[]): CauseCandidate {
+    return {
+      id,
+      title: `Cause ${id}`,
+      category: 'other',
+      sourceEvidenceIds,
+      affectedNodeIds: [],
+      baseScore: finalScore,
+      finalScore,
+      confidence: finalScore,
+      band: 'possible',
+      explanations: [],
+    };
+  }
+
+  // A cause is "linked" iff it cites the seed's evidence id.
+  const isLinked = (ids: string[]): boolean => ids.includes('ev_seed');
+
+  // Replicates the engine's confidence + unlinked-headline cap (engine.ts h. summary).
+  const cappedConfidence = (causes: readonly CauseCandidate[], base = 0.8): number => {
+    const { headlineCause, headlineLinked } = selectHeadlineCause(causes, isLinked);
+    return headlineCause && !headlineLinked ? Math.min(base, 0.6) : base;
+  };
+
+  // All distinct permutations of a 3-element array (exhaustive shuffle coverage).
+  const permutations = <T>(xs: readonly T[]): T[][] => {
+    if (xs.length <= 1) return [xs.slice()];
+    return xs.flatMap((x, i) =>
+      permutations([...xs.slice(0, i), ...xs.slice(i + 1)]).map((p) => [x, ...p]),
+    );
+  };
+
+  it('picks the highest-finalScore cause as topCause regardless of array order (argmax, not [0])', () => {
+    const causes = [cand('a', 0.5, []), cand('b', 0.9, []), cand('c', 0.3, [])];
+    for (const order of permutations(causes)) {
+      expect(selectHeadlineCause(order, isLinked).topCause?.id).toBe('b');
+    }
+  });
+
+  it('headline, headlineLinked AND capped confidence are identical in score order vs ANY shuffle', () => {
+    // Two LINKED causes of different scores + one higher UNLINKED cause. The headline must be the
+    // strongest LINKED cause (l-hi=0.7), never the higher unlinked one (u=0.9) and never the weaker
+    // linked one (l-lo=0.4) — and that choice must not depend on array order. (A positional `.find()`
+    // over a shuffle could otherwise return l-lo first.)
+    const u = cand('u', 0.9, ['ev_noise']);
+    const lHi = cand('l-hi', 0.7, ['ev_seed']);
+    const lLo = cand('l-lo', 0.4, ['ev_seed']);
+    const sorted = [u, lHi, lLo]; // finalScore desc — the order rankCauses produces today
+
+    const baseline = selectHeadlineCause(sorted, isLinked);
+    expect(baseline.headlineCause?.id).toBe('l-hi');
+    expect(baseline.headlineLinked).toBe(true);
+    expect(cappedConfidence(sorted)).toBe(0.8); // linked headline ⇒ no cap
+
+    for (const order of permutations(sorted)) {
+      const r = selectHeadlineCause(order, isLinked);
+      expect(r.headlineCause?.id).toBe(baseline.headlineCause?.id);
+      expect(r.headlineLinked).toBe(baseline.headlineLinked);
+      expect(cappedConfidence(order)).toBe(cappedConfidence(sorted));
+    }
+  });
+
+  it('caps confidence to 0.6 when the (order-independent) headline is unlinked, in every order', () => {
+    // No linked cause clears the bar ⇒ the top cause headlines unlinked ⇒ 0.6 cap, always.
+    const causes = [cand('a', 0.9, ['ev_noise']), cand('b', 0.5, ['ev_other'])];
+    for (const order of permutations(causes)) {
+      const r = selectHeadlineCause(order, isLinked);
+      expect(r.headlineCause?.id).toBe('a'); // argmax, not the shuffled first element
+      expect(r.headlineLinked).toBe(false);
+      expect(cappedConfidence(order)).toBe(0.6);
+    }
+  });
+
+  it('enforces the ≥0.2 bar: a sub-threshold top cause does not headline (HOR-340/336)', () => {
+    const { headlineCause } = selectHeadlineCause([cand('weak', 0.09, ['ev_seed'])], isLinked);
+    expect(headlineCause).toBeUndefined();
   });
 });
