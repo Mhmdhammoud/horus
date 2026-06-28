@@ -6,7 +6,7 @@
 
 **Understand what happened.**
 
-Open-source incident investigation. Horus connects Elasticsearch, Sentry, Grafana, MongoDB, Postgres, Redis, BullMQ, and source intelligence into deterministic reports — installable today.
+Open-source incident investigation. Horus connects Elasticsearch, Sentry, Grafana, MongoDB, Postgres, Redis (incl. BullMQ queues), Axiom logs, and source intelligence into deterministic reports — installable today.
 
 CLI-only. Read-only against production systems. Horus never writes to your infrastructure.
 
@@ -63,7 +63,7 @@ Horus source intelligence requires a local code-graph host (the curl installer a
 
 | Runtime + Source | Investigation Engine | Investigation Report |
 |---|---|---|
-| Elasticsearch logs · Sentry errors | Correlation | Suspected causes (ranked) |
+| Elasticsearch · Axiom logs · Sentry errors | Correlation | Suspected causes (ranked) |
 | Grafana metrics | Timeline | Hypotheses + confidence |
 | MongoDB · Postgres · Redis state | Cause ranking | Evidence + gaps |
 | BullMQ queue runtime | | Next actions |
@@ -73,7 +73,7 @@ Pipeline: **Evidence → Correlation → Hypotheses → Timeline → Report**
 
 ## Sources Horus investigates
 
-Elasticsearch · Sentry · Grafana · MongoDB · Postgres · Redis · BullMQ · Git changes · Source graph · Queue map · Ownership
+Elasticsearch · Sentry · Grafana · MongoDB · Postgres · Redis · BullMQ · Axiom · Git changes · Source graph · Queue map · Ownership
 
 Trace reconstruction is not shipped yet. Connectors are read-only and project-scoped.
 
@@ -124,6 +124,7 @@ Installable today. More connectors and AI providers are in progress.
 **Today**
 
 - Elasticsearch logs
+- Axiom logs
 - Sentry errors
 - Grafana metrics
 - MongoDB / Postgres / Redis state
@@ -149,11 +150,12 @@ Horus is organized in four layers:
 
 **Source Intelligence**
 
-- Horus source intelligence backend — code graph, semantic search, impact analysis, ownership.
+- Horus source intelligence backend — code graph, semantic search, impact analysis, ownership across TypeScript/JavaScript and Python (tree-sitter).
 
 **Runtime Evidence**
 
 - **Elasticsearch** — logs → synthesized error-signature evidence
+- **Axiom** — structured logs (APL) → synthesized error-signature evidence, same path as Elasticsearch
 - **Sentry** — grouped exceptions (issues) → same error-signature / direct-seed path as logs
 - **MongoDB / Postgres** — application/operational state
 - **Grafana** — metrics via its datasource proxy
@@ -186,7 +188,7 @@ Horus talks to the source intelligence backend over **HTTP/MCP only** (no CLI sh
 The config model separates **code** from **runtime**:
 
 - **Code belongs to the project** — `repositories[]`, each served by its own source intelligence host.
-- **Runtime belongs to the environment** — `environments[].connectors` (Elasticsearch, Sentry, MongoDB, Postgres, Grafana, Redis/BullMQ).
+- **Runtime belongs to the environment** — `environments[].connectors` (Elasticsearch, Sentry, MongoDB, Postgres, Grafana, Redis/BullMQ, Axiom).
 
 ```ts
 // config/horus.config.ts
@@ -265,7 +267,7 @@ The installer **does not** configure Elasticsearch, MongoDB, Grafana, Redis, or 
 
 ```bash
 # Replace vX.Y.Z with the current release tag
-curl -fsSL https://github.com/meritt-dev/horus/releases/download/v0.1.0/horus-v0.1.0 -o horus
+curl -fsSL https://github.com/meritt-dev/horus/releases/download/v0.12.0/horus-v0.12.0 -o horus
 chmod +x horus
 sudo mv horus /usr/local/bin/horus
 horus --version
@@ -311,12 +313,17 @@ horus investigate --help
 | Command | What it does |
 | --- | --- |
 | `horus status [--project --env]` | Per-project/env connector-health matrix |
+| `horus connect <type>` | Add/update a runtime connector — `elasticsearch` / `mongodb` / `postgres` / `sentry` / `axiom` / `grafana` / `redis` (plus `ai` to configure an AI provider) |
 | `horus index --project <p> --env <e>` | Build the queue map (stitcher) for a project |
+| `horus hosts [--reap]` | List source-intelligence hosts and live status; `--reap` stops orphaned hosts |
+| `horus stop [--all]` | Stop this repo's source-intelligence host (`--all` stops every host) |
 | `horus investigate --project <p> --env <e> "<hint>"` | Full deterministic investigation report |
 | `horus logs [service] --project <p> --env <e>` | Error-signature evidence (`--raw` for lines) |
 | `horus state --project <p> --env <e>` | MongoDB application-state evidence (read-only) |
 | `horus metrics [hint] --project <p> --env <e>` | Grafana metrics evidence |
 | `horus explain <symbol>` · `blast-radius` · `architecture` · `what-changed` | Source-aware code intelligence (requires source intelligence backend) |
+| `horus memory <show\|add\|list\|link\|...>` | Inspect/author deterministic incident memory; `memory link` adds `supersedes` / `contradicts` / `recurs-with` edges |
+| `horus feedback <id> [--resolved] [--note] [--cause]` | Record outcome feedback on an investigation (improves Horus) |
 
 ## Local project workflow (git-style)
 
@@ -340,7 +347,7 @@ horus projects
 ```
 packages/
   core/         evidence model, config schema + project/env resolution, version pins
-  connectors/   provider contracts + source intelligence (HTTP/MCP) · Elasticsearch · Grafana · MongoDB · Git
+  connectors/   provider contracts + source intelligence (HTTP/MCP) · Elasticsearch · Sentry · Axiom · Grafana · MongoDB · Postgres · Redis · BullMQ · application-state · Git
   stitcher/     queue-boundary stitcher
   db/           Drizzle schema + migrations (plain Postgres, no pgvector)
   engine/       deterministic investigation pipeline (timeline, correlation, hypotheses, gaps)
