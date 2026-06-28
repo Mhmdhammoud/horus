@@ -172,6 +172,88 @@ python_requires = >=3.9
     expect(p.provenance.filePath).not.toBe('package.json');
   });
 
+  it('parses setup.py install_requires and cites setup.py at high confidence (HOR-418)', () => {
+    const path = repoWithFiles({
+      'setup.py': `
+from setuptools import setup, find_packages
+
+setup(
+    name="legacy-svc",
+    description="A legacy service",
+    packages=find_packages(),
+    install_requires=[
+        "flask>=2.0",
+        "sqlalchemy[asyncio]>=2.0",
+        "psycopg2-binary",
+        # pinned for CVE
+        "redis==5.0",
+        "stripe",
+    ],
+)
+`,
+    });
+    const p = deriveRepositoryProfile({ name: 'legacy-svc', path }, { now: NOW });
+    expect(p.languages).toEqual(['Python']);
+    expect(p.frameworks).toContain('Flask');
+    expect(p.dataSources).toEqual(expect.arrayContaining(['SQLAlchemy', 'PostgreSQL']));
+    expect(p.stateManagement).toContain('Redis');
+    expect(p.integrations).toContain('Stripe');
+    expect(p.role).toBe('backend');
+    // setup.py was genuinely parsed → cite it, high confidence.
+    expect(p.provenance.filePath).toBe('setup.py');
+    expect(p.provenance.filePath).not.toBe('package.json');
+    expect(p.provenance.confidence).toBe('high');
+  });
+
+  it('downgrades confidence and omits filePath when setup.py deps are not parseable (HOR-418)', () => {
+    const path = repoWithFiles({
+      // install_requires is built dynamically — nothing to extract.
+      'setup.py': `
+from setuptools import setup
+import io
+
+def read_reqs():
+    with io.open("requirements.txt") as f:
+        return f.read().splitlines()
+
+setup(name="dyn-svc", install_requires=read_reqs())
+`,
+    });
+    const p = deriveRepositoryProfile({ name: 'dyn-svc', path }, { now: NOW });
+    // Still detected as Python...
+    expect(p.languages).toEqual(['Python']);
+    expect(p.frameworks).toEqual([]);
+    // ...but we never claim a high-confidence parse against a file we couldn't read.
+    expect(p.provenance.confidence).toBe('low');
+    expect(p.provenance.filePath).toBeUndefined();
+  });
+
+  it('reads requirements.txt as a flat dependency list and cites it (HOR-419)', () => {
+    const path = repoWithFiles({
+      'requirements.txt': `
+# Core deps
+fastapi>=0.100
+asyncpg
+redis==5.0  # cache
+boto3
+
+-r dev-requirements.txt
+-e .
+--hash=sha256:abc
+`,
+    });
+    const p = deriveRepositoryProfile({ name: 'reqs-svc', path }, { now: NOW });
+    expect(p.languages).toEqual(['Python']);
+    expect(p.frameworks).toContain('FastAPI');
+    expect(p.dataSources).toContain('PostgreSQL'); // asyncpg
+    expect(p.stateManagement).toContain('Redis');
+    expect(p.integrations).toContain('AWS'); // boto3
+    expect(p.role).toBe('backend');
+    expect(p.provenance.filePath).toBe('requirements.txt');
+    expect(p.provenance.filePath).not.toBe('package.json');
+    expect(p.provenance.confidence).toBe('high');
+  });
+
   it('treats a mixed JS + Python repo as both languages, citing package.json', () => {
     const path = repoWithPkg({ name: 'mixed', dependencies: { next: '14' } });
     writeFileSync(join(path, 'pyproject.toml'), '[project]\ndependencies = ["fastapi"]\n');

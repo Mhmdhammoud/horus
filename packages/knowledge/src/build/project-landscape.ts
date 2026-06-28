@@ -9,16 +9,22 @@
  * data flows) layers on top later and fills the other snapshot categories.
  *
  * Both Node (`package.json`) and Python (`pyproject.toml` / `setup.cfg` /
- * `setup.py`) repos are supported. Provenance only ever cites a manifest that
- * actually exists on disk — never a phantom `package.json` (HOR-407) — and a
- * Python repo's dependencies are mapped onto the same framework/datasource/
- * integration tables so its knowledge base is not left empty (HOR-408).
+ * `setup.py` / `requirements.txt`) repos are supported. setup.py's
+ * `install_requires` is parsed best-effort (HOR-418) and requirements.txt is
+ * read as a flat dependency list (HOR-419). Provenance only ever cites a
+ * manifest that actually exists on disk — never a phantom `package.json`
+ * (HOR-407) — and only claims high-confidence "parsed" against a manifest whose
+ * dependencies were actually extracted; otherwise it omits the filePath and
+ * downgrades confidence rather than lie (HOR-418). A Python repo's dependencies
+ * are mapped onto the same framework/datasource/integration tables so its
+ * knowledge base is not left empty (HOR-408).
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   KnowledgeSnapshotSchema,
   KNOWLEDGE_SCHEMA_VERSION,
+  type Confidence,
   type KnowledgeSnapshot,
   type Provenance,
 } from '../schema.js';
@@ -333,6 +339,63 @@ function parseSetupCfg(text: string): PythonManifest {
   return { deps: deps.map(pkgName).filter(Boolean), name, description };
 }
 
+/**
+ * Best-effort parse of a setup.py's `install_requires=[...]` list (HOR-418).
+ * setup.py is arbitrary Python, so this is intentionally narrow: it grabs the
+ * first `install_requires = [ ... ]` literal array and extracts the quoted
+ * requirement strings. Dynamically-computed dependency lists (e.g. built from a
+ * variable or read from a file) yield nothing — the caller treats an empty
+ * result as "not parsed" and refuses to stamp high-confidence provenance.
+ */
+function parseSetupPy(text: string): PythonManifest {
+  const deps: string[] = [];
+  const open = /install_requires\s*=\s*\[/.exec(text);
+  if (open) {
+    // Scan the array literal quote-aware so a `]` inside a requirement string
+    // (e.g. "sqlalchemy[asyncio]") doesn't prematurely terminate the array.
+    let depth = 1;
+    let inStr = false;
+    let quote = '';
+    let cur = '';
+    for (let i = open.index + open[0].length; i < text.length && depth > 0; i++) {
+      const c = text[i];
+      if (inStr) {
+        if (c === quote) {
+          inStr = false;
+          deps.push(cur);
+        } else {
+          cur += c;
+        }
+      } else if (c === '"' || c === "'") {
+        inStr = true;
+        quote = c;
+        cur = '';
+      } else if (c === '[') {
+        depth++;
+      } else if (c === ']') {
+        depth--;
+      }
+    }
+  }
+  return { deps: deps.map(pkgName).filter(Boolean) };
+}
+
+/**
+ * Parse a requirements.txt as a flat dependency list (HOR-419): one requirement
+ * per line, skipping blanks, `#` comments, and pip directives / option flags
+ * (`-r other.txt`, `-e .`, `--hash=...`). Each kept line is normalized via
+ * pkgName(), which also drops inline comments and version/extras specifiers.
+ */
+function parseRequirementsTxt(text: string): PythonManifest {
+  const deps: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#') || line.startsWith('-')) continue;
+    deps.push(line);
+  }
+  return { deps: deps.map(pkgName).filter(Boolean) };
+}
+
 interface ManifestSet {
   pkg: PackageJson | null;
   hasPackageJson: boolean;
@@ -340,6 +403,15 @@ interface ManifestSet {
   hasPython: boolean;
   /** The single manifest file to cite as provenance, if any exists. */
   filePath?: string;
+  /**
+   * Confidence for the provenance stamp. 'high' when the cited manifest's
+   * contents were genuinely parsed; downgraded to 'low' when a Python manifest
+   * exists but none of them yielded extractable dependencies (e.g. a setup.py
+   * that builds install_requires dynamically) — in that case filePath is also
+   * omitted so we never claim a high-confidence parse against an unread file
+   * (HOR-418).
+   */
+  confidence: Confidence;
 }
 
 /** Read every dependency manifest present in a repo (Node + Python). */
@@ -350,35 +422,51 @@ function readManifests(repoPath: string): ManifestSet {
   const pyprojectText = readText(repoPath, 'pyproject.toml');
   const setupCfgText = readText(repoPath, 'setup.cfg');
   const setupPyText = readText(repoPath, 'setup.py');
+  const requirementsText = readText(repoPath, 'requirements.txt');
 
   const python: PythonManifest = { deps: [] };
-  if (pyprojectText !== null) {
-    const m = parsePyproject(pyprojectText);
+  // Track which Python manifests actually produced parseable content, so the
+  // provenance only cites — at high confidence — a file we genuinely parsed.
+  const parsed = new Set<string>();
+  const absorb = (file: string, m: PythonManifest) => {
     python.deps.push(...m.deps);
     python.name ??= m.name;
     python.description ??= m.description;
-  }
-  if (setupCfgText !== null) {
-    const m = parseSetupCfg(setupCfgText);
-    python.deps.push(...m.deps);
-    python.name ??= m.name;
-    python.description ??= m.description;
-  }
-  const hasPython = pyprojectText !== null || setupCfgText !== null || setupPyText !== null;
+    if (m.deps.length > 0 || m.name !== undefined || m.description !== undefined) {
+      parsed.add(file);
+    }
+  };
+  if (pyprojectText !== null) absorb('pyproject.toml', parsePyproject(pyprojectText));
+  if (setupCfgText !== null) absorb('setup.cfg', parseSetupCfg(setupCfgText));
+  if (setupPyText !== null) absorb('setup.py', parseSetupPy(setupPyText));
+  if (requirementsText !== null) absorb('requirements.txt', parseRequirementsTxt(requirementsText));
+
+  const hasPython =
+    pyprojectText !== null ||
+    setupCfgText !== null ||
+    setupPyText !== null ||
+    requirementsText !== null;
 
   // Cite only a manifest that actually exists (HOR-407). package.json wins for
-  // mixed repos; otherwise fall back to whichever Python manifest was read.
-  const filePath = hasPackageJson
-    ? 'package.json'
-    : pyprojectText !== null
-      ? 'pyproject.toml'
-      : setupCfgText !== null
-        ? 'setup.cfg'
-        : setupPyText !== null
-          ? 'setup.py'
-          : undefined;
+  // mixed repos; otherwise fall back to the first Python manifest we genuinely
+  // parsed. If a Python manifest exists but none parsed, cite nothing and
+  // downgrade confidence rather than claim a high-confidence parse (HOR-418).
+  const pyChain = ['pyproject.toml', 'setup.cfg', 'setup.py', 'requirements.txt'];
+  let filePath: string | undefined;
+  let confidence: Confidence = 'high';
+  if (hasPackageJson) {
+    filePath = 'package.json';
+  } else {
+    const citedPy = pyChain.find((f) => parsed.has(f));
+    if (citedPy) {
+      filePath = citedPy;
+    } else if (hasPython) {
+      // Detected Python but extracted no dependencies — don't lie about it.
+      confidence = 'low';
+    }
+  }
 
-  return { pkg, hasPackageJson, python, hasPython, filePath };
+  return { pkg, hasPackageJson, python, hasPython, filePath, confidence };
 }
 
 /**
@@ -477,7 +565,7 @@ export function deriveRepositoryProfile(repo: RepoInput, opts: BuildOptions = {}
 
   const provenance: Provenance = {
     sourceType: 'parsed',
-    confidence: 'high',
+    confidence: manifests.confidence,
     repo: repo.name,
     // Only cite a manifest that exists; omit entirely otherwise (HOR-407).
     ...(manifests.filePath ? { filePath: manifests.filePath } : {}),
