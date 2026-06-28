@@ -85,6 +85,78 @@ describe('extractCeleryQueueGraph — huey support (HOR-380)', () => {
   });
 });
 
+describe('extractCeleryQueueGraph — procrastinate / dramatiq / arq / rq (HOR-380)', () => {
+  it('links a procrastinate .defer() producer to its @app.task worker', () => {
+    const g = extractCeleryQueueGraph([
+      { name: 'sum_task', filePath: 'app/tasks.py', content: '@app.task\ndef sum_task(a, b):\n    return a + b' },
+      { name: 'handler', filePath: 'app/views.py', content: 'def handler():\n    sum_task.defer(a=1, b=2)' },
+    ]);
+    expect(
+      g.edges.some(
+        (e) => e.queueName === 'sum_task' && e.producerSymbol === 'handler' && e.workerSymbol === 'sum_task',
+      ),
+    ).toBe(true);
+  });
+
+  it('links a procrastinate .defer_async() producer (not mis-parsed as .defer())', () => {
+    const g = extractCeleryQueueGraph([
+      { name: 'ship_it', filePath: 'app/tasks.py', content: '@app.task\ndef ship_it(id):\n    pass' },
+      { name: 'route', filePath: 'app/api.py', content: 'async def route():\n    await ship_it.defer_async(id=7)' },
+    ]);
+    expect(
+      g.edges.some(
+        (e) => e.queueName === 'ship_it' && e.producerSymbol === 'route' && e.workerSymbol === 'ship_it',
+      ),
+    ).toBe(true);
+  });
+
+  it('links a dramatiq .send() producer to its @actor worker', () => {
+    const g = extractCeleryQueueGraph([
+      { name: 'count_words', filePath: 'app/tasks.py', content: '@actor\ndef count_words(url):\n    pass' },
+      { name: 'enqueue', filePath: 'app/views.py', content: 'def enqueue():\n    count_words.send("http://x")' },
+    ]);
+    expect(
+      g.edges.some(
+        (e) => e.queueName === 'count_words' && e.producerSymbol === 'enqueue' && e.workerSymbol === 'count_words',
+      ),
+    ).toBe(true);
+  });
+
+  it('recognizes @dramatiq.actor(...) with args as a worker', () => {
+    const g = extractCeleryQueueGraph([
+      {
+        name: 'resize',
+        filePath: 'app/tasks.py',
+        content: '@dramatiq.actor(max_retries=3)\ndef resize(path):\n    pass',
+      },
+    ]);
+    expect(g.queues).toContain('resize');
+  });
+
+  it('does not synthesize a queue for a .send() with no @actor definition', () => {
+    const g = extractCeleryQueueGraph([
+      { name: 'notify', filePath: 'app/io.py', content: 'def notify():\n    socket.send(payload)' },
+    ]);
+    expect(g.queues).not.toContain('socket');
+    expect(g.edges.some((e) => e.queueName === 'socket')).toBe(false);
+  });
+
+  it('drops rq .enqueue() / arq .enqueue_job() producers that lack a worker decorator', () => {
+    // rq/arq register workers by function reference, not a decorator on the def — so there is no
+    // task def to anchor the queue, and these producers are correctly dropped (HOR-380 caveat).
+    const g = extractCeleryQueueGraph([
+      { name: 'plain', filePath: 'app/tasks.py', content: 'def plain():\n    pass' },
+      {
+        name: 'caller',
+        filePath: 'app/views.py',
+        content: 'def caller():\n    plain.enqueue()\n    plain.enqueue_job()',
+      },
+    ]);
+    expect(g.queues).not.toContain('plain');
+    expect(g.edges.some((e) => e.queueName === 'plain')).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Domain-neutral fixtures
 // ---------------------------------------------------------------------------

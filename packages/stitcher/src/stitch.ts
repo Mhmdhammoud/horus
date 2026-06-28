@@ -67,16 +67,22 @@ export async function stitch(
 
   const graph = extractQueueGraph({ producerClasses, workerFiles });
 
-  // Python task-queue boundaries — Celery (HOR-356) + huey (HOR-380): a `@task def foo` is the
-  // worker for task "foo"; a `foo.delay()`/`foo.apply_async()` (Celery) or `foo.schedule()` (huey)
-  // call site is the producer. The static flow graph can't connect them — the same gap BullMQ has
-  // — so stitch them here. The CONTAINS filter must FETCH huey's `.schedule(` producers and its
-  // `@db_task`/`@db_periodic_task` workers ("periodic_task" also covers @db_periodic_task).
+  // Python task-queue boundaries — Celery (HOR-356) + huey/procrastinate/dramatiq (HOR-380): a
+  // `@task`/`@actor def foo` is the worker for task "foo"; a `foo.delay()`/`foo.apply_async()`
+  // (Celery), `foo.schedule()` (huey), `foo.defer()`/`foo.defer_async()` (procrastinate), or
+  // `foo.send()` (dramatiq) call site is the producer. The static flow graph can't connect them —
+  // the same gap BullMQ has — so stitch them here. This CONTAINS pre-filter MUST stay in lockstep
+  // with extract.ts's CELERY_ENQUEUE_RE/CELERY_TASK_DEF_RE: candidate nodes that aren't fetched
+  // here are invisible to the regex. arq's `.enqueue_job(` / rq's `.enqueue(` are fetched too, but
+  // they have no worker-side decorator so their producers drop under the taskQueues filter.
   const celeryRows = (
     await client.cypher(
       'MATCH (n) WHERE n.content CONTAINS ".delay(" OR n.content CONTAINS ".apply_async(" ' +
         'OR n.content CONTAINS ".schedule(" ' +
+        'OR n.content CONTAINS ".defer(" OR n.content CONTAINS ".defer_async(" ' +
+        'OR n.content CONTAINS ".send(" OR n.content CONTAINS ".enqueue_job(" OR n.content CONTAINS ".enqueue(" ' +
         'OR n.content CONTAINS "@shared_task" OR n.content CONTAINS "@task" OR n.content CONTAINS ".task" ' +
+        'OR n.content CONTAINS "@actor" ' +
         'OR n.content CONTAINS "periodic_task" OR n.content CONTAINS "db_task" ' +
         'RETURN n.name, n.file_path, n.content',
     )

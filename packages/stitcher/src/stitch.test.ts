@@ -82,6 +82,43 @@ describe('stitch — project scoping (HOR-38)', () => {
     }
   });
 
+  it('widened CONTAINS pre-filter fetches and stitches a procrastinate .defer() edge (HOR-380)', () => {
+    // The pre-filter must request the new producer verbs / @actor in lockstep with extract.ts,
+    // or the candidate nodes are never fetched and the regex never fires.
+    const seen: string[] = [];
+    const client = {
+      cypher: vi.fn(async (query: string) => {
+        seen.push(query);
+        if (query.includes('@InjectQueue(') || query.includes('new Queue(')) return { rows: [] };
+        if (query.includes('@Processor(') || query.includes('new Worker')) return { rows: [] };
+        // The Python task-queue query: return a procrastinate worker + producer.
+        return {
+          rows: [
+            ['sum_task', 'app/tasks.py', '@app.task\ndef sum_task(a, b):\n    return a + b'],
+            ['handler', 'app/views.py', 'def handler():\n    sum_task.defer(a=1, b=2)'],
+          ],
+        };
+      }),
+    } as unknown as SourceHttpClient;
+
+    return stitch(client, fakeDb, { project: 'queue-demo' }).then(() => {
+      const celeryQuery = seen.find((q) => q.includes('.delay('));
+      expect(celeryQuery).toBeDefined();
+      for (const needle of ['.defer(', '.defer_async(', '.send(', '.enqueue_job(', '.enqueue(', '@actor']) {
+        expect(celeryQuery).toContain(needle);
+      }
+      const [, edges] = replaceSpy.mock.calls[0] as [
+        unknown,
+        Array<{ queueName: string; producerSymbol: string | null; workerSymbol: string | null }>,
+      ];
+      expect(
+        edges.some(
+          (e) => e.queueName === 'sum_task' && e.producerSymbol === 'handler' && e.workerSymbol === 'sum_task',
+        ),
+      ).toBe(true);
+    });
+  });
+
   it('indexing A then B calls replaceQueueEdges twice with distinct projects', async () => {
     const clientA = makeSourceClient(PRODUCER_CONTENT, WORKER_CONTENT);
     const clientB = makeSourceClient(

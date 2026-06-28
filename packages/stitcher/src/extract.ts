@@ -354,20 +354,27 @@ export function extractQueueGraph(input: {
 }
 
 // --- Celery (Python) patterns (HOR-356) ---
-// A Python task-queue worker def: a Celery `@task`/`@shared_task`/`@app.task`/`@celery.task`
-// OR a huey `@huey.task`/`@db_task`/`@db_periodic_task` decorator (optionally with args + stacked
-// decorators) directly on a `def`. The task name is the function name — what `.delay()`/
-// `.apply_async()`/`.schedule()` call sites reference (HOR-356/380). Captures the def name.
-// The `(?:[\w]+\.)*` prefix already covers the `huey.`/`app.` qualifier; db_task/db_periodic_task
-// are huey-specific names the Celery set missed.
+// A Python task-queue worker def: a Celery `@task`/`@shared_task`/`@app.task`/`@celery.task`,
+// a huey `@huey.task`/`@db_task`/`@db_periodic_task`, OR a dramatiq `@actor` decorator (optionally
+// with args + stacked decorators) directly on a `def`. The task name is the function name — what
+// `.delay()`/`.apply_async()`/`.schedule()`/`.send()`/`.defer()` call sites reference (HOR-356/380).
+// Captures the def name. The `(?:[\w]+\.)*` prefix already covers the `huey.`/`app.` qualifier;
+// db_task/db_periodic_task are huey-specific names the Celery set missed; actor is dramatiq's.
+// Note: rq's `.enqueue()` and arq's `.enqueue_job()` have NO worker-side decorator (workers are
+// registered by import path / function reference), so their producers can't be linked to a def
+// here and are dropped by the taskQueues filter — that's the achievable coverage (HOR-380).
 const CELERY_TASK_DEF_RE =
-  /@(?:[\w]+\.)*(?:shared_task|db_periodic_task|periodic_task|db_task|task)\b[^\n]*(?:\n[ \t]*@[^\n]*)*\n[ \t]*(?:async[ \t]+)?def[ \t]+(\w+)/g;
-// An enqueue/producer call site: Celery `<task>.delay(`/`<task>.apply_async(` or huey
-// `<task>.schedule(` (HOR-380). Captures the immediate identifier before the call (the task
-// name), e.g. `tasks.send_email.delay(` -> `send_email`. `.schedule(` is broad, but the
-// taskQueues filter keeps a producer only when it names a real @task def, so non-task
-// `.schedule(` calls (cron/APScheduler) are dropped.
-const CELERY_ENQUEUE_RE = /([A-Za-z_]\w*)\s*\.\s*(?:delay|apply_async|schedule)\s*\(/g;
+  /@(?:[\w]+\.)*(?:shared_task|db_periodic_task|periodic_task|db_task|task|actor)\b[^\n]*(?:\n[ \t]*@[^\n]*)*\n[ \t]*(?:async[ \t]+)?def[ \t]+(\w+)/g;
+// An enqueue/producer call site: Celery `<task>.delay(`/`<task>.apply_async(`, huey
+// `<task>.schedule(`, procrastinate `<task>.defer(`/`<task>.defer_async(`, dramatiq `<task>.send(`,
+// arq `<task>.enqueue_job(`, or rq `<task>.enqueue(` (HOR-380). Captures the immediate identifier
+// before the call (the task name), e.g. `tasks.send_email.delay(` -> `send_email`. The broad verbs
+// (`.schedule(`/`.send(`/`.enqueue(`/`.defer(`) are kept honest by the taskQueues filter, which
+// keeps a producer only when it names a real @task/@actor def, so non-task call sites
+// (cron/APScheduler/event emitters) are dropped. `defer_async` precedes `defer` and `enqueue_job`
+// precedes `enqueue` so the longer verb wins.
+const CELERY_ENQUEUE_RE =
+  /([A-Za-z_]\w*)\s*\.\s*(?:delay|apply_async|schedule|defer_async|defer|enqueue_job|enqueue|send)\s*\(/g;
 
 export interface CeleryNodeInput {
   name: string;
