@@ -4,6 +4,9 @@ import {
   uploadInvestigationToCloud,
   fetchInvestigationReportFromCloud,
   listCloudInvestigations,
+  buildEvidenceItems,
+  buildCitationEdges,
+  resolveCitationEdges,
 } from "./investigation-sync.js";
 import type { CloudConfig } from "./context-store.js";
 import type { InvestigationReport } from "@horus/engine";
@@ -49,6 +52,22 @@ describe("investigation-sync", () => {
       const u = typeof url === "string" ? url : url.toString();
       const method = init?.method ?? "GET";
 
+      if (u.endsWith("/evidence/batch") && method === "POST") {
+        const body = JSON.parse((init?.body as string) ?? "{}") as {
+          items?: { engineRef: string }[];
+        };
+        // Simulate the cloud assigning ids while echoing each engine ref.
+        return json({
+          evidence: (body.items ?? []).map((it) => ({
+            id: `cloud-${it.engineRef}`,
+            engineRef: it.engineRef,
+          })),
+        });
+      }
+      if (u.endsWith("/citations") && method === "POST") {
+        const body = JSON.parse((init?.body as string) ?? "{}") as { edges?: unknown[] };
+        return json({ created: (body.edges ?? []).length });
+      }
       if (u.endsWith("/investigations") && method === "POST") {
         return json({
           id: "inv-1",
@@ -212,5 +231,212 @@ describe("investigation-sync", () => {
     const rows = await listCloudInvestigations(client, cfg);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.id).toBe("inv-1");
+  });
+
+  // ── Stage 1 dual-write: per-item evidence + citation edges ─────────────────
+
+  function richReport(): InvestigationReport {
+    return makeReport({
+      id: "rep-2",
+      seeds: [{ id: "sym1", name: "OrderService", filePath: "src/order.ts" }],
+      evidence: [
+        {
+          id: "ev_log_1",
+          source: "logs",
+          kind: "log",
+          title: "Error spike on checkout",
+          relevance: 0.9,
+          payload: {},
+          links: { file: "src/checkout.ts", symbolId: "sym1" },
+          provenance: { query: "level:error service:api", collectedAt: "2026-06-28T10:00:00.000Z" },
+          subject: { service: "api", environment: "production" },
+        },
+        {
+          id: "ev_metric_1",
+          source: "metrics",
+          kind: "metric",
+          title: "Latency p99 up",
+          relevance: 0.7,
+          payload: {},
+          links: {},
+          provenance: { query: "p99", collectedAt: "2026-06-28T10:01:00.000Z" },
+        },
+      ],
+      suspectedCauses: [
+        {
+          id: "cause1",
+          title: "Queue backlog",
+          category: "queue-backlog",
+          // ev_unknown is dangling → must be cut (inert), never a fake link.
+          sourceEvidenceIds: ["ev_log_1", "ev_unknown"],
+          affectedNodeIds: [],
+          baseScore: 0.5,
+          finalScore: 0.8,
+          confidence: 0.8,
+          band: "likely",
+          explanations: [],
+        },
+      ],
+      hypotheses: [
+        {
+          id: "hyp1",
+          category: "saturation",
+          statement: "Backlog saturated the worker pool",
+          confidence: 0.7,
+          supportingEvidenceIds: ["ev_log_1", "ev_metric_1"],
+          // contradicting refs must NEVER produce an edge (cut, no backing data).
+          contradictingEvidenceIds: ["ev_log_1"],
+          missingEvidence: [],
+          verdict: "supported",
+          priorConfidence: 0.6,
+          supportingPresent: 2,
+          contradictingPresent: 1,
+          rationale: "two supporting items present",
+        },
+      ],
+      findings: [
+        {
+          kind: "anomaly",
+          title: "Latency anomaly",
+          confidence: 0.6,
+          // ev_gone is dangling → cut.
+          evidenceIds: ["ev_metric_1", "ev_gone"],
+        },
+      ],
+    } as Partial<InvestigationReport>);
+  }
+
+  it("dual-writes per-item evidence carrying engineRef/subject/provenance + keeps the blob", async () => {
+    await uploadInvestigationToCloud(client, cfg, richReport());
+
+    // The back-compat report blob is still written.
+    const blob = fetchSpy.mock.calls.find(
+      (c: unknown[]) =>
+        (c[0] as string).endsWith("/evidence") && (c[1] as RequestInit)?.method === "POST",
+    );
+    expect(blob).toBeDefined();
+    const blobBody = JSON.parse((blob![1] as RequestInit).body as string);
+    expect(blobBody.payload.kind).toBe("horus:report");
+
+    // Per-item evidence batch posted (single round-trip, not N+1).
+    const batchCalls = fetchSpy.mock.calls.filter(
+      (c: unknown[]) =>
+        (c[0] as string).endsWith("/evidence/batch") && (c[1] as RequestInit)?.method === "POST",
+    );
+    expect(batchCalls).toHaveLength(1);
+    const items = JSON.parse((batchCalls[0]![1] as RequestInit).body as string).items as Array<
+      Record<string, unknown>
+    >;
+    expect(items).toHaveLength(2);
+
+    const logItem = items.find((i) => i.engineRef === "ev_log_1")!;
+    expect(logItem).toBeDefined();
+    expect(logItem.kind).toBe("log");
+    expect(logItem.service).toBe("api");
+    expect(logItem.environment).toBe("production");
+    expect(logItem.filePath).toBe("src/checkout.ts");
+    expect(logItem.symbolName).toBe("OrderService"); // resolved from seed symbolId
+    expect(logItem.provenance).toMatchObject({ query: "level:error service:api" });
+    // Cloud evidence enum must stay valid.
+    expect([
+      "code_snippet",
+      "log",
+      "db_result",
+      "runtime_evidence",
+      "file_reference",
+      "command_output",
+      "note",
+    ]).toContain(logItem.type);
+
+    // Item with no symbolId resolves no symbolName (never fabricated).
+    const metricItem = items.find((i) => i.engineRef === "ev_metric_1")!;
+    expect(metricItem.symbolName).toBeUndefined();
+    expect(metricItem.service).toBeUndefined();
+  });
+
+  it("dual-writes citation edges with refs resolved cross-seam; cuts dangling + contradicting", async () => {
+    await uploadInvestigationToCloud(client, cfg, richReport());
+
+    const citationCalls = fetchSpy.mock.calls.filter(
+      (c: unknown[]) =>
+        (c[0] as string).endsWith("/citations") && (c[1] as RequestInit)?.method === "POST",
+    );
+    expect(citationCalls).toHaveLength(1);
+    const edges = JSON.parse((citationCalls[0]![1] as RequestInit).body as string).edges as Array<{
+      from: { type: string; ref: string };
+      to: { type: string; ref: string };
+      role: string;
+    }>;
+
+    // Evidence endpoints carry the CLOUD id, not the engine ev_ id (cross-seam).
+    const evidenceTargets = edges.filter((e) => e.to.type === "evidence");
+    expect(evidenceTargets.length).toBeGreaterThan(0);
+    for (const e of evidenceTargets) {
+      expect(e.to.ref.startsWith("cloud-")).toBe(true);
+    }
+
+    // cause → evidence (derives), resolved to cloud id.
+    expect(
+      edges.some(
+        (e) => e.from.type === "cause" && e.to.ref === "cloud-ev_log_1" && e.role === "derives",
+      ),
+    ).toBe(true);
+    // hypothesis → evidence (supports).
+    expect(
+      edges.some(
+        (e) => e.from.type === "hypothesis" && e.to.ref === "cloud-ev_metric_1" && e.role === "supports",
+      ),
+    ).toBe(true);
+    // finding → evidence (cites).
+    expect(
+      edges.some(
+        (e) => e.from.type === "finding" && e.to.ref === "cloud-ev_metric_1" && e.role === "cites",
+      ),
+    ).toBe(true);
+    // investigation root edges connect the typed nodes.
+    expect(edges.some((e) => e.from.type === "investigation" && e.to.type === "cause")).toBe(true);
+
+    // Dangling engine refs (ev_unknown / ev_gone) are cut — no cloud-ev_unknown link.
+    expect(edges.some((e) => e.to.ref.includes("unknown") || e.to.ref.includes("gone"))).toBe(false);
+    // Contradicting edges are cut entirely (no backing data yet).
+    expect(edges.some((e) => e.role === "contradicts")).toBe(false);
+  });
+
+  it("builders carry engineRef and resolve citations against an engineId→cloudId map", () => {
+    const report = richReport();
+
+    const items = buildEvidenceItems(report);
+    expect(items.map((i) => i.engineRef)).toEqual(["ev_log_1", "ev_metric_1"]);
+
+    const rawEdges = buildCitationEdges(report, "inv-9");
+    // Pre-resolution, evidence endpoints still hold the engine ev_ id.
+    expect(rawEdges.some((e) => e.to.type === "evidence" && e.to.ref === "ev_log_1")).toBe(true);
+
+    // Partial map: only ev_log_1 is known → edges to ev_metric_1 are cut (inert).
+    const idMap = new Map<string, string>([["ev_log_1", "cloud-ev_log_1"]]);
+    const resolved = resolveCitationEdges(rawEdges, idMap);
+    expect(resolved.some((e) => e.to.type === "evidence" && e.to.ref === "cloud-ev_log_1")).toBe(true);
+    expect(resolved.some((e) => e.to.type === "evidence" && e.to.ref === "ev_metric_1")).toBe(false);
+    expect(resolved.some((e) => e.to.type === "evidence" && e.to.ref === "cloud-ev_metric_1")).toBe(
+      false,
+    );
+  });
+
+  it("keeps the upload green when the provenance receiver is absent (older cloud)", async () => {
+    // Older cloud: /evidence/batch 404s. The blob upload must still succeed.
+    fetchSpy.mockImplementation(async (url: string | URL, init?: RequestInit) => {
+      const u = typeof url === "string" ? url : url.toString();
+      const method = init?.method ?? "GET";
+      if (u.endsWith("/evidence/batch") && method === "POST") {
+        return json({ error: { code: "not_found", message: "no route" } }, 404);
+      }
+      if (u.endsWith("/investigations") && method === "POST") {
+        return json({ id: "inv-1", status: "running" });
+      }
+      return json({ id: "ok" });
+    });
+
+    const refs = await uploadInvestigationToCloud(client, cfg, richReport());
+    expect(refs).toEqual({ projectId: "p1", investigationId: "inv-1" });
   });
 });

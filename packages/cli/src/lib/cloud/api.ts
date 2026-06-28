@@ -123,6 +123,85 @@ export interface AgentRunRecord {
   createdAt: string;
 }
 
+// ── Investigation provenance graph (Stage 1 dual-write) ─────────────────────
+
+/**
+ * The typed nodes a citation edge spans. Mirrors the engine report's structure:
+ * an `investigation` root, scored `cause`s, validated `hypothesis`es, deterministic
+ * `finding`s, the cited `evidence` leaves, and (future) confirmed `outcome`s.
+ */
+export type CitationNodeType =
+  | "investigation"
+  | "cause"
+  | "hypothesis"
+  | "finding"
+  | "evidence"
+  | "outcome";
+
+/**
+ * The relationship a citation edge asserts. NOTE: `contradicts` is part of the
+ * frozen vocabulary but is NOT emitted yet (no backing data) — the writer cuts
+ * contradicting edges rather than fabricate them.
+ */
+export type CitationRole = "derives" | "supports" | "contradicts" | "cites" | "explains";
+
+/**
+ * One endpoint of a citation edge. `ref` is the node's stable identity:
+ * - evidence → the CLOUD evidence id (resolved cross-seam from the engine `ev_…`
+ *   id via the engineRef→cloudId map); never a fake link — unresolved refs are cut.
+ * - cause / hypothesis → the engine's deterministic id.
+ * - finding → a stable synthetic ref (`<reportId>:finding:<index>`).
+ * - investigation → the cloud investigation id.
+ */
+export interface CitationNode {
+  type: CitationNodeType;
+  ref: string;
+  label: string;
+  confidence?: number;
+  band?: string;
+  verdict?: string;
+  subject?: { service?: string; environment?: string };
+}
+
+/** A directed, typed citation edge (additive provenance; scoring untouched). */
+export interface CitationEdgeInput {
+  from: CitationNode;
+  to: CitationNode;
+  role: CitationRole;
+}
+
+/**
+ * A per-item evidence row materialized from the engine report (Stage 1). Carries
+ * the new cloud evidence columns — `engineRef` (the engine `ev_…` id), `service`,
+ * `environment` — alongside the existing cloud evidence table columns (kept for
+ * back-compat) plus the additive provenance carriers.
+ */
+export interface ProvenanceEvidenceInput {
+  // Cloud evidence table columns (required; back-compat).
+  type: string;
+  source: string;
+  title: string;
+  content: string;
+  contentFormat: string;
+  payload?: unknown;
+  idempotencyKey?: string;
+  // New cloud evidence columns (frozen contract): engine_ref, service, environment.
+  engineRef: string;
+  service?: string;
+  environment?: string;
+  // Additive provenance carriers.
+  provenance?: { query: string; collectedAt: string };
+  filePath?: string;
+  symbolName?: string;
+  kind: string;
+}
+
+/** A created per-item evidence row, echoing its engine ref for cross-seam mapping. */
+export interface EvidenceBatchRecord {
+  id: string;
+  engineRef: string;
+}
+
 /**
  * A knowledge snapshot record stored in Horus Cloud (HOR-296). The cloud stores
  * the structured snapshot + manifest keyed by content hash for dedup + freshness;
@@ -464,6 +543,40 @@ export class CloudClient {
     return this.request<EvidenceRecord[]>(
       "GET",
       `/v1/projects/${projectId}/investigations/${investigationId}/evidence`,
+    );
+  }
+
+  /**
+   * Batch-materialize per-item evidence rows (Stage 1 dual-write). Single round-trip
+   * (no N+1). Each item is idempotent on its own key; the response echoes every row's
+   * `engineRef` so the caller can build the engineRef→cloudId map for citation edges.
+   */
+  createEvidenceBatch(
+    projectId: string,
+    investigationId: string,
+    body: { items: ProvenanceEvidenceInput[] },
+  ): Promise<{ evidence: EvidenceBatchRecord[] }> {
+    return this.request<{ evidence: EvidenceBatchRecord[] }>(
+      "POST",
+      `/v1/projects/${projectId}/investigations/${investigationId}/evidence/batch`,
+      body,
+    );
+  }
+
+  /**
+   * Batch-insert citation edges over the typed provenance nodes (Stage 1 dual-write).
+   * Evidence endpoints must already carry CLOUD evidence ids (resolved cross-seam).
+   * Single round-trip (no N+1).
+   */
+  createCitations(
+    projectId: string,
+    investigationId: string,
+    body: { edges: CitationEdgeInput[] },
+  ): Promise<{ created: number }> {
+    return this.request<{ created: number }>(
+      "POST",
+      `/v1/projects/${projectId}/investigations/${investigationId}/citations`,
+      body,
     );
   }
 
