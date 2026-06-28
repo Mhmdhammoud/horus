@@ -355,6 +355,17 @@ describe('rankSeeds', () => {
     expect(ranked[0]?.symbol.id).toBe('s2');
   });
 
+  it('HOR-430: with equal lexical footing, the semantically-related candidate outranks the lexical-only one', () => {
+    // Both symbols match the same single hint token ("socket") — identical lexical boost (+2)
+    // and identical (function) role. The only differentiator is the search/vector score: the real
+    // cause `closeIdleSockets` is semantically related (0.9) while `socketEventLog` merely shares
+    // the word (0.05). The conservative prose-score bump lets semantic relevance decide.
+    const lexicalOnly: Symbol = { id: 'l', name: 'socketEventLog', filePath: 'src/events.ts', score: 0.05 };
+    const semantic: Symbol = { id: 's', name: 'closeIdleSockets', filePath: 'src/pool.ts', score: 0.9 };
+    const ranked = rankSeeds([lexicalOnly, semantic], ['socket'], undefined, false);
+    expect(ranked[0]?.symbol.id).toBe('s');
+  });
+
   it('a code hint follows the exact-content raise site, not a same-score service-named co-occurrence (gap 9)', () => {
     // ERR243 resolves to its raise site `createCostAwareLink` in lib/ (exact-content head, earlier
     // in search order); `updateSingleProductQuantity` in a *.service.ts merely co-occurs at the same

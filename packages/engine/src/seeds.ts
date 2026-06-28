@@ -309,11 +309,16 @@ export function scoreSeed(
   score += Math.max(0, 5 - index) * (hintHasCode ? 0.8 : 0.1);
   // Source relevance: weighted HEAVILY only for a CODE-shaped hint (HTTPFLT001, E_SYNC_04…),
   // where a high exact-content / colocated score IS the raise site and must outweigh a
-  // coincidental architectural match (gap 3). For a prose hint the search score is noisier —
-  // a schema named `Brand` scores 1.0 for "brand orders" while the real `checkBrand…` function
-  // scores 0.03 — so weight it MILDLY and let hint-tokens + role decide (so the gap-3 fix does
-  // not regress the seed-emitted-error cases; caught by the dogfood re-run).
-  if (s.score !== undefined) score += s.score * (hintHasCode ? 8 : 1.5);
+  // coincidental architectural match (gap 3). For a prose hint the search score (vector cosine /
+  // FTS) is the SEMANTIC signal, so weight it ABOVE the raw lexical hint-token boost (+2/token,
+  // capped +6) — a semantically-related candidate should out-rank a lexical-only false-friend
+  // (HOR-430). Tuned CONSERVATIVELY (2.0, not the code-hint 8): the search score is still noisier
+  // for prose — a schema named `Brand` scores 1.0 for "brand orders" while the real `checkBrand…`
+  // function scores 0.03 — so the bump stays below the point where a single domain-word DTO match
+  // would overtake a multi-token hint + role match (guarded by the Brand prose test below). The
+  // decisive false-friend fix lives upstream in horus-source hybrid_search, where the exact-name
+  // head is now path-deprioritized; this is the secondary corroboration knob.
+  if (s.score !== undefined) score += s.score * (hintHasCode ? 8 : 2.0);
   // A File node is rarely the right seed — prefer the function/method that raises the signal.
   if (/\.[jt]sx?$/i.test(s.name)) score -= 5;
   // Domain-hint boost: strongly prefer symbols whose name/path contain hint tokens.
