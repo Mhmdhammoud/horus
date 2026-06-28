@@ -125,20 +125,75 @@ export function parseDataset(raw: Record<string, unknown>): AxiomDataset {
 }
 
 /**
- * Build an APL query string over a dataset. When `hintTerms` are supplied, a
+ * Log levels that signal an active incident. Incident-aware queries bias toward these
+ * so a high-volume error storm isn't crowded out by a handful of newest `info` rows.
+ */
+export const AXIOM_ERROR_LEVELS = ['error', 'warn', 'fatal'] as const;
+
+/** APL-escaped dataset reference: `['name']`. */
+function datasetRef(dataset: string): string {
+  return `['${dataset.replace(/'/g, '')}']`;
+}
+
+/** Domain-relevant hint tokens (length > 2) used in `search`/filter clauses. */
+function searchTerms(hintTerms: string[]): string[] {
+  return hintTerms.map((t) => t.trim()).filter((t) => t.length > 2);
+}
+
+/**
+ * OR-joined full-text `search` clause for the supplied terms, or '' when none. APL's
+ * `search` scans ALL columns, so it matches the message body AND the structured
+ * `error.message` / `error.name` / `error.stack` / `errorMessage` / `errorName` fields.
+ */
+function searchClause(hintTerms: string[]): string {
+  const terms = searchTerms(hintTerms);
+  return terms.length > 0
+    ? ` | search ${terms.map((t) => `"${t.replace(/"/g, '')}"`).join(' or ')}`
+    : '';
+}
+
+/** `where` clause restricting to incident-level rows (case-insensitive on `level`). */
+function errorLevelClause(): string {
+  const levels = AXIOM_ERROR_LEVELS.map((l) => `'${l}'`).join(', ');
+  return ` | where tolower(tostring(level)) in (${levels})`;
+}
+
+/**
+ * Build a broad APL query string over a dataset. When `hintTerms` are supplied, a
  * full-text `search` clause OR-joins the domain-relevant terms (length > 2) so the
  * window is biased toward rows mentioning the investigation hint. Results are sorted
- * newest-first and capped. Pure + exported for unit testing.
+ * newest-first and capped. This is the fallback used only when no error-level row
+ * matches the incident-aware queries. Pure + exported for unit testing.
  */
 export function buildApl(dataset: string, hintTerms: string[] = [], limit = 100): string {
-  const ds = `['${dataset.replace(/'/g, '')}']`;
-  const terms = hintTerms.map((t) => t.trim()).filter((t) => t.length > 2);
-  const search =
-    terms.length > 0
-      ? ` | search ${terms.map((t) => `"${t.replace(/"/g, '')}"`).join(' or ')}`
-      : '';
   const lim = Math.max(1, Math.min(limit, 1000));
-  return `${ds}${search} | sort by _time desc | limit ${lim}`;
+  return `${datasetRef(dataset)}${searchClause(hintTerms)} | sort by _time desc | limit ${lim}`;
+}
+
+/**
+ * Incident-aware query #1 — TOP ERROR SIGNATURES. Restricts to error/warn/fatal rows
+ * (AND the hint terms when present), then `summarize count() + max(_time) by message,
+ * level` and returns the highest-volume signatures first. This is what surfaces a
+ * 3k-row `level=error "Klaviyo API request failed"` storm that a newest-first scan
+ * would miss behind 15 fresh `info` rows. Pure + exported for unit testing.
+ */
+export function buildErrorSignatureApl(dataset: string, hintTerms: string[] = [], topN = 10): string {
+  const lim = Math.max(1, Math.min(topN, 1000));
+  return (
+    `${datasetRef(dataset)}${errorLevelClause()}${searchClause(hintTerms)}` +
+    ` | summarize ['count'] = count(), ['_time'] = max(_time) by message, level` +
+    ` | sort by ['count'] desc | limit ${lim}`
+  );
+}
+
+/**
+ * Incident-aware query #2 — a few RECENT RAW ERROR examples for grounding (full row
+ * fields incl. `error.stack` / `errorStack`). Restricts to error/warn/fatal (AND the
+ * hint terms when present), newest-first. Pure + exported for unit testing.
+ */
+export function buildRecentErrorsApl(dataset: string, hintTerms: string[] = [], limit = 5): string {
+  const lim = Math.max(1, Math.min(limit, 1000));
+  return `${datasetRef(dataset)}${errorLevelClause()}${searchClause(hintTerms)} | sort by _time desc | limit ${lim}`;
 }
 
 /**

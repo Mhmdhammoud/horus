@@ -14,7 +14,13 @@
 import type { Evidence, HealthStatus, ProviderKind } from '@horus/core';
 import { redactSecrets } from '@horus/core';
 import type { Provider } from '../contract.js';
-import { AxiomClient, buildApl, type AxiomLogRecord } from './client.js';
+import {
+  AxiomClient,
+  buildApl,
+  buildErrorSignatureApl,
+  buildRecentErrorsApl,
+  type AxiomLogRecord,
+} from './client.js';
 
 export interface AxiomProviderOpts {
   /** Dataset to query (also used for evidence provenance + APL building). */
@@ -38,9 +44,19 @@ export class AxiomProvider implements Provider {
   ) {}
 
   /**
-   * Collect recent log rows over the window. Builds a sensible APL query (newest-first,
-   * optionally biased toward `hintTerms`) and runs it. Best-effort: a failing query
-   * yields []. Never throws.
+   * Collect log rows over the window, INCIDENT-AWARE. Rather than a broad newest-first
+   * scan (which on a noisy dataset returns the 15 freshest `info` rows and misses a
+   * high-volume error storm), this runs two error-biased queries in parallel:
+   *
+   *   1. TOP ERROR SIGNATURES — `summarize count() + max(_time) by message, level` over
+   *      error/warn/fatal rows (AND the hint terms), highest-volume first. This is what
+   *      surfaces a 3k-row `level=error` signature that a newest-first scan buries.
+   *   2. RECENT RAW ERRORS — a few newest error rows with full fields, for grounding.
+   *
+   * Signatures lead so high-volume errors aren't crowded out. When NO error-level row
+   * matches (neither query returns anything) it broadens to the all-levels fallback so
+   * non-error datasets still produce evidence. Best-effort: a failing query yields [].
+   * Never throws.
    */
   async collect(
     opts: { from?: string; to?: string; hintTerms?: string[] } = {},
@@ -49,8 +65,23 @@ export class AxiomProvider implements Provider {
     const from =
       opts.from ??
       new Date(Date.parse(to) - (this.opts.windowMs ?? DEFAULT_WINDOW_MS)).toISOString();
-    const apl = buildApl(this.opts.dataset, opts.hintTerms ?? [], this.opts.limit ?? 100);
-    return this.client.query(apl, from, to);
+    const hintTerms = opts.hintTerms ?? [];
+    const limit = this.opts.limit ?? 100;
+    const topN = Math.max(1, Math.min(limit, 10));
+    const recentN = Math.max(1, Math.min(limit, 5));
+
+    const [signatures, recent] = await Promise.all([
+      this.client.query(buildErrorSignatureApl(this.opts.dataset, hintTerms, topN), from, to),
+      this.client.query(buildRecentErrorsApl(this.opts.dataset, hintTerms, recentN), from, to),
+    ]);
+
+    if (signatures.length === 0 && recent.length === 0) {
+      // No error-level rows matched — broaden to all levels (sensible fallback).
+      return this.client.query(buildApl(this.opts.dataset, hintTerms, limit), from, to);
+    }
+
+    // Signatures first (highest-volume errors lead), then recent raw examples for grounding.
+    return [...signatures, ...recent];
   }
 
   /**
@@ -177,6 +208,11 @@ export function computeRelevance(
   const level = (pickField(rec.fields, LEVEL_FIELDS) ?? '').toLowerCase();
   if (level === 'error' || level === 'fatal' || level === 'critical') score += 0.1;
   else if (level === 'warn' || level === 'warning') score += 0.05;
+
+  // Volume: a summarized error SIGNATURE carrying a high `count` is a stronger incident
+  // signal than a one-off line — bias it up so the storm leads.
+  const count = rec.fields['count'];
+  if (typeof count === 'number' && count >= 10) score += 0.1;
 
   return Math.min(0.95, Math.max(0.5, score));
 }

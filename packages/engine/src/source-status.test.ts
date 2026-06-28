@@ -119,6 +119,24 @@ describe('buildRuntimeSourceStatus — contributed', () => {
     expect(logs.evidenceCount).toBe(2);
   });
 
+  it('credits a configured+collected Axiom as a contributed logs source (HOR-429 honesty)', () => {
+    // Regression: a configured Axiom that folded log evidence must NOT report
+    // "logs not-configured" — the header self-contradiction this fixes.
+    const evidence = [makeEvidence('logs', 'log'), makeEvidence('logs', 'log')];
+    const report = buildRuntimeSourceStatus(evidence, { axiom: true, axiomCollected: true });
+    const logs = report.sources.find((s) => s.source === 'logs')!;
+    expect(logs.configured).toBe(true);
+    expect(logs.status).toBe('contributed');
+    expect(logs.evidenceCount).toBe(2);
+  });
+
+  it('marks logs as failed when axiom is configured but axiomCollected is false', () => {
+    const report = buildRuntimeSourceStatus([], { axiom: true, axiomCollected: false });
+    const logs = report.sources.find((s) => s.source === 'logs')!;
+    expect(logs.configured).toBe(true);
+    expect(logs.status).toBe('failed');
+  });
+
   it('marks metrics as contributed', () => {
     const evidence = [makeEvidence('metrics', 'metric')];
     const report = buildRuntimeSourceStatus(evidence, { grafana: true, metricsCollected: true });

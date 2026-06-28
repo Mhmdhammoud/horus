@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { AxiomClient, buildApl, parseTabular, parseDataset } from './index.js';
+import {
+  AxiomClient,
+  buildApl,
+  buildErrorSignatureApl,
+  buildRecentErrorsApl,
+  parseTabular,
+  parseDataset,
+} from './index.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -22,6 +29,35 @@ describe('buildApl (APL query building)', () => {
   it('clamps the limit into 1..1000', () => {
     expect(buildApl('logs', [], 0)).toContain('limit 1');
     expect(buildApl('logs', [], 99999)).toContain('limit 1000');
+  });
+});
+
+describe('buildErrorSignatureApl (incident-aware top error signatures)', () => {
+  it('restricts to error/warn/fatal and summarizes count() + max(_time) by message+level, count desc', () => {
+    const apl = buildErrorSignatureApl('logs', ['klaviyo', 'failed'], 8);
+    expect(apl).toContain("['logs']");
+    expect(apl).toContain("| where tolower(tostring(level)) in ('error', 'warn', 'fatal')");
+    // hint terms still bias the window (search scans message + error.* / errorMessage fields)
+    expect(apl).toContain('| search "klaviyo" or "failed"');
+    expect(apl).toContain("summarize ['count'] = count(), ['_time'] = max(_time) by message, level");
+    expect(apl).toContain("| sort by ['count'] desc | limit 8");
+  });
+
+  it('works without hint terms (level-only error bias) and clamps the limit', () => {
+    const apl = buildErrorSignatureApl('logs', [], 0);
+    expect(apl).not.toContain('| search');
+    expect(apl).toContain("| where tolower(tostring(level)) in ('error', 'warn', 'fatal')");
+    expect(apl).toContain('limit 1');
+  });
+});
+
+describe('buildRecentErrorsApl (incident-aware recent raw errors)', () => {
+  it('restricts to error levels (AND hint terms), newest-first, capped', () => {
+    const apl = buildRecentErrorsApl('logs', ['klaviyo'], 5);
+    expect(apl).toContain("| where tolower(tostring(level)) in ('error', 'warn', 'fatal')");
+    expect(apl).toContain('| search "klaviyo"');
+    expect(apl).toContain('| sort by _time desc | limit 5');
+    expect(apl).not.toContain('summarize');
   });
 });
 

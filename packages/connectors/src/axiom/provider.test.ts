@@ -11,17 +11,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** Stub `fetch` so the `_apl` POST returns a column-oriented tabular response. */
-function stubAplFetch(rows: Array<Record<string, unknown>>): void {
-  const names = rows.length > 0 ? Object.keys(rows[0]!) : [];
-  const fields = names.map((name) => ({ name, type: 'string' }));
-  const columns = names.map((name) => rows.map((r) => r[name]));
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async () => new Response(JSON.stringify({ tables: [{ name: '0', fields, columns }] }), { status: 200 })),
-  );
-}
-
 function provider(): AxiomProvider {
   const client = new AxiomClient({ token: 't', dataset: 'logs' });
   return new AxiomProvider(client, { dataset: 'logs' });
@@ -29,14 +18,21 @@ function provider(): AxiomProvider {
 
 describe('AxiomProvider.queryEvidence', () => {
   it('turns each row into kind:log Evidence with the row fields on the payload', async () => {
-    stubAplFetch([
-      {
-        _time: '2026-06-22T10:00:00Z',
-        level: 'error',
-        message: 'checkout failed: timeout',
-        service: 'payments',
-      },
-    ]);
+    // Recent-error query yields the row; signature query is empty → exactly one evidence.
+    stubAplRouter(
+      (apl) =>
+        apl.includes('summarize')
+          ? []
+          : [
+              {
+                _time: '2026-06-22T10:00:00Z',
+                level: 'error',
+                message: 'checkout failed: timeout',
+                service: 'payments',
+              },
+            ],
+      [],
+    );
     const ev = await provider().queryEvidence({ collectedAt: '2026-06-22T12:00:00Z' });
 
     expect(ev).toHaveLength(1);
@@ -61,6 +57,87 @@ describe('AxiomProvider.queryEvidence', () => {
   it('degrades to [] (never throws) when the query call fails', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('forbidden', { status: 403 })));
     await expect(provider().queryEvidence()).resolves.toEqual([]);
+  });
+});
+
+/**
+ * Stub `fetch` capturing every APL body, returning a per-query response chosen by a
+ * matcher over the APL string. Lets a test assert the incident-aware query SHAPE and
+ * the merge/fallback behaviour of collect().
+ */
+function stubAplRouter(
+  respond: (apl: string) => Array<Record<string, unknown>>,
+  sink: string[],
+): void {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_url: string | URL, init?: RequestInit): Promise<Response> => {
+      const apl = String(JSON.parse(String(init?.body)).apl);
+      sink.push(apl);
+      const rows = respond(apl);
+      const names = rows.length > 0 ? Object.keys(rows[0]!) : [];
+      const fields = names.map((name) => ({ name, type: 'string' }));
+      const columns = names.map((name) => rows.map((r) => r[name]));
+      const tables = rows.length > 0 ? [{ name: '0', fields, columns }] : [];
+      return new Response(JSON.stringify({ tables }), { status: 200 });
+    }),
+  );
+}
+
+describe('AxiomProvider.collect (incident-aware error query)', () => {
+  it('fires top-error-signature + recent-error queries biased to error levels and hint terms', async () => {
+    const apls: string[] = [];
+    stubAplRouter(
+      (apl) =>
+        apl.includes('summarize')
+          ? [{ message: 'Klaviyo API request failed', level: 'error', count: 3302 }]
+          : [{ _time: '2026-06-22T10:00:00Z', message: 'Klaviyo API request failed', level: 'error' }],
+      apls,
+    );
+    const client = new AxiomClient({ token: 't', dataset: 'logs' });
+    const recs = await new AxiomProvider(client, { dataset: 'logs' }).collect({
+      hintTerms: ['klaviyo', 'failed'],
+    });
+
+    // Two incident-aware queries (signatures + recent), no broad fallback.
+    expect(apls).toHaveLength(2);
+    const sig = apls.find((a) => a.includes('summarize'))!;
+    expect(sig).toContain("where tolower(tostring(level)) in ('error', 'warn', 'fatal')");
+    expect(sig).toContain('count()');
+    expect(sig).toContain('max(_time)');
+    expect(sig).toContain('by message, level');
+    expect(sig).toContain('search "klaviyo" or "failed"');
+    const recent = apls.find((a) => !a.includes('summarize'))!;
+    expect(recent).toContain("where tolower(tostring(level)) in");
+    expect(recent).toContain('sort by _time desc');
+
+    // High-volume signature leads (surfaced, not crowded out by newest info rows).
+    expect(recs.length).toBeGreaterThanOrEqual(2);
+    expect(recs[0]!.fields['message']).toBe('Klaviyo API request failed');
+    expect(recs[0]!.fields['count']).toBe(3302);
+  });
+
+  it('broadens to an all-levels fallback query when no error-level row matches', async () => {
+    const apls: string[] = [];
+    stubAplRouter(
+      (apl) =>
+        apl.includes('where tolower')
+          ? [] // error-biased queries return nothing
+          : [{ _time: '2026-06-22T10:00:00Z', message: 'cron heartbeat ok', level: 'info' }],
+      apls,
+    );
+    const client = new AxiomClient({ token: 't', dataset: 'logs' });
+    const recs = await new AxiomProvider(client, { dataset: 'logs' }).collect({
+      hintTerms: ['klaviyo'],
+    });
+
+    // 2 incident-aware (empty) + 1 broad fallback.
+    expect(apls).toHaveLength(3);
+    const broad = apls[2]!;
+    expect(broad).not.toContain('where tolower');
+    expect(broad).toContain('sort by _time desc');
+    expect(recs).toHaveLength(1);
+    expect(recs[0]!.fields['message']).toBe('cron heartbeat ok');
   });
 });
 

@@ -229,6 +229,7 @@ describe('horus readiness — partial (DB pass, optional items missing)', () => 
     expect(output).toContain('horus connect grafana');
     expect(output).toContain('horus connect mongodb');
     expect(output).toContain('horus connect redis');
+    expect(output).toContain('horus connect axiom');
   });
 });
 

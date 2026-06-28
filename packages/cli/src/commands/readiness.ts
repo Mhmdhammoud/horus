@@ -218,6 +218,7 @@ export async function runReadiness(opts?: {
     let anyMongo = false;
     let anyPostgres = false;
     let anySentry = false;
+    let anyAxiom = false;
     let anyRedis = false;
 
     for (const project of globalConfig.projects) {
@@ -231,6 +232,7 @@ export async function runReadiness(opts?: {
         if (c.mongodb) anyMongo = true;
         if (c.postgres) anyPostgres = true;
         if (c.sentry) anySentry = true;
+        if (c.axiom) anyAxiom = true;
         if (c.redis) anyRedis = true;
       }
     }
@@ -304,6 +306,18 @@ export async function runReadiness(opts?: {
             blocking: false,
             detail: 'not configured — no error-tracking evidence',
             next: 'run `horus connect sentry`',
+          },
+    );
+
+    checks.push(
+      anyAxiom
+        ? { label: 'Axiom', status: 'pass', blocking: false, detail: 'configured' }
+        : {
+            label: 'Axiom',
+            status: 'warn',
+            blocking: false,
+            detail: 'not configured — no runtime log evidence',
+            next: 'run `horus connect axiom`',
           },
     );
 

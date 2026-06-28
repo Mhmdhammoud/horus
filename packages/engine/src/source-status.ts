@@ -61,14 +61,17 @@ export function buildRuntimeSourceStatus(
   evidence: Evidence[],
   connectors: ConnectorFlags,
 ): RuntimeSourceReport {
-  // 'logs' is the runtime ERROR-evidence source — Elasticsearch and/or Sentry both feed
-  // it (Sentry's evidence is `source: 'logs'`). Configured = either is wired up; failed =
-  // a configured collector that did not run to completion and produced no evidence.
+  // 'logs' is the runtime ERROR-evidence source — Elasticsearch, Sentry, and/or Axiom
+  // all feed it (their evidence is `source: 'logs'`). Configured = ANY is wired up; failed
+  // = a configured collector that did not run to completion and produced no evidence.
+  // Axiom is credited here exactly like ES/Sentry so the report header can no longer claim
+  // "logs not configured" when configured-and-collected Axiom log evidence is present.
   const logsCount = evidence.filter((e) => e.source === 'logs').length;
-  const logsConfigured = !!(connectors.elasticsearch || connectors.sentry);
+  const logsConfigured = !!(connectors.elasticsearch || connectors.sentry || connectors.axiom);
   const esFailed = !!connectors.elasticsearch && !connectors.logsCollected;
   const sentryFailed = !!connectors.sentry && !connectors.sentryCollected;
-  const logsFailed = logsConfigured && logsCount === 0 && (esFailed || sentryFailed);
+  const axiomFailed = !!connectors.axiom && !connectors.axiomCollected;
+  const logsFailed = logsConfigured && logsCount === 0 && (esFailed || sentryFailed || axiomFailed);
 
   const metricsCount = evidence.filter((e) => e.source === 'metrics').length;
   const metricsConfigured = !!connectors.grafana;
