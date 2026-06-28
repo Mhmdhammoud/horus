@@ -16,6 +16,9 @@ const connectors = vi.hoisted(() => ({
   waitForHost: vi.fn(),
   removeSpawnedHostRecord: vi.fn(),
   reconcileSpawnedHostPid: vi.fn(),
+  fetchHostRepoPath: vi.fn(),
+  readSourceHostUrl: vi.fn(),
+  findFreePort: vi.fn(),
 }));
 
 vi.mock('@horus/connectors', () => connectors);
@@ -24,6 +27,9 @@ import {
   parseHostPort,
   ensureHostReasonHint,
   ensureSourceHost,
+  verifyHostServesRepo,
+  ensureOwnSourceHost,
+  resolveSourceHostUrl,
 } from './ensure-host.js';
 
 const URL_8420 = 'http://127.0.0.1:8420';
@@ -35,6 +41,8 @@ beforeEach(() => {
   connectors.sourceAvailable.mockResolvedValue(true);
   connectors.assertSourceVersionPinned.mockResolvedValue(undefined);
   connectors.isAnalyzed.mockReturnValue(true);
+  connectors.readSourceHostUrl.mockReturnValue(null);
+  connectors.findFreePort.mockResolvedValue(8421);
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -56,6 +64,7 @@ describe('ensureHostReasonHint', () => {
     expect(ensureHostReasonHint('version-mismatch')).toMatch(/pinned/);
     expect(ensureHostReasonHint('not-analyzed')).toMatch(/horus index/);
     expect(ensureHostReasonHint('bad-url')).toMatch(/valid URL/);
+    expect(ensureHostReasonHint('no-free-port')).toMatch(/free localhost port/);
     expect(ensureHostReasonHint('unhealthy')).toMatch(/horus index/);
     expect(ensureHostReasonHint(undefined)).toMatch(/horus index/);
   });
@@ -121,5 +130,106 @@ describe('ensureSourceHost', () => {
     expect(connectors.startHost).toHaveBeenCalledWith('/repo', 8420);
     expect(connectors.removeSpawnedHostRecord).toHaveBeenCalledWith('/repo');
     expect(connectors.reconcileSpawnedHostPid).not.toHaveBeenCalled();
+  });
+});
+
+// HOR-421 — cross-repo contamination guard.
+describe('verifyHostServesRepo', () => {
+  it('matches when the host reports it serves THIS repo (path-normalized)', async () => {
+    connectors.fetchHostRepoPath.mockResolvedValue('/repos/aiokafka/');
+    expect(await verifyHostServesRepo(URL_8420, '/repos/aiokafka')).toBe('match');
+  });
+
+  it('flags a host serving a DIFFERENT repo as foreign', async () => {
+    connectors.fetchHostRepoPath.mockResolvedValue('/repos/arq');
+    expect(await verifyHostServesRepo(URL_8420, '/repos/aiokafka')).toBe('foreign');
+  });
+
+  it('returns unknown when the host cannot report its repo', async () => {
+    connectors.fetchHostRepoPath.mockResolvedValue(null);
+    expect(await verifyHostServesRepo(URL_8420, '/repos/aiokafka')).toBe('unknown');
+  });
+});
+
+describe('ensureOwnSourceHost', () => {
+  it('reuses the repo’s own recorded host when it is healthy and identity-matches', async () => {
+    connectors.readSourceHostUrl.mockReturnValue('http://127.0.0.1:8421');
+    connectors.isHostHealthy.mockResolvedValue(true);
+    connectors.fetchHostRepoPath.mockResolvedValue('/repos/aiokafka');
+    const res = await ensureOwnSourceHost('/repos/aiokafka');
+    expect(res).toEqual({ ok: true, hostUrl: 'http://127.0.0.1:8421' });
+    expect(connectors.startHost).not.toHaveBeenCalled();
+  });
+
+  it('spawns this repo’s own host on a FREE port and verifies its identity', async () => {
+    connectors.readSourceHostUrl.mockReturnValue(null);
+    connectors.findFreePort.mockResolvedValue(8423);
+    connectors.waitForHost.mockResolvedValue(true);
+    // The freshly-spawned host identifies as this repo.
+    connectors.fetchHostRepoPath.mockResolvedValue('/repos/aiokafka');
+    const res = await ensureOwnSourceHost('/repos/aiokafka');
+    expect(res).toEqual({ ok: true, hostUrl: 'http://127.0.0.1:8423' });
+    expect(connectors.startHost).toHaveBeenCalledWith('/repos/aiokafka', 8423);
+    expect(connectors.reconcileSpawnedHostPid).toHaveBeenCalledWith('/repos/aiokafka', 8423);
+  });
+
+  it('does not spawn a second host on the recorded foreign URL — it falls through to a fresh port', async () => {
+    // host.json points at :8420 but that host now serves a different repo.
+    connectors.readSourceHostUrl.mockReturnValue(URL_8420);
+    connectors.isHostHealthy.mockResolvedValue(true);
+    connectors.findFreePort.mockResolvedValue(8424);
+    connectors.waitForHost.mockResolvedValue(true);
+    connectors.fetchHostRepoPath
+      .mockResolvedValueOnce('/repos/arq') // recorded URL is foreign → reject reuse
+      .mockResolvedValueOnce('/repos/aiokafka'); // spawned own host identifies correctly
+    const res = await ensureOwnSourceHost('/repos/aiokafka');
+    expect(res).toEqual({ ok: true, hostUrl: 'http://127.0.0.1:8424' });
+    expect(connectors.startHost).toHaveBeenCalledWith('/repos/aiokafka', 8424);
+  });
+
+  it('reports not-analyzed before spawning when the repo was never indexed', async () => {
+    connectors.readSourceHostUrl.mockReturnValue(null);
+    connectors.isAnalyzed.mockReturnValue(false);
+    const res = await ensureOwnSourceHost('/repos/aiokafka');
+    expect(res).toEqual({ ok: false, reason: 'not-analyzed' });
+    expect(connectors.startHost).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveSourceHostUrl — foreign-host contamination guard', () => {
+  it('uses the configured host when it is healthy and serves THIS repo', async () => {
+    connectors.isHostHealthy.mockResolvedValue(true);
+    connectors.fetchHostRepoPath.mockResolvedValue('/repos/aiokafka');
+    const res = await resolveSourceHostUrl('/repos/aiokafka', URL_8420);
+    expect(res).toEqual({ ok: true, hostUrl: URL_8420 });
+    expect(connectors.startHost).not.toHaveBeenCalled();
+  });
+
+  it('REJECTS a foreign host on :8420 and starts this repo’s own host on a free port', async () => {
+    // The configured :8420 is healthy but serves a DIFFERENT repo (arq), and this repo has
+    // no own host recorded → spawn a fresh one on a free port and ground on THAT.
+    connectors.isHostHealthy.mockImplementation(async (url: string) => url === URL_8420);
+    connectors.readSourceHostUrl.mockReturnValue(null);
+    connectors.findFreePort.mockResolvedValue(8425);
+    connectors.waitForHost.mockResolvedValue(true);
+    connectors.fetchHostRepoPath
+      .mockResolvedValueOnce('/repos/arq') // :8420 is foreign
+      .mockResolvedValueOnce('/repos/aiokafka'); // spawned own host
+    const res = await resolveSourceHostUrl('/repos/aiokafka', URL_8420);
+    expect(res).toEqual({ ok: true, hostUrl: 'http://127.0.0.1:8425' });
+    expect(res.hostUrl).not.toBe(URL_8420);
+    expect(connectors.startHost).toHaveBeenCalledWith('/repos/aiokafka', 8425);
+  });
+
+  it('refuses to ground on a foreign host when no own host can be started (degrade)', async () => {
+    connectors.isHostHealthy.mockImplementation(async (url: string) => url === URL_8420);
+    connectors.readSourceHostUrl.mockReturnValue(null);
+    connectors.fetchHostRepoPath.mockResolvedValue('/repos/arq'); // foreign, forever
+    connectors.isAnalyzed.mockReturnValue(false); // can't spawn own
+    const res = await resolveSourceHostUrl('/repos/aiokafka', URL_8420);
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('not-analyzed');
+    // Critically: we never returned the foreign URL.
+    expect(res.hostUrl).toBeUndefined();
   });
 });

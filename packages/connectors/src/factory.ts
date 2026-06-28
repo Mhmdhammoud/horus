@@ -59,6 +59,16 @@ export function codeForEnv(renv: ResolvedEnvironment): CodeProvider | null {
 }
 
 /**
+ * Build a source `CodeProvider` pointed at an explicit host URL. Used when host selection
+ * resolves a host that differs from the configured default — e.g. HOR-421, where the
+ * configured `:8420` is occupied by a host serving a DIFFERENT repo and we must ground on
+ * this repo's OWN host on a free port instead.
+ */
+export function codeForUrl(hostUrl: string): CodeProvider {
+  return new SourceCodeProvider(new SourceHttpClient({ baseUrl: hostUrl }));
+}
+
+/**
  * Return a source-host-backed `MemoryVectorIndex` for the given resolved environment
  * (M2). Mirrors `codeForEnv`: when the env's repo has a `sourceHostUrl`, returns a
  * `SourceMemoryVectorIndex` pointed at that host (reusing the code provider's baseUrl).

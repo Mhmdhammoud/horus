@@ -187,6 +187,32 @@ export async function isHostHealthy(hostUrl: string): Promise<boolean> {
   }
 }
 
+/**
+ * Fetch the repo path a source-intelligence host at `hostUrl` reports it is serving, via
+ * `GET /api/host`. Returns the served repo path, or `null` when the host is unreachable,
+ * unhealthy, or cannot report its identity (older backend / transient error).
+ *
+ * HOR-421: the default host URL is `:8420` for every repo, so a host serving a DIFFERENT
+ * repo can occupy the configured port. Callers use this to VERIFY a host's identity before
+ * grounding on it, so an investigation can never be silently run against a foreign repo's
+ * code graph. The wire field is `repoPath` (SourceHostInfo); `repo_path` is also accepted
+ * defensively to match the on-disk host.json shape.
+ */
+export async function fetchHostRepoPath(hostUrl: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${hostUrl}/api/host`, {
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!res.ok) return null;
+    const j = (await res.json()) as { repoPath?: unknown; repo_path?: unknown };
+    if (typeof j.repoPath === 'string' && j.repoPath) return j.repoPath;
+    if (typeof j.repo_path === 'string' && j.repo_path) return j.repo_path;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /** Find a free localhost TCP port in [start, end]. */
 export async function findFreePort(start = 8420, end = 8520): Promise<number> {
   for (let port = start; port <= end; port += 1) {

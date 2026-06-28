@@ -18,6 +18,7 @@ import pc from 'picocolors';
 import type { ResolvedEnvironment } from '@horus/core';
 import {
   codeForEnv,
+  codeForUrl,
   logsForEnv,
   mongoForEnv,
   postgresForEnv,
@@ -39,7 +40,7 @@ import { openDb } from '@horus/db';
 import type { DbHandle } from '@horus/db';
 import { investigate } from '@horus/engine';
 import type { InvestigationReport } from '@horus/engine';
-import { ensureSourceHost, ensureHostReasonHint } from './ensure-host.js';
+import { resolveSourceHostUrl } from './ensure-host.js';
 
 /**
  * Everything a single `investigate()` call needs: the resolved env, the live connectors,
@@ -89,31 +90,32 @@ export async function buildInvestigationContext(
 ): Promise<InvestigationContext> {
   const log = opts.log ?? ((l: string) => console.error(l));
 
-  const code = codeForEnv(renv);
+  let code = codeForEnv(renv);
   if (!code) {
     throw new Error(
       `No source-intelligence connector configured for project "${renv.project}" / env "${renv.env}".`,
     );
   }
 
+  // `codeForEnv` only returns a provider when the repo has a configured sourceHostUrl.
   const sourceUrl = renv.repositories[0]?.sourceHostUrl;
-  let health = await code.health();
-  if (!health.ok && sourceUrl) {
-    // HOR-319 (layer-1): don't hard-exit just because the host is down. Try to restart a
-    // previously-indexed host at its configured port, then re-check.
-    log(pc.yellow(`Source-intelligence host unreachable (${sourceUrl}) — attempting to start it…`));
-    const healed = await ensureSourceHost(renv.path, sourceUrl);
-    if (healed.ok) {
-      log(pc.green(`Source-intelligence host is up at ${healed.hostUrl}.`));
-      health = await code.health();
-    } else {
-      log(pc.dim(`  ${ensureHostReasonHint(healed.reason)}`));
+  let runtimeOnly: boolean;
+  if (sourceUrl) {
+    // HOR-319 (layer-1) self-heal a down host + HOR-421 verify the host serves THIS repo
+    // (never ground on a foreign repo's host occupying the shared :8420 default). The
+    // resolved URL may differ from the configured one when we had to start this repo's own
+    // host on a free port — rebuild the provider to point at the verified host.
+    const resolved = await resolveSourceHostUrl(renv.path, sourceUrl, { log });
+    runtimeOnly = !resolved.ok;
+    if (resolved.ok && resolved.hostUrl && resolved.hostUrl !== sourceUrl) {
+      code = codeForUrl(resolved.hostUrl);
     }
+  } else {
+    runtimeOnly = !(await code.health()).ok;
   }
 
-  // HOR-319 (layer-2): if self-heal failed, degrade to a runtime-only investigation —
-  // logs/metrics/state/queues are independent of the source host.
-  const runtimeOnly = !health.ok;
+  // HOR-319 (layer-2): if no verified source host is available, degrade to a runtime-only
+  // investigation — logs/metrics/state/queues are independent of the source host.
   if (runtimeOnly) {
     log(
       pc.yellow(
