@@ -126,6 +126,74 @@ describe('extractCeleryQueueGraph — procrastinate / arq / rq (HOR-380)', () =>
   });
 });
 
+describe('extractCeleryQueueGraph — faust / test-unit discipline (HOR-424)', () => {
+  it('does not synthesize pseudo-queues from faust @Service.task coroutine methods', () => {
+    // faust's queue model is the Kafka topic (`@app.agent`), and its internal service coroutines
+    // are decorated with the PascalCase class descriptor `@Service.task` — NOT a Celery task queue.
+    // These must never become queues named `_fetcher`/`_flush`/`_commit_handler`.
+    const g = extractCeleryQueueGraph([
+      {
+        name: 'Fetcher',
+        filePath: 'faust/transport/consumer.py',
+        content:
+          'class Fetcher(Service):\n    @Service.task\n    async def _fetcher(self) -> None:\n        pass',
+      },
+      {
+        name: 'Conductor',
+        filePath: 'faust/transport/conductor.py',
+        content:
+          'class Conductor(Service):\n    @Service.task\n    async def _flush(self) -> None:\n        pass\n\n    @Service.task\n    async def _commit_handler(self) -> None:\n        pass',
+      },
+    ]);
+    expect(g.queues).not.toContain('_fetcher');
+    expect(g.queues).not.toContain('_flush');
+    expect(g.queues).not.toContain('_commit_handler');
+    expect(g.queues).toHaveLength(0);
+    expect(g.workers).toHaveLength(0);
+  });
+
+  it('still matches a real Celery @app.task (lowercase app instance) alongside faust noise', () => {
+    const g = extractCeleryQueueGraph([
+      { name: 'Fetcher', filePath: 'faust/consumer.py', content: '@Service.task\nasync def _fetcher(self):\n    pass' },
+      { name: 'send_email', filePath: 'app/tasks.py', content: '@app.task\ndef send_email(to):\n    pass' },
+      { name: 'cleanup', filePath: 'app/tasks.py', content: '@celery.task\ndef cleanup():\n    pass' },
+    ]);
+    expect(g.queues).toContain('send_email');
+    expect(g.queues).toContain('cleanup');
+    expect(g.queues).not.toContain('_fetcher');
+  });
+
+  it('excludes test functions/files from Celery workers (HOR-424)', () => {
+    const g = extractCeleryQueueGraph([
+      { name: 'send_email', filePath: 'app/tasks.py', content: '@shared_task\ndef send_email(to):\n    pass' },
+      // A test-suite task by function-name convention inside a non-test file.
+      { name: 'test_send_email', filePath: 'app/tasks.py', content: '@shared_task\ndef test_send_email():\n    pass' },
+      // A task defined in a tests/ file.
+      { name: 'fixture_task', filePath: 'tests/conftest.py', content: '@shared_task\ndef fixture_task():\n    pass' },
+    ]);
+    const workerSymbols = g.workers.map((w) => w.symbol);
+    expect(workerSymbols).toContain('send_email');
+    expect(workerSymbols).not.toContain('test_send_email');
+    expect(workerSymbols).not.toContain('fixture_task');
+    expect(g.workers.every((w) => !/(^|\/)tests?\//.test(w.file))).toBe(true);
+  });
+
+  it('excludes test functions/files from Celery producers (HOR-424)', () => {
+    const g = extractCeleryQueueGraph([
+      { name: 'send_email', filePath: 'app/tasks.py', content: '@shared_task\ndef send_email(to):\n    pass' },
+      // Real enqueue site.
+      { name: 'signup', filePath: 'app/views.py', content: 'def signup(e):\n    send_email.delay(e)' },
+      // Test enqueue sites — must not be producers.
+      { name: 'test_send_email_enqueues', filePath: 'app/views.py', content: 'def test_send_email_enqueues():\n    send_email.delay("x")' },
+      { name: 'check', filePath: 'tests/test_tasks.py', content: 'def check():\n    send_email.delay("y")' },
+    ]);
+    const producers = g.edges.map((e) => e.producerSymbol);
+    expect(producers).toContain('signup');
+    expect(producers).not.toContain('test_send_email_enqueues');
+    expect(g.edges.some((e) => e.producerFile === 'tests/test_tasks.py')).toBe(false);
+  });
+});
+
 describe('extractDramatiqQueueGraph (HOR-411)', () => {
   const has = (g: ReturnType<typeof extractDramatiqQueueGraph>, q: string, p: string | null, w: string | null): boolean =>
     g.edges.some((e) => e.queueName === q && e.producerSymbol === p && e.workerSymbol === w);
@@ -163,6 +231,50 @@ describe('extractDramatiqQueueGraph (HOR-411)', () => {
     expect(g.edges[0]?.queueName).toBe('default');
     expect(g.edges[0]?.producerSymbol).toBeNull();
     expect(g.edges[0]?.workerSymbol).toBe('resize');
+  });
+
+  it('matches a multi-line @actor(...) decorator and resolves its queue_name= (HOR-420)', () => {
+    const g = extractDramatiqQueueGraph([
+      {
+        name: 'send_newsletter',
+        filePath: 'app/tasks.py',
+        content:
+          '@dramatiq.actor(\n    queue_name="emails",\n    max_retries=3,\n)\ndef send_newsletter(to):\n    pass',
+      },
+      { name: 'publish', filePath: 'app/views.py', content: 'def publish():\n    send_newsletter.send("x")' },
+    ]);
+    // The multi-line decorator must still register the actor and read its broker queue.
+    expect(g.queues).toEqual(['emails']);
+    expect(has(g, 'emails', 'publish', 'send_newsletter')).toBe(true);
+  });
+
+  it('matches a bare multi-line @actor( ) decorator on the default queue (HOR-420)', () => {
+    const g = extractDramatiqQueueGraph([
+      {
+        name: 'resize',
+        filePath: 'app/tasks.py',
+        content: '@dramatiq.actor(\n    max_retries=3,\n)\ndef resize(path):\n    pass',
+      },
+    ]);
+    expect(g.queues).toEqual(['default']);
+    expect(g.workers.map((w) => w.symbol)).toEqual(['resize']);
+  });
+
+  it('excludes @actor test defs by name even inside a non-test module node (HOR-420)', () => {
+    const g = extractDramatiqQueueGraph([
+      // A regular module node (NOT named/pathed as a test) that nonetheless declares a real actor
+      // and a dramatiq-style `test_*` actor side by side — the latter must not become a worker.
+      {
+        name: 'actors',
+        filePath: 'app/actors.py',
+        content:
+          '@actor\ndef count_words(url):\n    pass\n\n@actor\ndef test_count_words_actor():\n    pass',
+      },
+    ]);
+    const workerSymbols = g.workers.map((w) => w.symbol);
+    expect(workerSymbols).toContain('count_words');
+    expect(workerSymbols).not.toContain('test_count_words_actor');
+    expect(g.queues).toEqual(['default']);
   });
 
   it('does not synthesize a queue for a .send() with no @actor definition', () => {

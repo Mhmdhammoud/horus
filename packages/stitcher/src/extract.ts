@@ -358,15 +358,24 @@ export function extractQueueGraph(input: {
 // a huey `@huey.task`/`@db_task`/`@db_periodic_task` decorator (optionally with args + stacked
 // decorators) directly on a `def`. The task name is the function name — what
 // `.delay()`/`.apply_async()`/`.schedule()`/`.defer()` call sites reference (HOR-356/380).
-// Captures the def name. The `(?:[\w]+\.)*` prefix already covers the `huey.`/`app.` qualifier;
-// db_task/db_periodic_task are huey-specific names the Celery set missed. dramatiq (`@actor` /
-// `.send()`) is intentionally NOT here — its queue model is the broker queue, not the actor name,
-// so it has its own extractor (extractDramatiqQueueGraph, HOR-411).
+// Captures the def name. The distinctive named decorators (shared_task / db_task /
+// db_periodic_task / periodic_task) keep the broad `(?:[\w]+\.)*` qualifier (covers `huey.`/
+// `app.`); db_task/db_periodic_task are huey-specific names the Celery set missed. The bare
+// `task` decorator, however, is restricted to Celery's actual convention — `@task` or a
+// LOWERCASE-initial app-instance qualifier (`@app.task`, `@celery.task`, `@current_app.task`).
+// This deliberately EXCLUDES PascalCase class-qualified `.task` descriptors like faust's
+// `@Service.task` (HOR-424): faust's queue model is the Kafka topic (`@app.agent(topic)`), and its
+// internal service coroutines (`_fetcher`/`_flush`/`_commit_handler`) are not Celery task queues —
+// matching them synthesized pseudo-queues named after framework methods. (`@app.task` from faust's
+// own App is indistinguishable from Celery's and remains best-effort matched; the reported faust
+// noise is the `@Service.task` form.) dramatiq (`@actor` / `.send()`) is intentionally NOT here —
+// its queue model is the broker queue, not the actor name, so it has its own extractor
+// (extractDramatiqQueueGraph, HOR-411).
 // Note: rq's `.enqueue()` and arq's `.enqueue_job()` have NO worker-side decorator (workers are
 // registered by import path / function reference), so their producers can't be linked to a def
 // here and are dropped by the taskQueues filter — that's the achievable coverage (HOR-380).
 const CELERY_TASK_DEF_RE =
-  /@(?:[\w]+\.)*(?:shared_task|db_periodic_task|periodic_task|db_task|task)\b[^\n]*(?:\n[ \t]*@[^\n]*)*\n[ \t]*(?:async[ \t]+)?def[ \t]+(\w+)/g;
+  /@(?:(?:[\w]+\.)*(?:shared_task|db_periodic_task|periodic_task|db_task)|(?:[a-z_]\w*\.)*task)\b[^\n]*(?:\n[ \t]*@[^\n]*)*\n[ \t]*(?:async[ \t]+)?def[ \t]+(\w+)/g;
 // An enqueue/producer call site: Celery `<task>.delay(`/`<task>.apply_async(`, huey
 // `<task>.schedule(`, procrastinate `<task>.defer(`/`<task>.defer_async(`,
 // arq `<task>.enqueue_job(`, or rq `<task>.enqueue(` (HOR-380). Captures the immediate identifier
@@ -403,9 +412,16 @@ export function extractCeleryQueueGraph(nodes: CeleryNodeInput[]): QueueGraph {
   for (const n of nodes) {
     for (const m of n.content.matchAll(CELERY_TASK_DEF_RE)) {
       const task = m[1];
-      if (task) workers.push({ queue: task, symbol: task, file: n.filePath });
+      // Exclude pytest-style test defs/files from workers (HOR-424): a project's own
+      // `@shared_task def test_*` suite (or anything under tests/) is not real topology — the
+      // same discipline the dramatiq extractor applies (HOR-411/HOR-420).
+      if (task && !isTestUnit(task, n.filePath)) {
+        workers.push({ queue: task, symbol: task, file: n.filePath });
+      }
     }
     if (FILE_NODE_RE.test(n.name)) continue;
+    // Exclude test functions/files from producers too (HOR-424).
+    if (isTestUnit(n.name, n.filePath)) continue;
     for (const m of n.content.matchAll(CELERY_ENQUEUE_RE)) {
       const task = m[1];
       if (task) producers.push({ queue: task, symbol: n.name || baseName(n.filePath), file: n.filePath });
@@ -461,8 +477,13 @@ export function extractCeleryQueueGraph(nodes: CeleryNodeInput[]): QueueGraph {
 //
 // `@actor` / `@dramatiq.actor(...)` directly on a `def` (optionally with args + stacked decorators).
 // Group 1 = the decorator's arg text (to find `queue_name=`); group 2 = the actor/def name.
+// The arg text is captured with `[\s\S]*?` (lazy, up to the first following `def`) rather than a
+// single-line `[^\n]*` so a multi-line decorator — `@dramatiq.actor(\n  queue_name="emails",\n)\n
+// def foo` — is still matched and its `queue_name=` resolved (HOR-420). Lazy + the `\n...def`
+// anchor keep the span minimal (stops at the nearest def), and any stacked decorators between the
+// `@actor` line and the `def` fall inside group 1 harmlessly (queue_name is searched within it).
 const DRAMATIQ_ACTOR_RE =
-  /@(?:[\w]+\.)*actor\b([^\n]*)(?:\n[ \t]*@[^\n]*)*\n[ \t]*(?:async[ \t]+)?def[ \t]+(\w+)/g;
+  /@(?:[\w]+\.)*actor\b([\s\S]*?)\n[ \t]*(?:async[ \t]+)?def[ \t]+(\w+)/g;
 // `<actor>.send(` / `<actor>.send_with_options(` — captures the actor identifier before the call.
 const DRAMATIQ_SEND_RE = /([A-Za-z_]\w*)\s*\.\s*send(?:_with_options)?\s*\(/g;
 // `queue_name="emails"` inside an `@actor(...)` decorator's arg text.
@@ -524,6 +545,12 @@ export function extractDramatiqQueueGraph(nodes: CeleryNodeInput[]): QueueGraph 
       const args = m[1] ?? '';
       const actor = m[2];
       if (!actor) continue;
+      // Exclude test actors by DEF NAME too, not just by container node/file (HOR-420): a
+      // non-test File/Class node can still contain `@actor def test_*` defs (dramatiq's own
+      // `test_*` actors live inside regular module nodes), which HOR-411's node-level check let
+      // through — ~234 leaked test workers. A test-only actor never registers, so the matching
+      // `.send()` producer also drops in pass 2 (actorQueue miss).
+      if (isTestUnit(actor, n.filePath)) continue;
       const queue = args.match(DRAMATIQ_QUEUE_NAME_RE)?.[1] ?? 'default';
       if (!actorQueue.has(actor)) actorQueue.set(actor, queue);
       workers.push({ queue: actorQueue.get(actor)!, symbol: actor, file: n.filePath, actor });
@@ -544,6 +571,8 @@ export function extractDramatiqQueueGraph(nodes: CeleryNodeInput[]): QueueGraph 
       if (!actor || !actorQueue.has(actor)) continue;
       const symbol = enclosingDefName(n.content, m.index ?? 0);
       if (!symbol) continue;
+      // The enclosing call site can itself be a test function inside a non-test node (HOR-420).
+      if (isTestUnit(symbol, n.filePath)) continue;
       producers.push({
         queue: actorQueue.get(actor)!,
         symbol,
