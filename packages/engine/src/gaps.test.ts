@@ -148,6 +148,59 @@ describe('detectMissingEvidence', () => {
   });
 
   // -------------------------------------------------------------------------
+  // HOR-410: a repo with ZERO detected queues must not surface queue-templated
+  // gaps/blind-spots (no 'queue runtime state' gap, and no gap/blind-spot text
+  // mentioning BullMQ / Redis / "async queue boundary" / queue retry).
+  // -------------------------------------------------------------------------
+
+  it('(HOR-410) 0-queue repo → no queue gaps or queue-templated blind-spots', () => {
+    // No boundaryCrossings (default) ⇒ hasQueueTopology === false. No evidence ⇒
+    // every runtime gap fires, including traces — the worst case for queue leakage.
+    const report = makeMinimalReport({
+      timeline: { events: [], boundaryCrossings: [] },
+      evidence: [],
+    });
+
+    const result = detectMissingEvidence(report);
+
+    // No queue dimension at all.
+    const dims = result.gaps.map((g) => g.dimension);
+    expect(dims).not.toContain('queue runtime state');
+
+    // No gap text (why / nextSource) nor blind-spot mentions a queue subsystem.
+    const queueRe = /bullmq|redis|queue/i;
+    for (const gap of result.gaps) {
+      expect(gap.why).not.toMatch(queueRe);
+      expect(gap.nextSource).not.toMatch(queueRe);
+    }
+    for (const blind of result.blindSpots) {
+      expect(blind).not.toMatch(queueRe);
+    }
+
+    // Sanity: the traces gap is still emitted (just without queue phrasing).
+    expect(dims).toContain('traces');
+    const tracesGap = result.gaps.find((g) => g.dimension === 'traces');
+    expect(tracesGap?.why).toContain('service boundaries');
+  });
+
+  it('(HOR-410) traces gap DOES invoke the async queue boundary when topology exists', () => {
+    // Positive control: with real queue topology, the queue-aware phrasing returns.
+    const report = makeMinimalReport({
+      timeline: {
+        events: [],
+        boundaryCrossings: [
+          { queueName: 'jobs', producer: 'api', worker: 'worker', evidenceId: 'ev-q' },
+        ],
+      },
+      evidence: [],
+    });
+
+    const result = detectMissingEvidence(report);
+    const tracesGap = result.gaps.find((g) => g.dimension === 'traces');
+    expect(tracesGap?.why).toContain('async queue boundary');
+  });
+
+  // -------------------------------------------------------------------------
   // Additional: gap text reflects configured connectors, not ticket names
   // -------------------------------------------------------------------------
 

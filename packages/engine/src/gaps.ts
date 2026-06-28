@@ -277,9 +277,15 @@ export function detectMissingEvidence(
   }
 
   if (!hasTrace && !sourceImpact) {
+    // HOR-410: only invoke the async queue boundary when the repo actually has queue
+    // topology. For synchronous / non-queue codebases (0 detected queues) the boundary
+    // a trace would cross is a service/process boundary, not a queue — claiming an "async
+    // queue boundary" here is fabricated queue-templating. Gate the phrasing on real topology.
     gaps.push({
       dimension: 'traces',
-      why: 'No distributed traces — cannot follow a single request across the async queue boundary.',
+      why: hasQueueTopology
+        ? 'No distributed traces — cannot follow a single request across the async queue boundary.'
+        : 'No distributed traces — cannot follow a single request across service boundaries.',
       nextSource: 'Tracing instrumentation',
       confidenceImpact: 0.07,
       // No `routeHint`: there is no `tracing` connector in `connect.ts` (SUPPORTED is
