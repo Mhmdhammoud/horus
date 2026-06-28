@@ -22,8 +22,15 @@ const db = vi.hoisted(() => ({
   openDb: vi.fn(),
   getInvestigation: vi.fn(),
 }));
+/** The Source-when-available memory vector index (M2). Mocked so we can assert best-effort wiring. */
+const vectorIndex = vi.hoisted(() => ({
+  upsert: vi.fn(async () => {}),
+  search: vi.fn(async () => []),
+  remove: vi.fn(async () => {}),
+}));
 const connectors = vi.hoisted(() => ({
   createConnectors: vi.fn(() => ({ code: { kind: 'fake-code' } })),
+  memoryIndexForEnv: vi.fn(() => vectorIndex),
 }));
 const store = vi.hoisted(() => ({
   add: vi.fn(),
@@ -216,6 +223,10 @@ beforeEach(() => {
   store.add.mockResolvedValue({ id: 'mem_new', kind: 'code-fact', scope: 'repo', visibility: 'private' });
   store.addLink.mockResolvedValue(undefined);
   store.setStatus.mockResolvedValue(undefined);
+  connectors.memoryIndexForEnv.mockReturnValue(vectorIndex);
+  vectorIndex.upsert.mockResolvedValue(undefined);
+  vectorIndex.search.mockResolvedValue([]);
+  vectorIndex.remove.mockResolvedValue(undefined);
 });
 afterEach(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
@@ -492,5 +503,85 @@ describe('runMemoryList', () => {
     expect(query.status).toEqual(
       expect.arrayContaining(['fresh', 'forgotten', 'deprecated', 'contradicted', 'pinned', 'possibly-stale']),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M2 — Source-when-available vector index wiring (best-effort, local-only)
+// ---------------------------------------------------------------------------
+
+describe('memory M2 — vector index wiring', () => {
+  it('add fires a best-effort vector upsert with the resolved repo + claim + scope', async () => {
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryAdd('Payments are idempotent', {
+      config,
+      scope: 'module:payments',
+    });
+    expect(code).toBe(0);
+    // The index is resolved Source-when-available for the resolved env (memoryIndexForEnv).
+    expect(connectors.memoryIndexForEnv).toHaveBeenCalled();
+    expect(vectorIndex.upsert).toHaveBeenCalledWith({
+      memoryId: 'mem_new',
+      claim: 'Payments are idempotent',
+      repo: 'my-api',
+      scope: 'module:payments',
+    });
+  });
+
+  it('add NEVER fails or dirties --json when the vector upsert throws (host down)', async () => {
+    vectorIndex.upsert.mockRejectedValueOnce(new Error('source host unreachable'));
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryAdd('A fact', { config, json: true });
+    expect(code).toBe(0);
+    // The durable record was still persisted, and --json stays a single parseable document.
+    expect(store.add).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(stdout())).toEqual({ ok: true, id: 'mem_new', kind: 'code-fact', scope: 'repo' });
+  });
+
+  it('confirm fires a best-effort upsert of the confirmed-outcome claim (repo-scoped)', async () => {
+    db.getInvestigation.mockResolvedValueOnce({
+      id: 'inv-1',
+      title: 'Payment retries piling up',
+      summary: null,
+      report: { summary: 'Stripe timeout filled the retry queue', confidence: 0.74 },
+    });
+    store.add.mockResolvedValueOnce({ id: 'mem_co', visibility: 'private' });
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryConfirm('inv-1', { config });
+    expect(code).toBe(0);
+    expect(vectorIndex.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        memoryId: 'mem_co',
+        repo: 'my-api',
+        scope: 'repo',
+        claim: expect.stringContaining('Payment retries piling up'),
+      }),
+    );
+  });
+
+  it('show threads the Source-when-available index into recallMemory (not a hard-coded Noop)', async () => {
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryShow('payments', { config });
+    expect(code).toBe(0);
+    expect(engine.recallMemory).toHaveBeenCalledWith(
+      store,
+      expect.objectContaining({ repo: 'my-api', text: 'payments' }),
+      expect.objectContaining({ limit: 50, vectorIndex }),
+    );
+  });
+
+  it('forget best-effort removes the derived vector for the soft-forgotten item', async () => {
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryForget('mem_1', { config });
+    expect(code).toBe(0);
+    expect(vectorIndex.remove).toHaveBeenCalledWith('mem_1');
+  });
+
+  it('forget tolerates a failing vector removal (still exits 0)', async () => {
+    vectorIndex.remove.mockRejectedValueOnce(new Error('host down'));
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryForget('mem_1', { config });
+    expect(code).toBe(0);
+    expect(store.setStatus).toHaveBeenCalledWith('mem_1', 'forgotten', expect.anything());
   });
 });

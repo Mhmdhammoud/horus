@@ -17,8 +17,9 @@
  */
 
 import pc from 'picocolors';
+import type { HorusConfig } from '@horus/core';
 import { loadConfig, resolveEnvironment, findRepoRoot } from '@horus/core';
-import { createConnectors } from '@horus/connectors';
+import { createConnectors, memoryIndexForEnv } from '@horus/connectors';
 import {
   openDb,
   getInvestigation,
@@ -31,8 +32,10 @@ import {
   memoryViewToJSON,
   createLocalMemoryStore,
   recallMemory,
+  NoopVectorIndex,
   MemorySecretError,
   type MemoryStore,
+  type MemoryVectorIndex,
   type RecalledMemory,
   type MemoryKind,
   type MemoryStatus,
@@ -98,6 +101,58 @@ async function withStore<T>(url: string, fn: (store: MemoryStore) => Promise<T>)
     return await fn(createLocalMemoryStore(db));
   } finally {
     await sql.end();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Memory vector index (M2) — Source-when-available, Jaccard-Noop fallback
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the {@link MemoryVectorIndex} for a project (spec M2 / bridge §6-7). When the
+ * project's repo has a `sourceHostUrl`, this is a `SourceMemoryVectorIndex` (nomic embeddings
+ * on the single-RW host) composed OVER a local `NoopVectorIndex` so a down/absent host degrades
+ * to deterministic Jaccard; otherwise it IS the `NoopVectorIndex`. Never throws — an unresolvable
+ * env falls back to Noop so memory commands keep working with no source host configured.
+ *
+ * LOCAL-ONLY (HARD RULE): the source index talks only to the local host; memory vectors are a
+ * rebuildable derived index and NEVER enter any cloud-sync path.
+ */
+function buildVectorIndex(config: HorusConfig, project: string): MemoryVectorIndex {
+  const fallback = new NoopVectorIndex();
+  try {
+    const renv = resolveEnvironment(config, { project });
+    // `memoryIndexForEnv` returns the structural twin of the engine seam; with a fallback
+    // supplied it never returns null (the `?? fallback` is belt-and-braces).
+    return (memoryIndexForEnv(renv, fallback) as MemoryVectorIndex | null) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Fire a BEST-EFFORT vector upsert. Memory add/confirm must NEVER block on or fail because of
+ * vector indexing (spec M2): the durable Postgres record is already persisted by the time this
+ * runs, and `SourceMemoryVectorIndex` already swallows host failures — this extra guard makes the
+ * contract explicit and covers a misbehaving fallback. Emits nothing, so `--json` stays clean.
+ */
+async function bestEffortUpsert(
+  index: MemoryVectorIndex,
+  entry: { memoryId: string; claim: string; repo: string; scope: string },
+): Promise<void> {
+  try {
+    await index.upsert(entry);
+  } catch {
+    // best-effort — a down host / index error never affects the command outcome
+  }
+}
+
+/** Fire a BEST-EFFORT vector removal (mirror of {@link bestEffortUpsert} for soft-forget). */
+async function bestEffortRemove(index: MemoryVectorIndex, memoryId: string): Promise<void> {
+  try {
+    await index.remove(memoryId);
+  } catch {
+    // best-effort — never affects the command outcome
   }
 }
 
@@ -187,8 +242,15 @@ export async function runMemoryShow(
     try {
       const view = await buildMemoryView(scope, { code, db, repoPath, project });
       // Merge PERSISTED authored items (memory_item) for this repo — clearly sectioned.
+      // Recall uses the Source-when-available vector index (M2); a down/absent host degrades
+      // to the deterministic Jaccard NoopVectorIndex inside `recallMemory` (best-effort).
       const store = createLocalMemoryStore(db);
-      const stored = await recallMemory(store, { repo: project, text: scope }, { limit: 50 });
+      const vectorIndex = buildVectorIndex(config, project);
+      const stored = await recallMemory(
+        store,
+        { repo: project, text: scope },
+        { limit: 50, vectorIndex },
+      );
 
       if (opts.json) {
         const parsed = JSON.parse(memoryViewToJSON(view)) as Record<string, unknown>;
@@ -282,6 +344,14 @@ export async function runMemoryAdd(
           pc.green(`Added memory item ${created.id} (${created.kind}, scope: ${created.scope}).`),
         );
       }
+      // M2: best-effort vector upsert AFTER the durable record is persisted + surfaced. Never
+      // blocks or fails the command — a down source host just leaves recall on Jaccard.
+      await bestEffortUpsert(buildVectorIndex(config, project), {
+        memoryId: created.id,
+        claim: text,
+        repo: project,
+        scope,
+      });
       return 0;
     });
   } catch (err) {
@@ -383,6 +453,14 @@ export async function runMemoryConfirm(
           ),
         );
       }
+      // M2: best-effort vector upsert of the confirmed-outcome claim (private, repo-scoped).
+      // The vector is LOCAL-ONLY — it never enters the cloud-sync path that handles `team` items.
+      await bestEffortUpsert(buildVectorIndex(config, project), {
+        memoryId: created.id,
+        claim,
+        repo: project,
+        scope: 'repo',
+      });
       return 0;
     } finally {
       await sql.end();
@@ -429,12 +507,30 @@ async function setStatusLeaf(
   }
 }
 
-export function runMemoryForget(
+export async function runMemoryForget(
   id: string,
   opts: { config?: string; note?: string; json?: boolean },
 ): Promise<number> {
   // Soft delete — the row is retained, excluded from recall, and the transition is audited.
-  return setStatusLeaf(id, 'forgotten', 'Forgot', opts);
+  const code = await setStatusLeaf(id, 'forgotten', 'Forgot', opts);
+  if (code === 0) {
+    // M2: best-effort drop of the DERIVED vector so a forgotten item stops surfacing in
+    // semantic recall. The durable row is untouched; this only prunes the rebuildable index.
+    // Resolve the project QUIETLY (no stderr noise) — skip removal if it cannot be resolved.
+    try {
+      const config = await loadConfig(opts.config);
+      let project: string | undefined;
+      try {
+        project = resolveEnvironment(config, {}).project;
+      } catch {
+        project = undefined;
+      }
+      if (project) await bestEffortRemove(buildVectorIndex(config, project), id.trim());
+    } catch {
+      // best-effort — vector cleanup never affects the forget outcome
+    }
+  }
+  return code;
 }
 
 export function runMemoryPin(
@@ -462,7 +558,12 @@ export async function runMemoryList(opts: {
     return await withStore(config.database.url, async (store) => {
       // Default recall hides forgotten/deprecated/contradicted; --all surfaces every status.
       const status: MemoryStatus[] | undefined = opts.all ? ALL_STATUSES : undefined;
-      const items = await recallMemory(store, { repo: project, status }, { limit: 200 });
+      const vectorIndex = buildVectorIndex(config, project);
+      const items = await recallMemory(
+        store,
+        { repo: project, status },
+        { limit: 200, vectorIndex },
+      );
 
       if (opts.json) {
         console.log(JSON.stringify({ project, items: items.map(recalledToJSON) }, null, 2));
