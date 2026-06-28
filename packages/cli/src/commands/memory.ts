@@ -40,6 +40,10 @@ import {
   type MemoryKind,
   type MemoryStatus,
 } from '@horus/engine';
+import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
+import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
+import { createCloudMemoryStore, dualWriteMemoryStore } from '../lib/cloud/memory-store.js';
+import { reportCloudError } from './context.js';
 
 // ---------------------------------------------------------------------------
 // Shared constants + helpers
@@ -94,8 +98,31 @@ function resolveProject(
   return project;
 }
 
-/** Open the store + pool, run `fn`, and ALWAYS close the pool (mirror architecture.ts/show). */
+/**
+ * Open the store + pool, run `fn`, and ALWAYS close the pool (mirror architecture.ts/show).
+ *
+ * When the repo is linked to Horus Cloud AND the user is logged in, the store becomes a DUAL-WRITE:
+ * local Postgres stays source-of-truth (reads + authoritative writes) and the cloud is an additive,
+ * best-effort mirror (a cloud failure warns, never blocks — spec §3c). Otherwise it is local-only.
+ */
 async function withStore<T>(url: string, fn: (store: MemoryStore) => Promise<T>): Promise<T> {
+  const cfg = readCloudConfig(repoRootOrCwd());
+  if (isCloudActive(cfg)) {
+    const session = authedClient();
+    if (session) {
+      const { db, sql } = await openDb(url);
+      try {
+        const local = createLocalMemoryStore(db);
+        const cloud = createCloudMemoryStore(session.client, cfg);
+        return await fn(dualWriteMemoryStore(local, cloud, (err) => void reportCloudError(err)));
+      } finally {
+        await sql.end();
+      }
+    }
+    console.error(
+      pc.yellow('Linked to Horus Cloud but not logged in — memory stays local only. Run `horus login`.'),
+    );
+  }
   const { db, sql } = await openDb(url);
   try {
     return await fn(createLocalMemoryStore(db));

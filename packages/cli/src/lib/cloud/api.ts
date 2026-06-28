@@ -180,6 +180,73 @@ export interface ChangeReportRecord {
   createdAt: string;
 }
 
+/**
+ * Horus Memory (M3): one memory item as it travels to the cloud `/v1` sync endpoint.
+ *
+ * `clientId` is the CLI's stable local ULID (`memory_item.id`) — it is the dedup/join key the
+ * cloud upserts on (`ON CONFLICT (organization_id, client_id)`). Tenancy (org/workspace/project +
+ * `createdByUserId`) is resolved SERVER-SIDE from the auth principal + the path project, so it is
+ * NOT carried here. PRIVACY (non-negotiable): there is NO `payload`/`embedding`/vector field —
+ * vectors never cross the trust boundary; the cloud re-embeds from `claim` text if it ever needs to.
+ */
+export interface MemoryItemSyncInput {
+  /** CLI memory_item.id (ULID) — the upsert key. */
+  clientId: string;
+  kind?: string;
+  claim?: string;
+  scope?: string;
+  source?: string;
+  status?: string;
+  confidence?: number;
+  /** Server CLAMPS confirmed-outcome → 'private'; the CLI only ever sends 'private' in M3. */
+  visibility?: "private" | "team";
+  /** Evidence refs (NOT vectors). Optional — the cloud may ignore it in the minimal cut. */
+  evidence?: unknown;
+  lastVerifiedAt?: string | null;
+  lastVerifiedHash?: string | null;
+  /** The CLI row's created_at (provenance only; cloud ordering uses its own created_at). */
+  clientCreatedAt?: string | null;
+}
+
+/** A memory item as the cloud returns it. `clientId` round-trips the CLI ULID. */
+export interface MemoryItemRecord {
+  id: string;
+  clientId: string;
+  organizationId: string;
+  workspaceId: string;
+  projectId: string | null;
+  createdByUserId: string | null;
+  visibility: "private" | "team";
+  kind: string;
+  claim: string;
+  scope: string;
+  source: string;
+  status: string;
+  confidence: number;
+  evidence?: unknown;
+  lastVerifiedAt: string | null;
+  lastVerifiedHash: string | null;
+  clientCreatedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MemorySyncResult {
+  items: MemoryItemRecord[];
+  counts?: { created: number; updated: number; skipped: number };
+  /** clientId (ULID) → cloud uuid. */
+  idMap?: Record<string, string>;
+}
+
+export interface MemoryListQuery {
+  status?: string;
+  kind?: string;
+  /** ilike on claim. */
+  search?: string;
+  limit?: number;
+  cursor?: string;
+}
+
 export class CloudClient {
   constructor(
     private readonly baseUrl: string,
@@ -397,6 +464,39 @@ export class CloudClient {
       "POST",
       `/v1/projects/${projectId}/changes`,
       body,
+    );
+  }
+
+  // ── Memory items (HOR Memory M3) ───────────────────────────────────────────
+
+  /**
+   * Batch-upsert authored memory items into the linked cloud project. Idempotent per element on
+   * the CLI's `clientId` ULID (cloud `ON CONFLICT (organization_id, client_id) DO UPDATE`), so the
+   * whole call is re-runnable. Vectors are NEVER part of the body (privacy invariant).
+   */
+  syncMemoryItems(projectId: string, body: { items: MemoryItemSyncInput[] }): Promise<MemorySyncResult> {
+    return this.request<MemorySyncResult>(
+      "POST",
+      `/v1/projects/${projectId}/memory-items/sync`,
+      body,
+    );
+  }
+
+  /** List a project's memory items (server-side org + visibility filtered). */
+  listMemoryItems(
+    projectId: string,
+    q?: MemoryListQuery,
+  ): Promise<{ items: MemoryItemRecord[]; nextCursor?: string }> {
+    const params = new URLSearchParams();
+    if (q?.status) params.set("status", q.status);
+    if (q?.kind) params.set("kind", q.kind);
+    if (q?.search) params.set("search", q.search);
+    if (q?.limit !== undefined) params.set("limit", String(q.limit));
+    if (q?.cursor) params.set("cursor", q.cursor);
+    const qs = params.toString();
+    return this.request<{ items: MemoryItemRecord[]; nextCursor?: string }>(
+      "GET",
+      `/v1/projects/${projectId}/memory-items${qs ? `?${qs}` : ""}`,
     );
   }
 }
