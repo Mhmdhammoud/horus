@@ -57,6 +57,11 @@ import { rankCauses, selectHeadlineCause, type CauseInput } from './score-cause.
 import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
 import { recallSimilar, storeIncidentMemory, deriveTags } from './memory.js';
+import type { AuditCtx, MemoryStore } from './memory-store.js';
+import {
+  autoInvestigationMemoryEnabled,
+  captureInvestigationMemory,
+} from './auto-investigation-memory.js';
 import { detectMissingEvidence, gapNextActions, type ConnectorFlags } from './gaps.js';
 import { route } from './router.js';
 import { buildRuntimeSourceStatus } from './source-status.js';
@@ -124,6 +129,13 @@ export interface EngineDeps {
   changeWindowDays?: number;
   /** Which connectors are configured for the env — drives honest gap text. */
   connectors?: ConnectorFlags;
+  /**
+   * Optional authored-memory store (HOR-432). When supplied, every investigation auto-captures a
+   * `kind:investigation` memory and links recurrences (`recurs-with`). Best-effort + CONTEXT-ONLY:
+   * the memory is never read by the confidence/verdict scoring path, and a failure never blocks the
+   * report. Absent ⇒ auto-memory is skipped gracefully (no API break).
+   */
+  store?: MemoryStore;
 }
 
 /** Map an evidence kind to its originating provider. */
@@ -1123,8 +1135,8 @@ export async function investigate(
       // HOR-386 — empty-return: route to `search` for the right name (deterministic).
       nextSteps: route({ command: 'investigate', empty: true, query: hint }),
     };
-    const persistedId = await persist(db, input, report);
-    if (persistedId) report.id = persistedId;
+    const persistedEmpty = await persist(db, input, report);
+    if (persistedEmpty) report.id = persistedEmpty.id;
     return report;
   }
 
@@ -3263,8 +3275,9 @@ export async function investigate(
   report.sourceStatus = buildRuntimeSourceStatus(evidence, connectorFlags);
 
   // j. PERSIST — may overwrite report.id with the DB-assigned id.
-  const persistedId = await persist(db, input, report);
-  if (persistedId) report.id = persistedId;
+  const persisted = await persist(db, input, report);
+  const persistedId = persisted?.id ?? null;
+  if (persistedId !== null) report.id = persistedId;
   // Record whether the report actually reached the investigation store so callers
   // can warn that a display-only run won't be retrievable via `horus ask`.
   report.persisted = persistedId !== null;
@@ -3275,6 +3288,27 @@ export async function investigate(
     const tags = deriveTags(report);
     report.similarIncidents = await recallSimilar(db, tags, persistedId, input.repo ?? null);
     await storeIncidentMemory(db, persistedId, report);
+
+    // HOR-432 — auto-capture a recurrence-CONSOLIDATING memory from THIS investigation. Default ON
+    // (HORUS_AUTO_INVESTIGATION_MEMORY=0/false disables). A recurrence UPDATES the existing
+    // investigation memory IN PLACE (bump count + refresh latest finding) instead of minting a twin.
+    // CONTEXT-ONLY: the captured memory is never read by the confidence/verdict scoring path.
+    // NON-BLOCKING: every failure is swallowed so auto-memory can never block report delivery.
+    const store = deps.store;
+    if (store !== undefined && autoInvestigationMemoryEnabled()) {
+      try {
+        const audit: AuditCtx = {
+          actor: { kind: 'system' },
+          note: 'auto: investigation memory (HOR-432)',
+        };
+        // Deterministic "seen at" stamp — the persisted investigation's createdAt (never Date.now()
+        // in the scoring path); falls back to a fresh Date only when the DB did not echo createdAt.
+        const reportTime = persisted?.createdAt ?? new Date();
+        await captureInvestigationMemory(store, persistedId, report, reportTime, audit);
+      } catch {
+        // Non-blocking — auto-memory must never prevent investigation delivery (spec §7/§8).
+      }
+    }
   }
   // If persist failed (db down / no id), similarIncidents stays [] and we skip store.
 
@@ -3347,7 +3381,7 @@ async function persist(
   db: HorusDb,
   input: InvestigationInput,
   report: InvestigationReport,
-): Promise<string | null> {
+): Promise<{ id: string; createdAt: Date | null } | null> {
   try {
     const inserted = await db
       .insert(investigationsTable)
@@ -3357,7 +3391,7 @@ async function persist(
         status: 'open',
         summary: report.summary,
       })
-      .returning({ id: investigationsTable.id });
+      .returning({ id: investigationsTable.id, createdAt: investigationsTable.createdAt });
 
     const row = inserted[0];
     if (!row) return null;
@@ -3406,7 +3440,7 @@ async function persist(
       );
     }
 
-    return investigationId;
+    return { id: investigationId, createdAt: row.createdAt ?? null };
   } catch {
     return null;
   }

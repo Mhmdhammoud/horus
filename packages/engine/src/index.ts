@@ -22,6 +22,7 @@ export * from './render-blast-radius.js';
 export * from './memory.js';
 export * from './memory-store.js';
 export * from './memory-detect.js';
+export * from './auto-investigation-memory.js';
 export * from './memory-recall.js';
 export * from './memory-view.js';
 export * from './render-memory.js';

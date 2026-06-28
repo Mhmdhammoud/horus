@@ -280,6 +280,7 @@ describe("dualWriteMemoryStore", () => {
       record: vi.fn(async () => {}),
       loadScoped: vi.fn(async () => []),
       add: vi.fn(async (item: NewMemoryItem) => ({ ...newItem(), id: item.id ?? "local-id" }) as never),
+      update: vi.fn(async (id: string) => ({ ...newItem(), id }) as never),
       get: vi.fn(async () => null),
       query: vi.fn(async () => []),
       setStatus: vi.fn(async () => {}),

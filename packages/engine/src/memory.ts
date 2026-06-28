@@ -38,6 +38,8 @@ import type {
   RemoveLinkOpts,
   LinksOpts,
   AnnotatedMemoryLink,
+  MemoryUpdate,
+  UpdateOpts,
 } from './memory-store.js';
 
 // ---------------------------------------------------------------------------
@@ -394,7 +396,13 @@ function isSymmetricRel(rel: string): boolean {
  * investigation report). Only these participate in recurrence detection; a non-incident claim
  * (code-fact/decision/...) never gets a signature, so it can never spuriously "recur".
  */
-const INCIDENT_DERIVED_KINDS: ReadonlySet<string> = new Set(['confirmed-outcome', 'incident-pattern']);
+const INCIDENT_DERIVED_KINDS: ReadonlySet<string> = new Set([
+  'confirmed-outcome',
+  'incident-pattern',
+  // HOR-432: auto-captured investigation memories carry the same incident-family signature/tags so
+  // they participate in recurrence detection. CONTEXT-ONLY — never read by the scoring path.
+  'investigation',
+]);
 
 /** Trim a stored signature; treat blank / all-delimiter ("", "||", "|") as absent (→ null). */
 function normalizeStoredSignature(sig: string | null | undefined): string | null {
@@ -556,6 +564,43 @@ export function createLocalMemoryStore(db: HorusDb): MemoryStore {
         note: audit.note ?? null,
       });
       return row;
+    },
+
+    async update(id: string, patch: MemoryUpdate, opts: UpdateOpts): Promise<MemoryItem> {
+      const current = await getById(id);
+      if (current === null) throw new Error(`memory item not found: ${id}`);
+
+      // Assemble only the fields the caller actually changed (an absent field is left untouched).
+      // HONESTY: `status` is NEVER updatable here — a refresh of claim/confidence/payload can never
+      // double as a status transition, and nothing here is read by the confidence/verdict scoring path.
+      const set: Partial<typeof memoryItem.$inferInsert> = {};
+      if (patch.claim !== undefined) {
+        assertClaimClean(patch.claim); // a refreshed claim is re-scanned for secrets (spec §7)
+        set.claim = patch.claim;
+      }
+      if (patch.confidence !== undefined) set.confidence = patch.confidence;
+      if (patch.payload !== undefined) set.payload = patch.payload;
+
+      if (Object.keys(set).length > 0) {
+        await db.update(memoryItem).set(set).where(eq(memoryItem.id, id));
+      }
+
+      await appendAudit({
+        memoryId: id,
+        action: opts.action ?? 'update',
+        actor: opts.audit.actor,
+        fromStatus: null,
+        toStatus: null,
+        note: opts.audit.note ?? null,
+        detail: {
+          ...(opts.detection ? { detection: opts.detection } : {}),
+          ...(opts.detail ?? {}),
+        },
+      });
+
+      const updated = await getById(id);
+      if (updated === null) throw new Error(`memory item vanished during update: ${id}`);
+      return updated;
     },
 
     get: getById,

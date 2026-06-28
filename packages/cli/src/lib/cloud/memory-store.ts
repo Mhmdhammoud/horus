@@ -41,6 +41,8 @@ import type {
   AddLinkOpts,
   RemoveLinkSpec,
   RemoveLinkOpts,
+  MemoryUpdate,
+  UpdateOpts,
 } from "@horus/engine";
 import {
   CloudClient,
@@ -250,6 +252,42 @@ export function createCloudMemoryStore(client: CloudClient, cfg: CloudConfig): C
       };
     },
 
+    // HOR-432 consolidation mirror: refresh the scalar fields the cloud accepts (claim/confidence).
+    // PRIVACY: `payload` NEVER leaves the device (it can stash a vector) — it is intentionally dropped
+    // here, exactly like `add`/`toSyncInput`. The return is the server echo (or a synthesized stub) and
+    // is only consumed by the dual-write wrapper, which discards it; reads always come from local.
+    async update(id: string, patch: MemoryUpdate, _opts: UpdateOpts): Promise<MemoryItem> {
+      const input: MemoryItemSyncInput = { clientId: id };
+      if (patch.claim !== undefined) input.claim = patch.claim;
+      if (patch.confidence !== undefined) input.confidence = patch.confidence;
+      const res = await client.syncMemoryItems(projectId, { items: [input] });
+      const record = res.items?.find((r) => r.clientId === id);
+      if (record) return fromWire(record, repoFallback);
+      // The cloud accepted the upsert but did not echo the row — synthesize a coherent stub (id stays
+      // the local ULID). Discarded by the dual-write wrapper; the local store is the read source.
+      return {
+        id,
+        kind: "investigation",
+        claim: patch.claim ?? "",
+        scope: "repo",
+        source: "investigation",
+        evidence: [],
+        confidence: patch.confidence ?? 0,
+        status: "fresh",
+        createdAt: new Date(),
+        lastVerifiedAt: null,
+        lastVerifiedHash: null,
+        orgId: null,
+        workspaceId: null,
+        repo: repoFallback,
+        userId: null,
+        visibility: "private",
+        payload: null,
+        signature: null,
+        tags: null,
+      };
+    },
+
     async get(id: string): Promise<MemoryItem | null> {
       try {
         return await findInList(id);
@@ -399,6 +437,14 @@ export function dualWriteMemoryStore(
       await mirror(async () => {
         await cloud.add({ ...item, id: row.id }, audit);
         await mirrorLatestAudit(row.id);
+      });
+      return row;
+    },
+    async update(id, patch, opts) {
+      const row = await local.update(id, patch, opts);
+      await mirror(async () => {
+        await cloud.update(id, patch, opts);
+        await mirrorLatestAudit(id);
       });
       return row;
     },

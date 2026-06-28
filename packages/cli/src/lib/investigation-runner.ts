@@ -40,7 +40,7 @@ import type {
 } from '@horus/connectors';
 import { openDb } from '@horus/db';
 import type { DbHandle } from '@horus/db';
-import { investigate } from '@horus/engine';
+import { investigate, createLocalMemoryStore } from '@horus/engine';
 import type { InvestigationReport } from '@horus/engine';
 import { resolveSourceHostUrl } from './ensure-host.js';
 
@@ -205,6 +205,9 @@ export async function runOneInvestigation(
     {
       code: ctx.code,
       db: ctx.dbHandle.db,
+      // HOR-432 — the authored-memory store so every investigation auto-captures a recurrence-aware
+      // memory. Best-effort + CONTEXT-ONLY in the engine (never feeds scoring, never blocks delivery).
+      store: createLocalMemoryStore(ctx.dbHandle.db),
       logs: ctx.logs,
       mongo: ctx.mongo,
       postgres: ctx.postgres,
