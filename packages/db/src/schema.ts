@@ -255,11 +255,15 @@ export const memoryAudit = pgTable(
     memoryId: text('memory_id')
       .notNull()
       .references(() => memoryItem.id, { onDelete: 'cascade' }),
-    action: text('action').notNull(), // add|confirm|forget|pin|mark-stale|verify|set-visibility|...
+    action: text('action').notNull(), // add|confirm|forget|pin|mark-stale|verify|set-visibility|link|...
     actor: jsonb('actor').notNull(), // {kind: user|agent|system, ...}
     fromStatus: text('from_status'),
     toStatus: text('to_status'),
     note: text('note'),
+    // Structured provenance for non-status events (e.g. `link`): { rel, toKind, toRef, detection, note? }.
+    // `detection` (manual|auto:recurrence|auto:contradiction|structural) is the HONEST record of how an
+    // edge was produced — auto-detectors are CONTEXT-ONLY and never feed confidence/verdict scoring.
+    detail: jsonb('detail'),
     at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('memory_audit_memory_idx').on(t.memoryId)],

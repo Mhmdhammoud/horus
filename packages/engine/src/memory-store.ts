@@ -58,13 +58,57 @@ export type MemoryKind =
 export type MemorySource = 'derived' | 'human' | 'confirmed-outcome';
 
 /**
- * Link relation. M1 is restricted to the four rels with concrete resolvers; the memory→memory
- * graph (supersedes/contradicts/recurs-with) is deferred (spec "minimal-but-complete cut").
+ * Link relation. The four M1 rels have concrete code/incident/evidence resolvers; the M3 memory→
+ * memory graph adds `supersedes`/`contradicts`/`recurs-with` (always with `toKind:'memory'`).
+ *
+ * FROZEN CONTRACT (day-0): the memory-rel vocabulary is exactly supersedes|contradicts|recurs-with.
+ * HONESTY INVARIANT (spec §8): these edges are CONTEXT ONLY. `contradicts` is a FLAG, never an
+ * auto-deletion or auto status-flip; precedent (`supersedes`) never overrides live evidence.
  */
-export type Rel = 'about-symbol' | 'about-file' | 'has-evidence' | 'about-incident';
+export type Rel =
+  | 'about-symbol'
+  | 'about-file'
+  | 'has-evidence'
+  | 'about-incident'
+  | 'supersedes'
+  | 'contradicts'
+  | 'recurs-with';
 
-/** Target kind a link points at (memory→memory deferred, so no `memory` here in M1). */
-export type LinkTargetKind = 'node' | 'incident' | 'evidence';
+/** The memory→memory rel subset — every one of these REQUIRES `toKind:'memory'`. */
+export type MemoryRel = 'supersedes' | 'contradicts' | 'recurs-with';
+
+/** Target kind a link points at. `memory` is the M3 memory→memory target. */
+export type LinkTargetKind = 'node' | 'incident' | 'evidence' | 'memory';
+
+/**
+ * How an edge was produced — a NON-OPTIONAL, honest provenance label recorded in the link audit.
+ * `manual` is human/agent-authored; the `auto:*` detectors are CONTEXT-ONLY (they propose edges and
+ * NEVER feed the confidence/verdict scoring path); `structural` is a derived graph relationship.
+ */
+export type LinkDetection = 'manual' | 'auto:recurrence' | 'auto:contradiction' | 'structural';
+
+/** Per-edge traversal direction relative to the queried item (`out` = authored from it). */
+export type LinkDirection = 'out' | 'in';
+
+/** Direction selector for {@link MemoryStore.links}; `both` (the memory-rel default) unions in+out. */
+export type LinkDirectionFilter = 'out' | 'in' | 'both';
+
+/** A persisted edge annotated with its direction relative to the item it was read for. */
+export interface AnnotatedMemoryLink extends MemoryLink {
+  direction: LinkDirection;
+}
+
+/** Options for {@link MemoryStore.addLink}. `detection` defaults to `manual`; `audit` is the actor/note. */
+export interface AddLinkOpts {
+  detection?: LinkDetection;
+  audit?: AuditCtx;
+}
+
+/** Options for {@link MemoryStore.links}. `direction` defaults to `both`; `rels` filters by relation. */
+export interface LinksOpts {
+  rels?: Rel[];
+  direction?: LinkDirectionFilter;
+}
 
 /** Statuses excluded from default recall (spec §4 step 3). */
 export const HIDDEN_STATUSES: readonly MemoryStatus[] = [
@@ -142,9 +186,19 @@ export interface MemoryStore {
   setVisibility(id: string, v: Visibility, audit: AuditCtx): Promise<void>;
   /** Refresh the staleness snapshot (lastVerifiedHash/At) and audit the verification. */
   verify(id: string, snap: { lastVerifiedHash: string | null }, audit: AuditCtx): Promise<void>;
-  /** Insert a typed link; returns the persisted row (with its minted id) so mirrors can forward it. */
-  addLink(link: NewMemoryLink): Promise<MemoryLink>;
-  links(id: string, opts?: { rels?: Rel[] }): Promise<MemoryLink[]>;
+  /**
+   * Insert a typed link and append a `link` audit row (provenance for the edge). Returns the
+   * persisted row (with its minted id) so mirrors can forward it. Memory→memory rels
+   * (supersedes/contradicts/recurs-with) require `toKind:'memory'`, both endpoints to exist and
+   * share a repo, and reject self-links; `recurs-with` is canonicalized + deduped (symmetric).
+   */
+  addLink(link: NewMemoryLink, opts?: AddLinkOpts): Promise<MemoryLink>;
+  /**
+   * Traverse an item's edges, each annotated with its {@link LinkDirection}. `direction` defaults to
+   * `both` (out = authored from the item; in = a `toKind:'memory'` edge pointing AT the item), so a
+   * symmetric `recurs-with` edge always surfaces from either endpoint.
+   */
+  links(id: string, opts?: LinksOpts): Promise<AnnotatedMemoryLink[]>;
   /** The append-only audit trail for an item, most-recent-first. */
   history(id: string): Promise<MemoryAudit[]>;
 }

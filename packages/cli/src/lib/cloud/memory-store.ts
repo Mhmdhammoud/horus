@@ -35,8 +35,10 @@ import type {
   Visibility,
   AuditCtx,
   MemoryLink,
+  AnnotatedMemoryLink,
   MemoryAudit,
   MemoryEvidence,
+  AddLinkOpts,
 } from "@horus/engine";
 import {
   CloudClient,
@@ -291,7 +293,9 @@ export function createCloudMemoryStore(client: CloudClient, cfg: CloudConfig): C
     },
 
     // ---- links / audit: WRITE-mirrored to the cloud; reads stay local via dual-write ----
-    async addLink(link: NewMemoryLink): Promise<MemoryLink> {
+    // `opts` (detection/audit) is accepted for interface fidelity; the cloud mirror carries the link
+    // itself, while its audit row is forwarded separately via `pushAudit` (the trail stays append-only).
+    async addLink(link: NewMemoryLink, _opts?: AddLinkOpts): Promise<MemoryLink> {
       const input = toLinkSyncInput(link);
       await client.syncMemoryItems(projectId, { links: [input] });
       // Echo a coherent MemoryLink — `id` is the CLI link id (cloud uuids stay hidden, as for items).
@@ -312,7 +316,7 @@ export function createCloudMemoryStore(client: CloudClient, cfg: CloudConfig): C
     },
 
     // Reads are never cloud-backed (the cloud is a write mirror); the dual-write reads from local.
-    async links(): Promise<MemoryLink[]> {
+    async links(): Promise<AnnotatedMemoryLink[]> {
       return [];
     },
     async history(): Promise<MemoryAudit[]> {
@@ -403,10 +407,11 @@ export function dualWriteMemoryStore(
         await mirrorLatestAudit(id);
       });
     },
-    async addLink(link) {
-      const row = await local.addLink(link);
-      // Forward the persisted link's REAL id so the cloud dedupes on the same idempotencyKey.
-      await mirror(() => cloud.addLink({ ...link, id: row.id }));
+    async addLink(link, opts) {
+      const row = await local.addLink(link, opts);
+      // Forward the persisted link's REAL id so the cloud dedupes on the same idempotencyKey. The
+      // link audit row (written locally with its detection provenance) is mirrored by `memory sync`.
+      await mirror(() => cloud.addLink({ ...link, id: row.id }, opts));
       return row;
     },
   };

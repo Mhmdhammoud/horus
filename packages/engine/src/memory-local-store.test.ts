@@ -204,9 +204,10 @@ describe('createLocalMemoryStore (embedded pglite)', () => {
     expect(onlySymbol).toHaveLength(1);
     expect(onlySymbol[0]!.toFilePath).toBe('src/queue.ts');
 
-    // memory→memory rels are deferred in M1 — rejected at the store boundary.
+    // A memory rel with the wrong toKind is rejected at the store boundary (memory rels require
+    // toKind:'memory'). The memory→memory graph itself is covered in memory-link-graph.test.ts.
     await expect(
-      store.addLink({ id: '', fromMemoryId: item.id, rel: 'supersedes', toKind: 'memory', toRef: 'mem_other' }),
+      store.addLink({ id: '', fromMemoryId: item.id, rel: 'supersedes', toKind: 'node', toRef: 'mem_other' }),
     ).rejects.toThrow(/unsupported memory_link rel/);
   }, 30_000);
 });

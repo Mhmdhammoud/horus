@@ -1,0 +1,1 @@
+ALTER TABLE "memory_audit" ADD COLUMN "detail" jsonb;

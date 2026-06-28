@@ -32,6 +32,10 @@ import type {
   MemoryStatus,
   Visibility,
   Rel,
+  MemoryRel,
+  AddLinkOpts,
+  LinksOpts,
+  AnnotatedMemoryLink,
 } from './memory-store.js';
 
 // ---------------------------------------------------------------------------
@@ -359,13 +363,29 @@ function genId(prefix: string): string {
   return `${prefix}_${globalThis.crypto.randomUUID()}`;
 }
 
-/** M1 link relations with concrete resolvers — memory→memory rels are deferred (spec cut). */
+/** M1 link relations with concrete code/incident/evidence resolvers (any `toKind`). */
 const M1_RELS: ReadonlySet<Rel> = new Set<Rel>([
   'about-symbol',
   'about-file',
   'has-evidence',
   'about-incident',
 ]);
+
+/**
+ * M3 memory→memory relations (FROZEN day-0 vocabulary). Each REQUIRES `toKind:'memory'`.
+ * `supersedes`/`contradicts` are DIRECTIONAL (stored as authored); `recurs-with` is SYMMETRIC and
+ * canonicalized (stored from the lexicographically-smaller id) so the pair dedupes.
+ */
+const MEMORY_RELS: ReadonlySet<Rel> = new Set<MemoryRel>([
+  'supersedes',
+  'contradicts',
+  'recurs-with',
+]);
+
+/** True for the symmetric memory rel that gets canonicalized + deduped on write. */
+function isSymmetricRel(rel: string): boolean {
+  return rel === 'recurs-with';
+}
 
 /** Map a target status onto the audit action that produced it (user-facing provenance). */
 function statusAction(status: MemoryStatus): string {
@@ -421,6 +441,7 @@ export function createLocalMemoryStore(db: HorusDb): MemoryStore {
     fromStatus: string | null;
     toStatus: string | null;
     note: string | null;
+    detail?: Record<string, unknown> | null;
   }): Promise<void> => {
     await db.insert(memoryAudit).values({
       id: genId('aud'),
@@ -430,6 +451,7 @@ export function createLocalMemoryStore(db: HorusDb): MemoryStore {
       fromStatus: a.fromStatus,
       toStatus: a.toStatus,
       note: a.note,
+      detail: a.detail ?? null,
     });
   };
 
@@ -590,28 +612,116 @@ export function createLocalMemoryStore(db: HorusDb): MemoryStore {
       });
     },
 
-    async addLink(link: NewMemoryLink): Promise<MemoryLink> {
-      if (!M1_RELS.has(link.rel as Rel)) {
-        throw new Error(`unsupported memory_link rel in M1: ${link.rel}`);
+    async addLink(link: NewMemoryLink, opts?: AddLinkOpts): Promise<MemoryLink> {
+      const rel = link.rel;
+      const isMemoryRel = MEMORY_RELS.has(rel as Rel);
+
+      // Gate: an M1 rel (any toKind) OR a memory rel that explicitly targets another memory item.
+      if (!M1_RELS.has(rel as Rel) && !(isMemoryRel && link.toKind === 'memory')) {
+        throw new Error(`unsupported memory_link rel in M1: ${rel} (toKind=${link.toKind})`);
       }
+
+      let fromId = link.fromMemoryId;
+      let toRef = link.toRef;
+
+      // Memory→memory edges are validated against the live store: both endpoints must exist, share a
+      // repo, and not be a self-link. `recurs-with` is canonicalized + deduped (symmetric).
+      if (isMemoryRel) {
+        if (fromId === toRef) {
+          throw new Error(`memory_link rejects a self-link: ${rel} ${fromId} -> ${toRef}`);
+        }
+        const fromItem = await getById(fromId);
+        if (fromItem === null) throw new Error(`memory_link from item not found: ${fromId}`);
+        const toItem = await getById(toRef);
+        if (toItem === null) throw new Error(`memory_link to item not found: ${toRef}`);
+        if (fromItem.repo !== toItem.repo) {
+          throw new Error(
+            `memory_link rejects a cross-repo edge: ${fromItem.repo} -> ${toItem.repo}`,
+          );
+        }
+
+        if (isSymmetricRel(rel)) {
+          // Canonicalize the unordered pair so (a,b) and (b,a) collapse to one stored row.
+          if (fromId > toRef) [fromId, toRef] = [toRef, fromId];
+          // Dedupe: if the canonical edge already exists, return it rather than inserting a twin.
+          const existing = await db
+            .select()
+            .from(memoryLink)
+            .where(
+              and(
+                eq(memoryLink.fromMemoryId, fromId),
+                eq(memoryLink.rel, rel),
+                eq(memoryLink.toRef, toRef),
+                eq(memoryLink.toKind, 'memory'),
+              ),
+            )
+            .limit(1);
+          const dup = existing[0];
+          if (dup !== undefined) return dup;
+        }
+      }
+
       const id = (link.id ?? '').trim() || genId('lnk');
-      const inserted = await db.insert(memoryLink).values({ ...link, id }).returning();
+      const inserted = await db
+        .insert(memoryLink)
+        .values({ ...link, id, fromMemoryId: fromId, toRef })
+        .returning();
       const row = inserted[0];
       if (row === undefined) throw new Error('memory_link insert returned no row');
+
+      // Append a `link` audit row keyed to the FROM item — honest provenance for every edge.
+      // `detection` is NON-OPTIONAL and defaults to `manual`; auto-detectors pass their own label.
+      await appendAudit({
+        memoryId: row.fromMemoryId,
+        action: 'link',
+        actor: opts?.audit?.actor ?? { kind: 'system' },
+        fromStatus: null,
+        toStatus: null,
+        note: opts?.audit?.note ?? null,
+        detail: {
+          rel: row.rel,
+          toKind: row.toKind,
+          toRef: row.toRef,
+          detection: opts?.detection ?? 'manual',
+          ...(opts?.audit?.note ? { note: opts.audit.note } : {}),
+        },
+      });
       return row;
     },
 
-    async links(id: string, opts?: { rels?: Rel[] }): Promise<MemoryLink[]> {
-      const conds = [eq(memoryLink.fromMemoryId, id)];
-      if (opts?.rels && opts.rels.length > 0) {
-        const ors = opts.rels.map((r) => eq(memoryLink.rel, r));
-        conds.push(ors.length === 1 ? ors[0]! : or(...ors)!);
+    async links(id: string, opts?: LinksOpts): Promise<AnnotatedMemoryLink[]> {
+      const direction = opts?.direction ?? 'both';
+      const relFilter =
+        opts?.rels && opts.rels.length > 0
+          ? (opts.rels.length === 1
+              ? eq(memoryLink.rel, opts.rels[0]!)
+              : or(...opts.rels.map((r) => eq(memoryLink.rel, r)))!)
+          : undefined;
+
+      const out: AnnotatedMemoryLink[] = [];
+
+      if (direction === 'out' || direction === 'both') {
+        const conds = [eq(memoryLink.fromMemoryId, id)];
+        if (relFilter) conds.push(relFilter);
+        const rows = await db.select().from(memoryLink).where(and(...conds));
+        for (const r of rows) out.push({ ...r, direction: 'out' });
       }
-      return db
-        .select()
-        .from(memoryLink)
-        .where(and(...conds))
-        .orderBy(memoryLink.createdAt, memoryLink.id);
+
+      if (direction === 'in' || direction === 'both') {
+        // Incoming = a memory→memory edge pointing AT this item.
+        const conds = [eq(memoryLink.toKind, 'memory'), eq(memoryLink.toRef, id)];
+        if (relFilter) conds.push(relFilter);
+        const rows = await db.select().from(memoryLink).where(and(...conds));
+        for (const r of rows) out.push({ ...r, direction: 'in' });
+      }
+
+      // Deterministic order: oldest-first by createdAt, id as the stable tie-break.
+      // Coerce createdAt (pglite may hand it back as a timestamp string, not a Date).
+      return out.sort(
+        (a, b) =>
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() ||
+          (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+      );
     },
 
     async history(id: string): Promise<MemoryAudit[]> {

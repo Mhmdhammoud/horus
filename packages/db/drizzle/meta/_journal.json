@@ -64,6 +64,13 @@
       "when": 1750180800000,
       "tag": "0008_outcome_label",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1750267200000,
+      "tag": "0009_memory_audit_detail",
+      "breakpoints": true
     }
   ]
 }

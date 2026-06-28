@@ -103,5 +103,11 @@ export const EMBEDDED_MIGRATIONS: readonly EmbeddedMigration[] = [
       "CREATE INDEX \"outcome_label_project_idx\" ON \"outcome_label\" USING btree (\"project\");",
       "CREATE INDEX \"outcome_label_at_idx\" ON \"outcome_label\" USING btree (\"at\");"
     ]
+  },
+  {
+    "tag": "0009_memory_audit_detail",
+    "statements": [
+      "ALTER TABLE \"memory_audit\" ADD COLUMN \"detail\" jsonb;"
+    ]
   }
 ];

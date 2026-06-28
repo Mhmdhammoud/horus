@@ -217,6 +217,7 @@ describe("createCloudMemoryStore", () => {
         fromStatus: null,
         toStatus: "fresh",
         note: null,
+        detail: null,
         at: new Date("2026-06-02T03:04:05.000Z"),
       },
     ];
@@ -337,6 +338,7 @@ describe("dualWriteMemoryStore", () => {
       fromStatus: null,
       toStatus: "fresh",
       note: null,
+      detail: null,
       at: new Date("2026-06-01T00:00:00.000Z"),
     };
     (local.history as ReturnType<typeof vi.fn>).mockResolvedValue([auditRow]);
@@ -368,7 +370,9 @@ describe("dualWriteMemoryStore", () => {
       toKind: "node",
       toRef: "x",
     } as NewMemoryLink);
-    expect(cloud.addLink).toHaveBeenCalledWith(expect.objectContaining({ id: "lnk_real" }));
+    // The persisted link's REAL id is forwarded; the addLink opts (detection/audit) ride along too
+    // (here undefined — the caller passed none).
+    expect(cloud.addLink).toHaveBeenCalledWith(expect.objectContaining({ id: "lnk_real" }), undefined);
   });
 
   it("skips audit mirroring when the mirror is a plain store without pushAudit", async () => {

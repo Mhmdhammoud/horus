@@ -757,7 +757,9 @@ export async function runMemorySync(opts: {
     // Gather the links + audit for exactly these items (forgotten items are excluded above, so
     // their trail is not backfilled — spec §3c). Both are keyed by the same local ULIDs the cloud
     // resolves against, so re-running stays idempotent (links dedupe; audit is append-only).
-    const linkLists = await Promise.all(items.map((it) => store.links(it.id)));
+    // Outgoing only: each edge is emitted once by its FROM item (a symmetric `recurs-with` is stored
+    // canonically, so the owner side carries it) — `direction:'both'` would double-count the pair.
+    const linkLists = await Promise.all(items.map((it) => store.links(it.id, { direction: "out" })));
     const auditLists = await Promise.all(items.map((it) => store.history(it.id)));
     links = linkLists.flat();
     auditRows = auditLists.flat();
