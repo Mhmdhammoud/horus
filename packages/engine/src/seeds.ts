@@ -356,6 +356,42 @@ export function isDeprioritizedSeedPath(filePath: string): boolean {
   );
 }
 
+/**
+ * HOR-430: a deprioritized (test/example/demo/docs) candidate is normally hard-demoted below
+ * every real candidate (HOR-376) so core code outranks demo/test code on a *shared keyword*.
+ * But a STRONG, ANCHORED exact match in such a file must still be able to surface — the
+ * down-weight is a ranking aid, not a filter. A candidate is "anchored" when the request
+ * points at it unambiguously rather than merely sharing a token:
+ *
+ *   1. the user qualified the exact symbol AND its container/file (`Class.method`, `path:symbol`)
+ *      via {@link qualifierBoost}'s decisive container match — e.g. `examples/app.ts:run`;
+ *   2. the source-impact prompt named this exact symbol (`preferNamed`);
+ *   3. a CODE-shaped hint resolved to a high-confidence exact-content / semantic hit here
+ *      (search relevance ≈ 1.0) — i.e. the vector/lexical signal, not a coincidental keyword.
+ *
+ * Anchored candidates keep only the SOFT path penalty (HOR-361/365), so they still rank below an
+ * EQUAL-strength real candidate but can overcome a weak one. This changes ranking ONLY — never
+ * verdicts, confidence, or the honesty/"partly" logic.
+ */
+export function isAnchoredExactSeed(
+  s: Symbol,
+  qualifier?: SeedQualifier | null,
+  hintHasCode?: boolean,
+  preferNamed?: string,
+): boolean {
+  // (1) Decisive qualifier: name === qualifier symbol AND container/file matches. qualifierBoost
+  // returns 6 for a bare-name-only match and ≥46 once the container matches, so ≥40 isolates the
+  // exact, anchored match from an unrelated same-named symbol.
+  if (qualifier && qualifierBoost(s, qualifier) >= 40) return true;
+  // (2) The source-impact prompt named this exact symbol.
+  if (preferNamed !== undefined && s.name.toLowerCase() === preferNamed.toLowerCase()) return true;
+  // (3) A code hint resolved to a high-confidence exact-content/semantic hit here. For a prose
+  // hint the search score is noisy (a schema named `Brand` scores 1.0 for "brand orders"), so this
+  // anchor is restricted to code-shaped hints where ≈1.0 IS the raise site.
+  if (hintHasCode === true && s.score !== undefined && s.score >= 0.9) return true;
+  return false;
+}
+
 export function rankSeeds(
   seeds: Symbol[],
   hintTokens?: string[],
@@ -371,15 +407,22 @@ export function rankSeeds(
     role: seedRole(symbol),
     i,
     deprio: isDeprioritizedSeedPath(symbol.filePath),
+    // HOR-430: a deprioritized candidate the request anchors on exactly is exempt from the
+    // hard demotion below — it keeps only the soft path penalty so a strong/exact match in an
+    // example/test file can still surface.
+    anchored: isAnchoredExactSeed(symbol, qualifier, hintHasCode, preferNamed),
   }));
   // HOR-376: the −4 path penalties aren't decisive — a test fixture whose name hugs the hint
   // (e.g. pydantic's `tests/mypy/modules/plugin_fail.py` for "model validation recursion") can
   // still outscore the real implementation. When ANY real (non-test/example) candidate exists,
   // hard-demote every deprioritized candidate below all real ones. They remain available as a
   // last resort for genuinely test/example-only repos.
+  // HOR-430: skip the hard demotion for an ANCHORED exact match (decisive qualifier / prompt-named
+  // / high-confidence code-hint hit) so it can still surface — it keeps the soft −4 path penalty
+  // from scoreSeed, so it ranks below an equal-strength real candidate but can beat a weak one.
   const hasReal = scored.some((s) => !s.deprio);
   if (hasReal) {
-    for (const s of scored) if (s.deprio) s.score -= 1000;
+    for (const s of scored) if (s.deprio && !s.anchored) s.score -= 1000;
   }
   return scored
     .sort((a, b) => (b.score === a.score ? a.i - b.i : b.score - a.score))

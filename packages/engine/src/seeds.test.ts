@@ -8,6 +8,7 @@ import {
   parseSeedQualifier,
   parseNamedSymbols,
   qualifierBoost,
+  isAnchoredExactSeed,
 } from './seeds.js';
 
 function sym(name: string, filePath: string): Symbol {
@@ -35,6 +36,63 @@ describe('rankSeeds — a real candidate beats a hint-hugging test fixture (HOR-
     const t1 = sym('test_alpha', 'tests/test_alpha.py');
     const t2 = sym('test_beta', 'tests/test_beta.py');
     expect(rankSeeds([t1, t2], ['alpha']).map((r) => r.symbol.name)[0]).toBe('test_alpha');
+  });
+});
+
+describe('rankSeeds — soft de-prioritization of examples/demo/test paths (HOR-430)', () => {
+  it('ranks an examples/ candidate below an EQUAL-strength src/ candidate (shared keyword)', () => {
+    // Same name + same search score; only the path differs. Core source must outrank the demo.
+    const demo: Symbol = { id: 'd', name: 'createServer', filePath: 'examples/basic/app.ts', score: 0.5 };
+    const core: Symbol = { id: 'c', name: 'createServer', filePath: 'src/server.ts', score: 0.5 };
+    const ranked = rankSeeds([demo, core], ['server'], undefined, false);
+    expect(ranked[0]?.symbol.id).toBe('c');
+    expect(ranked.map((r) => r.symbol.id)).toContain('d'); // never filtered out — honesty
+  });
+
+  it('an EXACT, anchored match in examples/ still surfaces above a weak real candidate (qualifier)', () => {
+    // The user explicitly pointed at the example file: `examples/express/app.ts:configureApp`.
+    // That decisive anchor must let the example surface, even though a same-named real symbol exists.
+    const exampleExact = sym('configureApp', 'examples/express/app.ts');
+    const weakReal: Symbol = { id: 'w', name: 'configureApp', filePath: 'src/legacy/old-setup.ts', score: 0.01 };
+    const q = parseSeedQualifier('examples/express/app.ts:configureApp')!;
+    // Without the anchor the example is hard-demoted below the real candidate.
+    expect(rankSeeds([exampleExact, weakReal], ['configureapp'])[0]?.symbol.id).toBe('w');
+    // With the decisive qualifier anchor, the exact example surfaces first.
+    const ranked = rankSeeds([exampleExact, weakReal], ['configureapp'], undefined, false, q);
+    expect(ranked[0]?.symbol.filePath).toBe('examples/express/app.ts');
+  });
+
+  it('a high-confidence exact-content hit in examples/ surfaces on a CODE hint, but stays below an equal real hit', () => {
+    // A code hint (e.g. ERR_SYNC_04) resolves to a near-1.0 exact-content match. A strong hit in
+    // an example surfaces above a weak real candidate (anchored), yet an equal-strength real hit
+    // still wins thanks to the soft path penalty.
+    const exampleHit: Symbol = { id: 'eh', name: 'syncOnce', filePath: 'examples/sync/run.ts', score: 1 };
+    const weakReal: Symbol = { id: 'wr', name: 'syncOnce', filePath: 'src/util/misc.ts', score: 0.02 };
+    const strongReal: Symbol = { id: 'sr', name: 'syncOnce', filePath: 'src/sync/engine.ts', score: 1 };
+    expect(isAnchoredExactSeed(exampleHit, null, true)).toBe(true);
+    // vs a WEAK real candidate: the anchored example surfaces.
+    expect(rankSeeds([exampleHit, weakReal], ['err_sync_04'], undefined, true)[0]?.symbol.id).toBe('eh');
+    // vs an EQUAL-strength real candidate: the soft path penalty keeps core source on top.
+    expect(rankSeeds([exampleHit, strongReal], ['err_sync_04'], undefined, true)[0]?.symbol.id).toBe('sr');
+  });
+
+  it('a mere shared-keyword match in a test fixture is NOT anchored (HOR-376 still holds)', () => {
+    // A prose/keyword hint with no qualifier, no prompt-name, and no high-confidence score is not
+    // an anchor — the fixture stays hard-demoted below real source.
+    const fixture = sym('Model', 'tests/mypy/modules/plugin_fail.py');
+    const real = sym('build_schema', 'pydantic/_internal/_core_utils.py');
+    expect(isAnchoredExactSeed(fixture, null, false)).toBe(false);
+    expect(rankSeeds([fixture, real], ['model', 'validation', 'recursion'])[0]?.symbol.name).toBe(
+      'build_schema',
+    );
+  });
+
+  it('isAnchoredExactSeed: prose high-score is NOT an anchor (only code hints), bare-name qualifier is NOT decisive', () => {
+    const schema: Symbol = { id: 's', name: 'Brand', filePath: 'docs/snippets/brand.py', score: 1 };
+    expect(isAnchoredExactSeed(schema, null, false)).toBe(false); // prose, not code
+    const bareNameElsewhere = sym('run', 'examples/app.ts');
+    const q = parseSeedQualifier('SyncService.run')!; // name matches but container does not
+    expect(isAnchoredExactSeed(bareNameElsewhere, q, false)).toBe(false);
   });
 });
 
