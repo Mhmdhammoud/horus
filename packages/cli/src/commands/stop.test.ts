@@ -43,6 +43,7 @@ import * as childProcess from 'node:child_process';
 import { runStop } from './stop.js';
 
 const mockIsHostHealthy = vi.mocked(connectors.isHostHealthy);
+const mockReadSourceHostUrl = vi.mocked(connectors.readSourceHostUrl);
 const mockReadSpawnedHost = vi.mocked(connectors.readSpawnedHost);
 const mockReadSourceHostPid = vi.mocked(connectors.readSourceHostPid);
 const mockExecFile = vi.mocked(childProcess.execFile);
@@ -352,6 +353,78 @@ describe('horus stop --all — summary counts correctly', () => {
 
     expect(code).toBe(0); // already gone — NOT counted as a failure
     expect(killSpy).not.toHaveBeenCalledWith(59176, 'SIGTERM'); // never signal the reused pid
+    killSpy.mockRestore();
+  });
+});
+
+describe('horus stop — backend port-fallback host (HOR-409 cleanup gap)', () => {
+  // The backend was asked for 8420 but it was taken, so it BOUND 8421 and recorded 8421 in
+  // source/host.json (reconcile then updated spawned-host.json to pid + 8421). The process's OWN
+  // argv, however, still shows the REQUESTED port 8420 — `horus-source host` never rewrites it.
+  // `horus stop` resolves the bound port (8421) from host.json, so a strict `--port 8421` argv
+  // match fails and the host is leaked. This was the dramatiq + sanic GO-WITH-CAVEATS.
+  const FALLBACK_RECORD: SpawnedHostRecord = {
+    pid: 42000,
+    port: 8421, // reconciled to the ACTUAL bound port
+    root: '/repo/root',
+    startedAt: new Date(Date.now() - 30_000).toISOString(),
+  };
+
+  it('terminates its own host when the backend corroborates pid + bound port + repo', async () => {
+    mockReadSourceHostUrl.mockReturnValue('http://127.0.0.1:8421'); // bound port
+    mockIsHostHealthy.mockResolvedValue(true);
+    mockReadSpawnedHost.mockReturnValue(FALLBACK_RECORD);
+    // Backend's own record proves pid 42000 serves THIS repo on the bound port 8421.
+    mockReadSourceHostPid.mockReturnValue({ pid: 42000, port: 8421, repoPath: '/repo/root' });
+
+    let argsCalls = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (mockExecFile as any).mockImplementation(
+      (_cmd: unknown, args: string[], _opts: unknown, cb: ExecFileCb) => {
+        const key = args.join(' ');
+        if (key.includes('etime=')) {
+          cb(null, { stdout: '00:30', stderr: '' });
+        } else if (key.includes('args=')) {
+          argsCalls++;
+          // argv carries the REQUESTED port (8420), NOT the bound port (8421).
+          if (argsCalls <= 1) cb(null, { stdout: 'horus-source host --port 8420', stderr: '' });
+          else cb(new Error('no such process'), undefined); // exits after SIGTERM
+        } else {
+          cb(new Error('unknown'), undefined);
+        }
+      },
+    );
+
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    const promise = runStop({});
+    await drainTimers();
+    const code = await promise;
+
+    expect(code).toBe(0);
+    expect(killSpy).toHaveBeenCalledWith(42000, 'SIGTERM'); // host actually stopped, not leaked
+    killSpy.mockRestore();
+  });
+
+  it('still aborts when the port mismatch is NOT a corroborated fallback (safety preserved)', async () => {
+    mockReadSourceHostUrl.mockReturnValue('http://127.0.0.1:8421');
+    mockIsHostHealthy.mockResolvedValue(true);
+    mockReadSpawnedHost.mockReturnValue(FALLBACK_RECORD);
+    // No backend record to corroborate the bound port — a bare argv-port mismatch must NOT be
+    // trusted (could be PID reuse by another repo's host); stop aborts rather than guess.
+    mockReadSourceHostPid.mockReturnValue(null);
+
+    stubExecWith({
+      'args=': 'horus-source host --port 8420', // mismatched, uncorroborated
+      'etime=': '00:30',
+    });
+
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    const promise = runStop({});
+    await drainTimers();
+    const code = await promise;
+
+    expect(code).toBe(1); // aborted for safety
+    expect(killSpy).not.toHaveBeenCalled(); // never signalled an unproven pid
     killSpy.mockRestore();
   });
 });

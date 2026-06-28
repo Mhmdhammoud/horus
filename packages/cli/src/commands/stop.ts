@@ -5,8 +5,12 @@
  *
  * Safety model:
  *  1. Read `.horus/spawned-host.json` (written by `startHost` at spawn time).
- *  2. Verify the PID's full argument string contains `horus-source host --port <port>`
- *     (handles Python-backed executables where comm= returns the interpreter).
+ *  2. Verify the PID is genuinely THIS repo's `horus-source host` — its argv either matches
+ *     `horus-source host --port <port>` on the resolved port, OR (when the backend fell back
+ *     from a contended port and so keeps the REQUESTED port in its argv while binding the
+ *     BOUND port) it is a `horus-source host` whose identity the backend's own record
+ *     (`source/host.json`) corroborates on pid + bound port + repo (HOR-409 cleanup gap).
+ *     This handles Python-backed executables where comm= returns the interpreter.
  *  3. Guard against PID reuse: compare the process's elapsed time (etimes=)
  *     against the recorded startedAt, rejecting divergences > 60 s.
  *  4. Only then send SIGTERM.
@@ -19,7 +23,7 @@
 import { execFile } from 'node:child_process';
 import { unlink } from 'node:fs';
 import { promisify } from 'node:util';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import pc from 'picocolors';
 import { findRepoRoot, readRegistry, HORUS_DIR } from '@horus/core';
 import {
@@ -157,7 +161,7 @@ async function stopHost(root: string, hostUrl: string): Promise<number> {
     return 0;
   }
 
-  if (!hostArgvRegex(port).test(info.args)) {
+  if (!isOwnHostProcess(spawned.pid, port, root, info.args)) {
     console.error(
       pc.red(
         `Pid ${spawned.pid} args do not match "horus-source host --port ${port}". ` +
@@ -228,6 +232,45 @@ function hostArgvRegex(port: number): RegExp {
   );
 }
 
+/**
+ * Like {@link hostArgvRegex} but matches a `horus-source host --port <any-int>` — used to prove
+ * a pid is genuinely a host process when the literal port in its argv may not equal the resolved
+ * (bound) port. The discrepancy is real: under port contention `horus-source host --port N` binds
+ * a DIFFERENT free port and records THAT in `source/host.json`, yet its own argv still shows the
+ * REQUESTED port N. The exact-port matcher then rejects a host Horus genuinely spawned.
+ */
+function hostArgvAnyPortRegex(): RegExp {
+  return /(?:^|\s)(?:\S*\/)?horus-source\s+host\s+--port(?:=|\s+)\d+(?=\s|$)/;
+}
+
+/**
+ * Decide whether `pid` (whose argv is `args`) is THIS repo's source host on the resolved
+ * (bound) `port`, so it is safe to signal.
+ *
+ *  - Fast path: the argv matches `horus-source host --port <port>` exactly — the common
+ *    no-contention case.
+ *  - Port-fallback path (HOR-409 cleanup gap that left dramatiq/sanic hosts running after
+ *    `horus stop`): when the backend bumped off a contended port, its argv keeps the REQUESTED
+ *    port while it actually bound — and recorded in `source/host.json` — a DIFFERENT port. Accept
+ *    the pid only when it is unmistakably a `horus-source host` process AND the backend's own
+ *    record positively corroborates this exact pid serving THIS repo on the resolved port, so the
+ *    sole discrepancy is requested-vs-bound port. PID-reuse is still caught by the elapsed-time
+ *    guard that runs after this check.
+ */
+function isOwnHostProcess(pid: number, port: number, root: string, args: string): boolean {
+  if (hostArgvRegex(port).test(args)) return true;
+  if (!hostArgvAnyPortRegex().test(args)) return false;
+  const rec = readSourceHostPid(root);
+  return (
+    rec !== null &&
+    rec.pid === pid &&
+    Number.isFinite(rec.port) &&
+    rec.port === port &&
+    !!rec.repoPath &&
+    resolve(rec.repoPath) === resolve(root)
+  );
+}
+
 /** Remove the spawn-wrapper ownership record. Best-effort; a missing file is benign. */
 async function cleanupSpawnedRecord(root: string): Promise<void> {
   try {
@@ -261,7 +304,7 @@ async function stopBackendServerPid(root: string, port: number): Promise<Backend
   const info = await getProcessInfo(rec.pid);
   if (info === null) return 'none'; // already gone
 
-  if (!hostArgvRegex(port).test(info.args)) {
+  if (!isOwnHostProcess(rec.pid, port, root, info.args)) {
     // The pid is alive but is NOT our host — it was REUSED by another process after our host
     // already exited. Our host is gone and the record is merely stale: don't signal the
     // unrelated process, and DON'T count this as a stop failure (HOR-378). It's "already gone",
