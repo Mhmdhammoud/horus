@@ -82,6 +82,7 @@ import { maybeShowFirstRunNotice } from './lib/telemetry/notice.js';
 import { installCommandTelemetry } from './lib/telemetry/command-hooks.js';
 import { flushTelemetry } from './lib/telemetry/transport.js';
 import { runFeedback } from './commands/feedback.js';
+import { runEvalBuild, runEvalBaseline } from './commands/eval.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -602,6 +603,59 @@ Examples:
         json?: boolean;
       }) => {
         process.exitCode = await runMemorySync(opts);
+      },
+    );
+
+  // `eval` — the read-only accuracy harness (HOR-403). READ-ONLY over the outcome-label eval store:
+  // it never writes labels (only `horus feedback` + `horus memory confirm` do). Shares the read
+  // flags (--source/--days/--limit/--repo) with `horus memory accuracy`.
+  const evalCmd = program
+    .command('eval')
+    .description("Read-only accuracy harness over Horus's outcome-label eval set (never writes labels)");
+  evalCmd
+    .command('build')
+    .description('Emit a byte-stable corpus-<version>.jsonl + manifest from the eval set (read-only)')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--source <source>', 'filter to one signal source: feedback | confirm')
+    .option('--days <n>', 'only include labels from the last N days', (v) => Number(v))
+    .option('--limit <n>', 'max labels to scan', (v) => Number(v))
+    .option('--out <dir>', 'output directory for the corpus + manifest (default: ./.horus/eval)')
+    .option('--version <v>', 'corpus schema version tag (default: v1)')
+    .option('--json', 'output JSON')
+    .action(
+      async (opts: {
+        config?: string;
+        repo?: string;
+        source?: string;
+        days?: number;
+        limit?: number;
+        out?: string;
+        version?: string;
+        json?: boolean;
+      }) => {
+        process.exitCode = await runEvalBuild(opts);
+      },
+    );
+  evalCmd
+    .command('baseline')
+    .description('Print the baseline hit-rate (== memory accuracy) + a feature-separation diagnostic')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--source <source>', 'filter to one signal source: feedback | confirm')
+    .option('--days <n>', 'only count labels from the last N days', (v) => Number(v))
+    .option('--limit <n>', 'max labels to scan', (v) => Number(v))
+    .option('--json', 'output JSON')
+    .action(
+      async (opts: {
+        config?: string;
+        repo?: string;
+        source?: string;
+        days?: number;
+        limit?: number;
+        json?: boolean;
+      }) => {
+        process.exitCode = await runEvalBaseline(opts);
       },
     );
 

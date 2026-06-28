@@ -60,6 +60,7 @@ export {
   listOutcomeLabels,
   getLatestOutcomeLabel,
   summarizeOutcomeLabels,
+  dedupeToCurrentVerdict,
   isOutcomeResolved,
   isOutcomeSource,
   OUTCOME_RESOLVED,

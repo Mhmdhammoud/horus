@@ -17,6 +17,7 @@
     "@horus/core": "workspace:*",
     "@horus/db": "workspace:*",
     "@horus/engine": "workspace:*",
+    "@horus/eval": "workspace:*",
     "@horus/knowledge": "workspace:*",
     "@horus/stitcher": "workspace:*",
     "commander": "^12.1.0",

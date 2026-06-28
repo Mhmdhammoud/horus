@@ -156,15 +156,16 @@ export interface OutcomeAccuracy {
 }
 
 /**
- * Collapse a set of outcome labels into an accuracy summary. The store is append-only, so an
- * investigation may carry several labels (re-confirmations / corrections); this dedupes to the
- * CURRENT verdict per investigation (the latest `at`, tie-broken by `id`) before counting — so
- * re-attesting the same investigation never double-counts. `attestations` keeps the raw total.
+ * Collapse an append-only label set to the CURRENT verdict per investigation: the latest `at`,
+ * tie-broken by greater `id` for determinism. A null `investigationId` (legacy/unlinked) is bucketed
+ * ALONE (keyed by its row id) so it never collapses with another investigation's verdict.
  *
- * Order-independent: callers can pass labels in any order (the list path returns newest-first).
+ * Order-independent. This is the single shared definition of "current verdict" — both
+ * `summarizeOutcomeLabels` (and thus `horus memory accuracy`) and the read-only eval harness
+ * (`@horus/eval`, HOR-403) import it, so the harness and the accuracy report can never diverge on
+ * which label is the current one.
  */
-export function summarizeOutcomeLabels(labels: readonly OutcomeLabel[]): OutcomeAccuracy {
-  // Pick the current verdict per investigation: max `at`, tie-broken by `id` for determinism.
+export function dedupeToCurrentVerdict(labels: readonly OutcomeLabel[]): OutcomeLabel[] {
   const latest = new Map<string, OutcomeLabel>();
   for (const l of labels) {
     // Null investigationId (legacy/unlinked) is its own bucket so it never collapses with others.
@@ -178,10 +179,24 @@ export function summarizeOutcomeLabels(labels: readonly OutcomeLabel[]): Outcome
       latest.set(key, l);
     }
   }
+  return [...latest.values()];
+}
+
+/**
+ * Collapse a set of outcome labels into an accuracy summary. The store is append-only, so an
+ * investigation may carry several labels (re-confirmations / corrections); this dedupes to the
+ * CURRENT verdict per investigation (via `dedupeToCurrentVerdict`) before counting — so
+ * re-attesting the same investigation never double-counts. `attestations` keeps the raw total.
+ *
+ * Order-independent: callers can pass labels in any order (the list path returns newest-first).
+ */
+export function summarizeOutcomeLabels(labels: readonly OutcomeLabel[]): OutcomeAccuracy {
+  // Pick the current verdict per investigation (shared definition; max `at`, tie-broken by `id`).
+  const latest = dedupeToCurrentVerdict(labels);
 
   const counts = { yes: 0, partly: 0, no: 0 };
   const bySource = { feedback: 0, confirm: 0 };
-  for (const l of latest.values()) {
+  for (const l of latest) {
     if (l.resolved === 'yes') counts.yes++;
     else if (l.resolved === 'partly') counts.partly++;
     else if (l.resolved === 'no') counts.no++;
@@ -189,7 +204,7 @@ export function summarizeOutcomeLabels(labels: readonly OutcomeLabel[]): Outcome
     else if (l.source === 'confirm') bySource.confirm++;
   }
 
-  const evaluated = latest.size;
+  const evaluated = latest.length;
   return {
     evaluated,
     attestations: labels.length,

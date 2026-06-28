@@ -56,6 +56,9 @@ importers:
       '@horus/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@horus/eval':
+        specifier: workspace:*
+        version: link:../../packages/eval
       '@horus/stitcher':
         specifier: workspace:*
         version: link:../../packages/stitcher
@@ -99,6 +102,9 @@ importers:
       '@horus/engine':
         specifier: workspace:*
         version: link:../engine
+      '@horus/eval':
+        specifier: workspace:*
+        version: link:../eval
       '@horus/knowledge':
         specifier: workspace:*
         version: link:../knowledge
@@ -179,6 +185,15 @@ importers:
       '@horus/stitcher':
         specifier: workspace:*
         version: link:../stitcher
+
+  packages/eval:
+    dependencies:
+      '@horus/db':
+        specifier: workspace:*
+        version: link:../db
+      '@horus/engine':
+        specifier: workspace:*
+        version: link:../engine
 
   packages/knowledge:
     dependencies:
