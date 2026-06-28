@@ -30,13 +30,24 @@ export function buildMcpServer(root: string): McpServer {
       { description: tool.description, inputSchema: tool.inputSchema },
       (args: Record<string, unknown>) => {
         const res = tool.handler(args ?? {}, root);
+        // HOR-386 — surface the router's deterministic next-tool suggestions to the agent.
+        // Both as readable text (so a non-structured client still sees them) and as
+        // `structuredContent` (so a structured client can consume the RouteStep[] shape).
+        const steps = res.suggestedNextTools ?? [];
+        const suggestionText =
+          steps.length > 0
+            ? `\n\nSuggested next tools:\n${steps
+                .map((s) => `- ${s.nextTool}${s.args ? ` ${s.args}` : ''} — ${s.reason}`)
+                .join('\n')}`
+            : '';
         return {
           content: [
             {
               type: 'text' as const,
-              text: `${res.summary}\n\n${JSON.stringify(res.data ?? null, null, 2)}`,
+              text: `${res.summary}\n\n${JSON.stringify(res.data ?? null, null, 2)}${suggestionText}`,
             },
           ],
+          ...(steps.length > 0 ? { structuredContent: { suggestedNextTools: steps } } : {}),
           isError: !res.ok,
         };
       },

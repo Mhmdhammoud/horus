@@ -33,6 +33,8 @@ import {
   memoryViewToJSON,
   createLocalMemoryStore,
   recallMemory,
+  route,
+  formatRouteStep,
   NoopVectorIndex,
   MemorySecretError,
   type MemoryStore,
@@ -283,14 +285,18 @@ export async function runMemoryShow(
         { limit: 50, vectorIndex },
       );
 
+      // HOR-386 — nothing stored yet → the router points at `horus investigate <scope>`.
+      const nextSteps = route({ command: 'memory', empty: stored.length === 0, query: scope });
       if (opts.json) {
         const parsed = JSON.parse(memoryViewToJSON(view)) as Record<string, unknown>;
         parsed.storedItems = stored.map(recalledToJSON);
+        parsed.nextSteps = nextSteps;
         console.log(JSON.stringify(parsed, null, 2));
       } else {
         console.log(renderMemoryView(view));
         console.log('');
         console.log(renderStoredItems(stored));
+        for (const s of nextSteps) console.log(pc.dim('  Suggested next: ') + formatRouteStep(s));
       }
       return 0;
     } finally {

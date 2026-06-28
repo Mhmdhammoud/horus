@@ -19,10 +19,11 @@ import type {
   EvidenceCategory,
   EvidencePriority,
 } from '@horus/core';
-import type { InvestigationReport } from './types.js';
+import type { InvestigationReport, RouteStep } from './types.js';
 import type { CauseBand } from './score-cause.js';
 import { getBand } from './score-cause.js';
 import { formatSymbolLocation } from './render.js';
+import { formatRouteStep } from './router.js';
 import { isTestOrExamplePath } from './architecture.js';
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -44,6 +45,12 @@ export interface HonestyHeader {
   caveats: string[];
   /** Gap `nextSource` lines, highest confidence-impact first (never truncated). */
   toRaiseConfidence: string[];
+  /**
+   * HOR-386 — the router's deterministic next-step suggestions (`report.nextSteps`),
+   * co-assembled here so caveats + routing share ONE assembly point and cannot drift
+   * across the human/--json/MCP surfaces. Advisory data only; nothing auto-runs.
+   */
+  routing: RouteStep[];
   /** Which sources backed the run, preserving empty-vs-failed honesty. */
   sources: { source: string; status: 'contributed' | 'empty' | 'failed' | 'not-configured' }[];
 }
@@ -340,6 +347,8 @@ function buildHonesty(
       workingHypothesis,
       caveats: dedupe(caveats),
       toRaiseConfidence,
+      // HOR-386 — carry the router's decision verbatim; the packet never re-routes.
+      routing: report.nextSteps ?? [],
       sources,
     },
     seedLinked,
@@ -766,11 +775,14 @@ export function renderPacketMarkdown(packet: Packet): string {
 
   // ── Next steps ─────────────────────────────────────────────────────────────
   out.push('## Suggested next steps');
-  if (packet.nextSteps.length === 0) {
+  if (packet.nextSteps.length === 0 && packet.honesty.routing.length === 0) {
     out.push('_none_');
   } else {
     for (const s of packet.nextSteps) out.push(`- [ ] ${s}`);
     moreLine(out, packet.truncation.nextSteps);
+    // HOR-386 — the router's structured suggestions (a runnable command + reason),
+    // rendered from the same `RouteStep[]` the --json/MCP surfaces emit.
+    for (const r of packet.honesty.routing) out.push(`- [ ] ${formatRouteStep(r)}`);
   }
 
   return out.join('\n');

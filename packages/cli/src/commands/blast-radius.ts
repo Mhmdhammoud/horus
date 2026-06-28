@@ -2,7 +2,7 @@ import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
 import { createConnectors } from '@horus/connectors';
 import { openDb } from '@horus/db';
-import { analyzeBlastRadius, renderBlastRadius, blastRadiusToJSON } from '@horus/engine';
+import { analyzeBlastRadius, renderBlastRadius, blastRadiusToJSON, route, formatRouteStep } from '@horus/engine';
 import { renderInterpretation } from '@horus/ai';
 import type { InterpretationProvider } from '@horus/ai';
 import { renderAiInterpretation } from '../lib/ai-provider.js';
@@ -47,7 +47,14 @@ export async function runBlastRadius(
 
     const health = await code.health();
     if (!health.ok) {
-      console.error(pc.red('Source-intelligence host unreachable — run: horus index'));
+      // HOR-386 — host down: the router points at `horus index`.
+      const steps = route({ command: 'blast-radius', hostUnreachable: true });
+      if (opts.json) {
+        console.log(JSON.stringify({ error: 'Source-intelligence host unreachable', nextSteps: steps }, null, 2));
+      } else {
+        console.error(pc.red('Source-intelligence host unreachable — run: horus index'));
+        for (const s of steps) console.log(pc.dim('  Suggested next: ') + formatRouteStep(s));
+      }
       return 1;
     }
 
@@ -62,8 +69,15 @@ export async function runBlastRadius(
     try {
       const r = await analyzeBlastRadius(query, { code, db, project }, opts.depth ?? 3);
       if (!r) {
-        console.log(`No symbol found for: ${query}`);
-        console.log(pc.dim(`  Tip: use an exact class or function name, e.g. "MyService"`));
+        // HOR-386 — no symbol matched: the router points at `horus search <query>`.
+        const steps = route({ command: 'blast-radius', empty: true, query });
+        if (opts.json) {
+          console.log(JSON.stringify({ symbol: null, nextSteps: steps }, null, 2));
+        } else {
+          console.log(`No symbol found for: ${query}`);
+          console.log(pc.dim(`  Tip: use an exact class or function name, e.g. "MyService"`));
+          for (const s of steps) console.log(pc.dim('  Suggested next: ') + formatRouteStep(s));
+        }
         return 1;
       }
       if (r.seed.name.toLowerCase() !== query.toLowerCase()) {
@@ -73,7 +87,11 @@ export async function runBlastRadius(
         );
       }
       if (opts.json) {
-        console.log(blastRadiusToJSON(r));
+        // HOR-386 — bolt the SAME router's structured next-steps onto the --json shape
+        // (mirrors investigate.ts adding `freshness`). Empty on the happy path.
+        const obj = JSON.parse(blastRadiusToJSON(r)) as Record<string, unknown>;
+        obj.nextSteps = route({ command: 'blast-radius', seedName: r.seed.name, query });
+        console.log(JSON.stringify(obj, null, 2));
       } else {
         console.log(renderBlastRadius(r));
         if (opts.ai) {

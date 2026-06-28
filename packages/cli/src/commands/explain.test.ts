@@ -136,6 +136,54 @@ describe('horus explain — async boundary redirect (HOR-181)', () => {
     expect(output).not.toContain('horus queues');
   });
 
+  // HOR-386 — self-routing surfaces.
+  it('routes a no-symbol miss to `horus search <query>` (no queue boundary)', async () => {
+    mocks.searchSymbols.mockResolvedValue([]);
+    mocks.listQueueEdges.mockResolvedValue([]); // not a queue boundary
+
+    const logged: string[] = [];
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation((...a) => { logged.push(String(a[0])); });
+    const code = await runExplain('NoSuchThing', {});
+    consoleSpy.mockRestore();
+
+    expect(code).toBe(1);
+    const output = logged.join('\n');
+    expect(output).toContain('Suggested next:');
+    expect(output).toContain('horus search NoSuchThing');
+  });
+
+  it('emits the search route in --json on a no-symbol miss (clean JSON)', async () => {
+    mocks.searchSymbols.mockResolvedValue([]);
+    mocks.listQueueEdges.mockResolvedValue([]);
+
+    const logged: string[] = [];
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation((...a) => { logged.push(String(a[0])); });
+    const code = await runExplain('NoSuchThing', { json: true });
+    consoleSpy.mockRestore();
+
+    expect(code).toBe(1);
+    // A single parseable JSON document with the structured nextSteps.
+    const parsed = JSON.parse(logged.join('\n')) as { symbol: null; nextSteps: { nextTool: string; args: string }[] };
+    expect(parsed.symbol).toBeNull();
+    expect(parsed.nextSteps).toEqual([
+      { nextTool: 'search', args: 'NoSuchThing', reason: expect.any(String) },
+    ]);
+  });
+
+  it('routes a host-down failure to `horus index`', async () => {
+    mocks.codeHealth.mockResolvedValue({ ok: false, detail: 'down' });
+
+    const logged: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((...a) => { logged.push(String(a[0])); });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const code = await runExplain('anything', {});
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+
+    expect(code).toBe(1);
+    expect(logged.join('\n')).toContain('horus index');
+  });
+
   it('falls through to fuzzy warning when DB is unavailable', async () => {
     const unrelated = makeSymbol('ShopifyWebhookCatalogFieldsMongo');
     mocks.searchSymbols.mockResolvedValue([unrelated]);

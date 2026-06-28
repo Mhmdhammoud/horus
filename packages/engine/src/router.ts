@@ -252,3 +252,18 @@ export function route(c: RouterConditions): RouteStep[] {
 
 /** The rule ids in priority order — exposed for the "new route = new table entry" test. */
 export const ROUTE_RULE_IDS: readonly string[] = RULES.map((r) => r.id);
+
+/**
+ * The runnable `horus <tool> <args>` command string for a step — the single place a
+ * `RouteStep` becomes a printable command, so every CLI surface renders it identically.
+ * (MCP renders the structured `RouteStep` instead; it routes to sibling MCP tools, not
+ * `horus` commands, so it never calls this.)
+ */
+export function formatRouteCommand(step: RouteStep): string {
+  return `horus ${step.nextTool}${step.args ? ` ${step.args}` : ''}`;
+}
+
+/** A one-line human suggestion: `"<reason> → run \`horus <tool> <args>\`"`. */
+export function formatRouteStep(step: RouteStep): string {
+  return `${step.reason} → run \`${formatRouteCommand(step)}\``;
+}

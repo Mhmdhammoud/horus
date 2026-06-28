@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createJsonKnowledgeStore, KnowledgeSnapshotSchema, KNOWLEDGE_SCHEMA_VERSION } from '@horus/knowledge';
+import { route } from '@horus/engine';
 import { KNOWLEDGE_TOOLS, type KnowledgeTool } from './tools.js';
 
 const NOW = '2026-06-19T15:00:00.000Z';
@@ -128,5 +129,40 @@ describe('Horus MCP knowledge tools', () => {
     const d = res.data as { kind: string; relatedOperations: string[] };
     expect(d.kind).toBe('concept');
     expect(d.relatedOperations).toContain('createSale');
+  });
+
+  // HOR-386 — MCP self-routing surface: suggestedNextTools from the shared router.
+  it('no-index results carry a suggestedNextTools route to `horus index`', () => {
+    const res = tool('search_project_knowledge').handler({ query: 'x' }, emptyRoot());
+    expect(res.suggestedNextTools).toEqual([
+      { nextTool: 'index', args: '', reason: expect.any(String) },
+    ]);
+  });
+
+  it('a 0-match knowledge search suggests broadening via search_project_knowledge', () => {
+    const res = tool('search_project_knowledge').handler({ query: 'zzz-no-such-thing' }, indexedRoot());
+    expect((res.data as { matches: unknown[] }).matches).toHaveLength(0);
+    expect(res.suggestedNextTools).toEqual([
+      { nextTool: 'search_project_knowledge', args: 'zzz-no-such-thing', reason: expect.any(String) },
+    ]);
+  });
+
+  it('a 0-hit contract lookup suggests broadening across knowledge', () => {
+    const res = tool('get_contract').handler({ name: 'zzz-no-such-thing' }, indexedRoot());
+    expect(res.suggestedNextTools).toEqual([
+      { nextTool: 'search_project_knowledge', args: 'zzz-no-such-thing', reason: expect.any(String) },
+    ]);
+  });
+
+  it('a successful match carries NO suggestedNextTools (stays clean)', () => {
+    const res = tool('search_project_knowledge').handler({ query: 'createSale' }, indexedRoot());
+    expect(res.suggestedNextTools).toBeUndefined();
+  });
+
+  it('suggestedNextTools is byte-identical to the shared router for the same conditions', () => {
+    const res = tool('ask_project_question').handler({ question: 'zzz-no-such-thing-here' }, indexedRoot());
+    expect(res.suggestedNextTools).toEqual(
+      route({ command: 'mcp.ask', empty: true, query: 'zzz-no-such-thing-here' }),
+    );
   });
 });

@@ -9,6 +9,7 @@
  */
 import { z, type ZodRawShape } from 'zod';
 import { getHeadSha, isWorkingTreeDirty } from '@horus/core';
+import { route, type RouteStep, type RouterCommand } from '@horus/engine';
 import {
   createJsonKnowledgeStore,
   searchSnapshot,
@@ -29,6 +30,13 @@ export interface ToolResult {
   summary: string;
   /** Structured payload (includes staleness + provenance-bearing items). */
   data?: unknown;
+  /**
+   * HOR-386 — deterministic next-tool suggestions from the SHARED router (`route()`),
+   * the same module the CLI human/--json surfaces use. Populated on the no-index/0-match/
+   * stale-index conditions; absent otherwise. Targets are sibling MCP knowledge tools
+   * (`search_project_knowledge`) or `horus index` — never a fabricated tool.
+   */
+  suggestedNextTools?: RouteStep[];
 }
 
 export interface KnowledgeTool {
@@ -67,7 +75,28 @@ function load(root: string): Ctx | null {
 const NO_INDEX: ToolResult = {
   ok: false,
   summary: 'No local project-knowledge index found. Build it with `horus index` (or import one).',
+  // No index at all ⇒ the router's index remedy (rule #1 fires on `staleIndex`).
+  suggestedNextTools: route({ command: 'mcp.search', staleIndex: true }),
 };
+
+/**
+ * HOR-386 — build next-tool suggestions for an MCP handler from the SHARED router. Empty
+ * (0 matches / 0-hit lookup) routes to `search_project_knowledge`; a stale index adds the
+ * `horus index` remedy. Returns `undefined` when the router has nothing to add, so a
+ * healthy result stays clean (no empty array on the wire).
+ */
+function suggest(
+  command: RouterCommand,
+  opts: { empty?: boolean; query?: string; staleness?: Staleness },
+): RouteStep[] | undefined {
+  const steps = route({
+    command,
+    empty: opts.empty,
+    query: opts.query,
+    staleIndex: opts.staleness?.stale,
+  });
+  return steps.length > 0 ? steps : undefined;
+}
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
 const matchName = (item: Record<string, unknown>, needle: string) =>
@@ -135,6 +164,11 @@ export const KNOWLEDGE_TOOLS: KnowledgeTool[] = [
           matches: matches.map((m) => ({ category: m.category, id: m.id, name: m.name, provenance: m.item.provenance })),
           staleness: ctx.staleness,
         },
+        suggestedNextTools: suggest('mcp.search', {
+          empty: matches.length === 0,
+          query: str(args.query),
+          staleness: ctx.staleness,
+        }),
       };
     },
   },
@@ -163,6 +197,11 @@ export const KNOWLEDGE_TOOLS: KnowledgeTool[] = [
         ok: true,
         summary: hits.length ? `Grounded in ${hits.length} indexed item(s).` : 'No indexed knowledge matched.',
         data: { question: q, grounded: true, matches: hits.slice(0, 8), staleness: ctx.staleness },
+        suggestedNextTools: suggest('mcp.ask', {
+          empty: hits.length === 0,
+          query: q,
+          staleness: ctx.staleness,
+        }),
       };
     },
   },
@@ -185,6 +224,11 @@ export const KNOWLEDGE_TOOLS: KnowledgeTool[] = [
         ok: true,
         summary: `${total} contract item(s) matching "${str(args.name)}".`,
         data: { operations, types, enums, authRules, staleness: ctx.staleness },
+        suggestedNextTools: suggest('mcp.contract', {
+          empty: total === 0,
+          query: str(args.name),
+          staleness: ctx.staleness,
+        }),
       };
     },
   },
@@ -202,6 +246,11 @@ export const KNOWLEDGE_TOOLS: KnowledgeTool[] = [
         ok: true,
         summary: `${concepts.length} domain concept(s) matching "${str(args.name)}".`,
         data: { concepts, staleness: ctx.staleness },
+        suggestedNextTools: suggest('mcp.domain', {
+          empty: concepts.length === 0,
+          query: str(args.name),
+          staleness: ctx.staleness,
+        }),
       };
     },
   },

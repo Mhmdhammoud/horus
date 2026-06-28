@@ -294,6 +294,28 @@ describe('runMemoryShow — synthesis path', () => {
     expect(parsed.weakSpots.fragile.scope).toBe('repo-wide');
   });
 
+  // HOR-386 — self-routing: nothing stored yet → suggest `horus investigate <scope>`.
+  it('routes an empty memory (no stored items) to `horus investigate <scope>`', async () => {
+    engine.recallMemory.mockResolvedValueOnce([]); // no authored items
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryShow('payments', { config });
+    expect(code).toBe(0);
+    const out = stdout();
+    expect(out).toContain('Suggested next:');
+    expect(out).toContain('horus investigate payments');
+  });
+
+  it('carries the investigate route structurally on --json when empty', async () => {
+    engine.recallMemory.mockResolvedValueOnce([]);
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryShow('payments', { config, json: true });
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout()) as { nextSteps: { nextTool: string; args: string }[] };
+    expect(parsed.nextSteps).toEqual([
+      { nextTool: 'investigate', args: 'payments', reason: expect.any(String) },
+    ]);
+  });
+
   it('merges PERSISTED authored items into the view, clearly sectioned (Markdown + JSON)', async () => {
     engine.recallMemory.mockResolvedValueOnce([recalled()]);
     const config = writeSingleProjectConfig();

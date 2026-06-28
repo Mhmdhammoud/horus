@@ -2,8 +2,13 @@ import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
 import type { HorusConfig, Symbol, SymbolContext, ImpactResult, Flow } from '@horus/core';
 import { codeForRepo } from '@horus/connectors';
-import { symbolDisplayName } from '@horus/engine';
+import { symbolDisplayName, route, formatRouteStep, type RouteStep } from '@horus/engine';
 import { openDb, listQueueEdges } from '@horus/db';
+
+/** Print the router's suggestions as human "Suggested next:" lines (HOR-386). */
+function printSuggested(steps: RouteStep[]): void {
+  for (const s of steps) console.log(pc.dim(`  Suggested next: `) + formatRouteStep(s));
+}
 
 export async function runExplain(
   query: string,
@@ -14,7 +19,14 @@ export async function runExplain(
 
   const health = await code.health();
   if (!health.ok) {
-    console.error(pc.red('Source-intelligence host unreachable — run: horus index'));
+    // HOR-386 — host down: the router points at `horus index` (the real remedy).
+    const steps = route({ command: 'explain', hostUnreachable: true });
+    if (opts.json) {
+      console.log(JSON.stringify({ error: 'Source-intelligence host unreachable', nextSteps: steps }, null, 2));
+    } else {
+      console.error(pc.red('Source-intelligence host unreachable — run: horus index'));
+      printSuggested(steps);
+    }
     return 1;
   }
 
@@ -27,8 +39,15 @@ export async function runExplain(
       );
       return 1;
     }
-    console.log(`No symbol found for: ${query}`);
-    console.log(pc.dim(`  Tip: use an exact class or function name, e.g. "MyService" or "processOrder"`));
+    // HOR-386 — no symbol matched: the router points at `horus search <query>`.
+    const steps = route({ command: 'explain', empty: true, query });
+    if (opts.json) {
+      console.log(JSON.stringify({ symbol: null, nextSteps: steps }, null, 2));
+    } else {
+      console.log(`No symbol found for: ${query}`);
+      console.log(pc.dim(`  Tip: use an exact class or function name, e.g. "MyService" or "processOrder"`));
+      printSuggested(steps);
+    }
     return 1;
   }
   const top = symbols[0];
@@ -72,6 +91,8 @@ export async function runExplain(
           callees: ctx.callees,
           impact,
           flows,
+          // HOR-386 — structured next-steps from the SAME router; empty on the happy path.
+          nextSteps: route({ command: 'explain', seedName: top.name, query }),
         },
         null,
         2,
