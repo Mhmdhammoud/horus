@@ -210,12 +210,19 @@ export const memoryItem = pgTable(
     userId: text('user_id'),
     visibility: text('visibility').notNull().default('private'), // private|team
     payload: jsonb('payload'), // forward-compat, zero-migration extension
+    // Incident-family recall keys, populated at WRITE for incident-derived kinds
+    // (confirmed-outcome|incident-pattern) from the source investigation report. Nullable: a
+    // non-incident claim (code-fact/decision/...) carries neither. The CONTEXT-ONLY auto-detectors
+    // (`memory detect`) match recurrence on these — they never feed confidence/verdict scoring.
+    signature: text('signature'), // normalized incident signature (deriveSignature), for recurrence
+    tags: text('tags').array(), // normalized incident tags (deriveTags), for recurrence overlap
   },
   (t) => [
     index('memory_item_repo_idx').on(t.repo),
     index('memory_item_scope_idx').on(t.scope),
     index('memory_item_status_idx').on(t.status),
     index('memory_item_tenancy_idx').on(t.orgId, t.workspaceId, t.repo, t.userId),
+    index('memory_item_signature_idx').on(t.signature),
   ],
 );
 

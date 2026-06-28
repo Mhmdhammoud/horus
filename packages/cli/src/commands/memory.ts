@@ -24,10 +24,12 @@ import { createConnectors, memoryIndexForEnv } from '@horus/connectors';
 import {
   openDb,
   getInvestigation,
+  getLatestOutcomeLabel,
   recordOutcomeLabel,
   listOutcomeLabels,
   summarizeOutcomeLabels,
   isOutcomeSource,
+  type HorusDb,
   type NewMemoryItem,
   type NewMemoryLink,
   type OutcomeLabel,
@@ -40,6 +42,8 @@ import {
   createLocalMemoryStore,
   recallMemory,
   detectMemoryEdges,
+  deriveSignature,
+  deriveTags,
   route,
   formatRouteStep,
   NoopVectorIndex,
@@ -54,8 +58,10 @@ import {
   type MemoryRel,
   type MemoryStatus,
   type ProposedEdge,
+  type OutcomeVerdict,
   type Visibility,
 } from '@horus/engine';
+import type { InvestigationReport } from '@horus/engine';
 import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
 import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
 import {
@@ -134,7 +140,10 @@ function resolveProject(
  * local Postgres stays source-of-truth (reads + authoritative writes) and the cloud is an additive,
  * best-effort mirror (a cloud failure warns, never blocks — spec §3c). Otherwise it is local-only.
  */
-async function withStore<T>(url: string, fn: (store: MemoryStore) => Promise<T>): Promise<T> {
+async function withStore<T>(
+  url: string,
+  fn: (store: MemoryStore, db: HorusDb) => Promise<T>,
+): Promise<T> {
   const cfg = readCloudConfig(repoRootOrCwd());
   if (isCloudActive(cfg)) {
     const session = authedClient();
@@ -143,7 +152,12 @@ async function withStore<T>(url: string, fn: (store: MemoryStore) => Promise<T>)
       try {
         const local = createLocalMemoryStore(db);
         const cloud = createCloudMemoryStore(session.client, cfg);
-        return await fn(dualWriteMemoryStore(local, cloud, (err) => void reportCloudError(err)));
+        // The local db is the source of truth for reads (e.g. the outcome-label join used by
+        // contradiction detection); the cloud is an additive, best-effort mirror.
+        return await fn(
+          dualWriteMemoryStore(local, cloud, (err) => void reportCloudError(err)),
+          db,
+        );
       } finally {
         await sql.end();
       }
@@ -154,7 +168,7 @@ async function withStore<T>(url: string, fn: (store: MemoryStore) => Promise<T>)
   }
   const { db, sql } = await openDb(url);
   try {
-    return await fn(createLocalMemoryStore(db));
+    return await fn(createLocalMemoryStore(db), db);
   } finally {
     await sql.end();
   }
@@ -428,6 +442,34 @@ export async function runMemoryAdd(
 // memory confirm <investigationId> — the confirmed-outcome flywheel (private, PII-gated)
 // ---------------------------------------------------------------------------
 
+/**
+ * Derive the incident-family recall keys (signature/tags) from a stored investigation report, reusing
+ * the SAME `deriveSignature`/`deriveTags` the incident-recall index uses, so two confirmed outcomes of
+ * the same incident share a signature. Defensive: a partial/legacy report (missing timeline/seeds/
+ * hypotheses) yields no keys rather than throwing — recurrence then relies on another signal.
+ */
+function deriveIncidentKeys(report: unknown): {
+  signature: string | undefined;
+  tags: string[] | undefined;
+} {
+  try {
+    const r = report as Partial<InvestigationReport> | null;
+    if (
+      r === null ||
+      typeof r !== 'object' ||
+      r.timeline === undefined ||
+      !Array.isArray(r.seeds) ||
+      !Array.isArray(r.hypotheses)
+    ) {
+      return { signature: undefined, tags: undefined };
+    }
+    const full = r as InvestigationReport;
+    return { signature: deriveSignature(full), tags: deriveTags(full) };
+  } catch {
+    return { signature: undefined, tags: undefined };
+  }
+}
+
 export async function runMemoryConfirm(
   investigationId: string,
   opts: {
@@ -471,6 +513,11 @@ export async function runMemoryConfirm(
           ? report.confidence
           : DEFAULT_CONFIRM_CONFIDENCE;
 
+      // Derive the incident-family recall keys (signature/tags) from the FULL investigation report so
+      // recurrence detection can later match two confirmed outcomes of the same incident. Best-effort:
+      // a partial/legacy report simply yields no keys (recurrence then needs another signal).
+      const { signature, tags } = deriveIncidentKeys(investigation.report);
+
       const store = createLocalMemoryStore(db);
       // confirmed-outcome stays PRIVATE — the store refuses to auto-promote it to team (spec §7).
       const item: NewMemoryItem = {
@@ -483,6 +530,8 @@ export async function runMemoryConfirm(
         confidence,
         repo: project,
         visibility: 'private',
+        signature,
+        tags,
       };
       const created = await store.add(item, {
         actor: { kind: 'user' },
@@ -791,8 +840,24 @@ export async function runMemoryDetect(opts: {
 
     const vectorIndex = buildVectorIndex(config, project);
 
-    return await withStore(config.database.url, async (store) => {
-      const proposals = await detectMemoryEdges(store, { repo: project, limit: opts.limit }, { vectorIndex });
+    return await withStore(config.database.url, async (store, db) => {
+      // CONTEXT-ONLY join: resolve the LATEST confirmed-outcome verdict for an investigation so the
+      // contradiction detector can compare two confirmed outcomes of the same incident family. This
+      // reads the eval/outcome store ONLY — it never feeds the confidence/verdict scoring path.
+      const outcomeFor = async (investigationId: string): Promise<OutcomeVerdict | null> => {
+        const label = await getLatestOutcomeLabel(db, investigationId);
+        if (label === null) return null;
+        return {
+          investigationId,
+          resolved: label.resolved as OutcomeVerdict['resolved'],
+          confirmedCause: label.confirmedCause,
+        };
+      };
+      const proposals = await detectMemoryEdges(
+        store,
+        { repo: project, limit: opts.limit },
+        { vectorIndex, outcomeFor },
+      );
 
       // --dry-run: PRINT proposals for confirmation, write NOTHING.
       if (opts.dryRun) {
@@ -813,8 +878,14 @@ export async function runMemoryDetect(opts: {
       let applied = 0;
       for (const p of proposals) {
         await store.addLink(
-          { id: '', fromMemoryId: p.fromMemoryId, rel: p.rel, toKind: 'memory', toRef: p.toMemoryId },
-          { detection: p.detection, audit: { actor: { kind: 'system' }, note: p.reason } },
+          { id: p.id, fromMemoryId: p.fromMemoryId, rel: p.rel, toKind: 'memory', toRef: p.toMemoryId },
+          {
+            detection: p.detection,
+            audit: { actor: { kind: 'system' }, note: p.reason },
+            // Carry the structured provenance (e.g. a contradiction's two investigationIds) onto the
+            // edge's audit row. CONTEXT only — never read by the confidence/verdict scoring path.
+            detail: p.detail,
+          },
         );
         applied += 1;
         if (!opts.json) console.log(`${pc.green('✓')}${renderProposal(p)}`);

@@ -158,6 +158,10 @@ function fromWire(r: MemoryItemRecord, repo: string): MemoryItem {
     userId: r.createdByUserId ?? null,
     visibility: r.visibility,
     payload: null,
+    // Incident-family recall keys are LOCAL-ONLY context (like vectors): they never enter the
+    // cloud-sync path, so a cloud-read row carries neither.
+    signature: null,
+    tags: null,
   };
 }
 
@@ -240,6 +244,9 @@ export function createCloudMemoryStore(client: CloudClient, cfg: CloudConfig): C
         userId: item.userId ?? null,
         visibility: input.visibility ?? "private",
         payload: null,
+        // Incident-family recall keys stay LOCAL-ONLY — never synced, so the cloud echo carries neither.
+        signature: null,
+        tags: null,
       };
     },
 

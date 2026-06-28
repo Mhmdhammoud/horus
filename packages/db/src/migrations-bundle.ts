@@ -109,5 +109,13 @@ export const EMBEDDED_MIGRATIONS: readonly EmbeddedMigration[] = [
     "statements": [
       "ALTER TABLE \"memory_audit\" ADD COLUMN \"detail\" jsonb;"
     ]
+  },
+  {
+    "tag": "0010_memory_item_signature_tags",
+    "statements": [
+      "ALTER TABLE \"memory_item\" ADD COLUMN \"signature\" text;",
+      "ALTER TABLE \"memory_item\" ADD COLUMN \"tags\" text[];",
+      "CREATE INDEX IF NOT EXISTS \"memory_item_signature_idx\" ON \"memory_item\" (\"signature\");"
+    ]
   }
 ];

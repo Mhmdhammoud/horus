@@ -49,6 +49,8 @@ function makeItem(p: Partial<MemoryItem>): MemoryItem {
     userId: null,
     visibility: 'private',
     payload: null,
+    signature: null,
+    tags: null,
     ...p,
   };
 }

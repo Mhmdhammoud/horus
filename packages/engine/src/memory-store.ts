@@ -102,6 +102,12 @@ export interface AnnotatedMemoryLink extends MemoryLink {
 export interface AddLinkOpts {
   detection?: LinkDetection;
   audit?: AuditCtx;
+  /**
+   * Extra structured provenance merged into the edge's `link` audit detail (e.g. an
+   * `auto:contradiction` edge carries the two source `investigationIds`). HONESTY: this is recorded
+   * context only — it is never read by the confidence/verdict scoring path.
+   */
+  detail?: Record<string, unknown>;
 }
 
 /**

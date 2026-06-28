@@ -389,6 +389,35 @@ function isSymmetricRel(rel: string): boolean {
   return rel === 'recurs-with';
 }
 
+/**
+ * Kinds whose items carry an incident-family `signature`/`tags` (populated at WRITE from the source
+ * investigation report). Only these participate in recurrence detection; a non-incident claim
+ * (code-fact/decision/...) never gets a signature, so it can never spuriously "recur".
+ */
+const INCIDENT_DERIVED_KINDS: ReadonlySet<string> = new Set(['confirmed-outcome', 'incident-pattern']);
+
+/** Trim a stored signature; treat blank / all-delimiter ("", "||", "|") as absent (→ null). */
+function normalizeStoredSignature(sig: string | null | undefined): string | null {
+  const s = (sig ?? '').trim();
+  if (s === '' || /^\|*$/.test(s)) return null;
+  return s;
+}
+
+/** Lowercase + dedupe + drop-empty stored tags; an empty result is stored as null. */
+function normalizeStoredTags(tags: readonly string[] | null | undefined): string[] | null {
+  if (!tags || tags.length === 0) return null;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of tags) {
+    const lower = (t ?? '').trim().toLowerCase();
+    if (lower !== '' && !seen.has(lower)) {
+      seen.add(lower);
+      out.push(lower);
+    }
+  }
+  return out.length === 0 ? null : out;
+}
+
 /** Map a target status onto the audit action that produced it (user-facing provenance). */
 function statusAction(status: MemoryStatus): string {
   switch (status) {
@@ -504,9 +533,16 @@ export function createLocalMemoryStore(db: HorusDb): MemoryStore {
         item.source === 'confirmed-outcome' || item.kind === 'confirmed-outcome';
       const visibility = isConfirmedOutcome ? 'private' : (item.visibility ?? 'private');
 
+      // Incident-family recall keys are populated at WRITE for incident-derived kinds only; every
+      // other kind stores neither (so it can never be a recurrence candidate). These are CONTEXT for
+      // the auto-detectors and are NEVER read by the confidence/verdict scoring path (spec §8).
+      const isIncidentDerived = INCIDENT_DERIVED_KINDS.has(item.kind);
+      const signature = isIncidentDerived ? normalizeStoredSignature(item.signature) : null;
+      const tags = isIncidentDerived ? normalizeStoredTags(item.tags) : null;
+
       const inserted = await db
         .insert(memoryItem)
-        .values({ ...item, id, repo, status, visibility })
+        .values({ ...item, id, repo, status, visibility, signature, tags })
         .returning();
       const row = inserted[0];
       if (row === undefined) throw new Error('memory_item insert returned no row');
@@ -686,6 +722,9 @@ export function createLocalMemoryStore(db: HorusDb): MemoryStore {
           toRef: row.toRef,
           detection: opts?.detection ?? 'manual',
           ...(opts?.audit?.note ? { note: opts.audit.note } : {}),
+          // Extra structured provenance (e.g. auto:contradiction → the two investigationIds). Recorded
+          // context only — never read by the confidence/verdict scoring path (spec §8).
+          ...(opts?.detail ?? {}),
         },
       });
       return row;
