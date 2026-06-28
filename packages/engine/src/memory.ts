@@ -394,7 +394,13 @@ function isSymmetricRel(rel: string): boolean {
  * investigation report). Only these participate in recurrence detection; a non-incident claim
  * (code-fact/decision/...) never gets a signature, so it can never spuriously "recur".
  */
-const INCIDENT_DERIVED_KINDS: ReadonlySet<string> = new Set(['confirmed-outcome', 'incident-pattern']);
+const INCIDENT_DERIVED_KINDS: ReadonlySet<string> = new Set([
+  'confirmed-outcome',
+  'incident-pattern',
+  // HOR-432: auto-captured investigation memories carry the same incident-family signature/tags so
+  // they participate in recurrence detection. CONTEXT-ONLY — never read by the scoring path.
+  'investigation',
+]);
 
 /** Trim a stored signature; treat blank / all-delimiter ("", "||", "|") as absent (→ null). */
 function normalizeStoredSignature(sig: string | null | undefined): string | null {

@@ -57,6 +57,13 @@ import { rankCauses, selectHeadlineCause, type CauseInput } from './score-cause.
 import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
 import { recallSimilar, storeIncidentMemory, deriveTags } from './memory.js';
+import type { AuditCtx, MemoryStore } from './memory-store.js';
+import {
+  autoInvestigationMemoryEnabled,
+  createInvestigationMemory,
+  detectRecurrence,
+  linkRecurrence,
+} from './auto-investigation-memory.js';
 import { detectMissingEvidence, gapNextActions, type ConnectorFlags } from './gaps.js';
 import { route } from './router.js';
 import { buildRuntimeSourceStatus } from './source-status.js';
@@ -124,6 +131,13 @@ export interface EngineDeps {
   changeWindowDays?: number;
   /** Which connectors are configured for the env — drives honest gap text. */
   connectors?: ConnectorFlags;
+  /**
+   * Optional authored-memory store (HOR-432). When supplied, every investigation auto-captures a
+   * `kind:investigation` memory and links recurrences (`recurs-with`). Best-effort + CONTEXT-ONLY:
+   * the memory is never read by the confidence/verdict scoring path, and a failure never blocks the
+   * report. Absent ⇒ auto-memory is skipped gracefully (no API break).
+   */
+  store?: MemoryStore;
 }
 
 /** Map an evidence kind to its originating provider. */
@@ -3275,6 +3289,27 @@ export async function investigate(
     const tags = deriveTags(report);
     report.similarIncidents = await recallSimilar(db, tags, persistedId, input.repo ?? null);
     await storeIncidentMemory(db, persistedId, report);
+
+    // HOR-432 — auto-capture a recurrence-aware memory from THIS investigation. Default ON
+    // (HORUS_AUTO_INVESTIGATION_MEMORY=0/false disables). CONTEXT-ONLY: the captured memory is never
+    // read by the confidence/verdict scoring path; `recurs-with` is auto-detected, `supersedes` is
+    // NEVER. NON-BLOCKING: every failure is swallowed so auto-memory can never block report delivery.
+    const store = deps.store;
+    if (store !== undefined && autoInvestigationMemoryEnabled()) {
+      try {
+        const audit: AuditCtx = {
+          actor: { kind: 'system' },
+          note: 'auto: investigation memory (HOR-432)',
+        };
+        const mem = await createInvestigationMemory(store, persistedId, report, audit);
+        if (mem !== null) {
+          const existingId = await detectRecurrence(store, mem, input.repo?.trim() ?? '');
+          if (existingId !== null) await linkRecurrence(store, mem.id, existingId, persistedId);
+        }
+      } catch {
+        // Non-blocking — auto-memory must never prevent investigation delivery (spec §7/§8).
+      }
+    }
   }
   // If persist failed (db down / no id), similarIncidents stays [] and we skip store.
 

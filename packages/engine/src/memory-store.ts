@@ -52,10 +52,14 @@ export type MemoryKind =
   | 'decision'
   | 'pitfall'
   | 'incident-pattern'
-  | 'confirmed-outcome';
+  | 'confirmed-outcome'
+  // HOR-432: an auto-captured record of a single investigation (the honest verdict, incl.
+  // unconfirmed/partly). Carries an incident-family signature/tags so it participates in recurrence
+  // detection. CONTEXT-ONLY — never read by the confidence/verdict scoring path.
+  | 'investigation';
 
 /** Provenance of a MemoryItem. */
-export type MemorySource = 'derived' | 'human' | 'confirmed-outcome';
+export type MemorySource = 'derived' | 'human' | 'confirmed-outcome' | 'investigation';
 
 /**
  * Link relation. The four M1 rels have concrete code/incident/evidence resolvers; the M3 memory→
@@ -85,7 +89,14 @@ export type LinkTargetKind = 'node' | 'incident' | 'evidence' | 'memory';
  * `manual` is human/agent-authored; the `auto:*` detectors are CONTEXT-ONLY (they propose edges and
  * NEVER feed the confidence/verdict scoring path); `structural` is a derived graph relationship.
  */
-export type LinkDetection = 'manual' | 'auto:recurrence' | 'auto:contradiction' | 'structural';
+export type LinkDetection =
+  | 'manual'
+  | 'auto:recurrence'
+  | 'auto:contradiction'
+  // HOR-432: a `recurs-with` edge authored automatically when a freshly-captured investigation memory
+  // matches a prior one. CONTEXT-ONLY — it records the recurrence, never feeds confidence/verdict.
+  | 'auto:investigation-recurrence'
+  | 'structural';
 
 /** Per-edge traversal direction relative to the queried item (`out` = authored from it). */
 export type LinkDirection = 'out' | 'in';
