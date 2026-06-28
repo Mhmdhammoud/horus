@@ -1,14 +1,23 @@
 import type {
+  SourceCommunitiesResult,
+  SourceContentHit,
   SourceCypherResult,
   SourceDiffResult,
+  SourceExactSymbol,
+  SourceFlowsResult,
   SourceHealth,
   SourceHostInfo,
   SourceImpactResult,
+  SourceLabelSymbol,
   SourceMemorySearchHit,
   SourceMemorySearchRequest,
   SourceMemorySearchResult,
   SourceMemoryUpsertRequest,
+  SourceNode,
+  SourceNodeDetail,
+  SourceNodeLine,
   SourceOverview,
+  SourceProcessesResult,
   SourceSearchResult,
 } from './types.js';
 
@@ -178,8 +187,82 @@ export class SourceHttpClient {
   }
 
   async nodeCount(): Promise<number> {
-    const result = await this.cypher('MATCH (n) RETURN count(n)');
-    return Number(result.rows[0]?.[0]) || 0;
+    const o = await this.overview();
+    return Number(o.totalNodes) || 0;
+  }
+
+  // -------------------------------------------------------------------------
+  // Typed read-path endpoints (HOR-392). These replace the CLI's raw Cypher:
+  // the host owns the queries and returns shaped JSON, so the client never
+  // emits or escapes Cypher on the read path.
+  // -------------------------------------------------------------------------
+
+  /** Nodes whose full content contains ANY of `tokens` — full (untruncated) content. */
+  async contentSearch(tokens: string[], limit = 500): Promise<SourceContentHit[]> {
+    const res = await this.request<{ results: SourceContentHit[] }>('POST', '/api/content-search', {
+      tokens,
+      limit,
+    });
+    return res.results ?? [];
+  }
+
+  /** Exact-name symbol lookup (file label excluded), with line ranges. */
+  async exactSymbols(name: string, limit = 10): Promise<SourceExactSymbol[]> {
+    const res = await this.request<{ results: SourceExactSymbol[] }>(
+      'GET',
+      `/api/symbols/exact?name=${encodeURIComponent(name)}&limit=${limit}`,
+    );
+    return res.results ?? [];
+  }
+
+  /** Symbol nodes for the given comma-joinable lowercase labels (source-graph extraction). */
+  async symbolsByLabel(labels: string[], limit = 1000): Promise<SourceLabelSymbol[]> {
+    const res = await this.request<{ symbols: SourceLabelSymbol[] }>(
+      'GET',
+      `/api/symbols?labels=${encodeURIComponent(labels.join(','))}&limit=${limit}`,
+    );
+    return res.symbols ?? [];
+  }
+
+  /** Batch-resolve node ids to their line ranges (CLI line hydration). */
+  async nodesLines(ids: string[]): Promise<Record<string, SourceNodeLine>> {
+    const res = await this.request<{ lines: Record<string, SourceNodeLine> }>(
+      'POST',
+      '/api/nodes/lines',
+      { ids },
+    );
+    return res.lines ?? {};
+  }
+
+  /** Process flows a symbol participates in, with each flow's named ordered steps. */
+  flows(nodeId: string): Promise<SourceFlowsResult> {
+    return this.request<SourceFlowsResult>('GET', `/api/flows/${encodeURI(nodeId)}`);
+  }
+
+  /** Method symbols of `className` defined in `file`, ordered by start line. */
+  async classMethods(file: string, className: string): Promise<SourceNode[]> {
+    const res = await this.request<{ methods: SourceNode[] }>(
+      'GET',
+      `/api/class-methods?file=${encodeURIComponent(file)}&class=${encodeURIComponent(className)}`,
+    );
+    return res.methods ?? [];
+  }
+
+  /** Extended node detail — node + content + callers/callees/typeRefs + imports + coupling + communities. */
+  node(nodeId: string): Promise<SourceNodeDetail> {
+    return this.request<SourceNodeDetail>('GET', `/api/node/${encodeURI(nodeId)}`);
+  }
+
+  /** Community clusters with their member nodes (source-graph extraction). */
+  async communities(): Promise<SourceCommunitiesResult['communities']> {
+    const res = await this.request<SourceCommunitiesResult>('GET', '/api/communities');
+    return res.communities ?? [];
+  }
+
+  /** Discovered execution processes with their ordered steps (source-graph extraction). */
+  async processes(): Promise<SourceProcessesResult['processes']> {
+    const res = await this.request<SourceProcessesResult>('GET', '/api/processes');
+    return res.processes ?? [];
   }
 
   // -------------------------------------------------------------------------

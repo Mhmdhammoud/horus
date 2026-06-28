@@ -29,6 +29,8 @@ export interface CodeProvider extends Provider {
   context(symbolId: string): Promise<SymbolContext>;
   impact(symbolId: string, depth?: number): Promise<ImpactResult>;
   flowsFor(symbolId: string): Promise<Flow[]>;
+  /** Method symbols of a class, for class-seed walkthroughs (typed /api/class-methods). */
+  classMethods?(file: string, className: string): Promise<Symbol[]>;
   detectChanges(diff: { base: string; compare: string }): Promise<ChangeSet>;
   cypher(query: string): Promise<CypherResult>;
 }

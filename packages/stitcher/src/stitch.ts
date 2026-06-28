@@ -1,7 +1,8 @@
 /**
- * The stitcher orchestration: pull producer Class nodes and worker File nodes from source intelligence
- * over read-only Cypher, run the pure extractor, and replace the stitcher-owned rows in
- * `queue_edges`. This is the one source-intelligence layer the static graph can't give.
+ * The stitcher orchestration: pull producer Class nodes and worker File nodes from source
+ * intelligence over the typed content-search endpoint (HOR-392), run the pure extractor, and
+ * replace the stitcher-owned rows in `queue_edges`. This is the one source-intelligence layer
+ * the static graph can't give.
  */
 import { SourceHttpClient } from '@horus/connectors';
 import { replaceQueueEdges, type HorusDb, type NewQueueEdge } from '@horus/db';
@@ -34,36 +35,31 @@ export async function stitch(
   // registered queues (HOR-341): enum declarations (`new Queue(Enum.MEMBER)` /
   // `Object.values(Enum)` resolution) and dispatch tables that map enum members to
   // handler functions. These are harmless extra rows for the literal-string path.
-  const producerRows = (
-    await client.cypher(
-      // "new Queue" (no paren) so generic-typed `new Queue<T>(...)` also matches.
-      'MATCH (n) WHERE n.content CONTAINS "@InjectQueue(" OR n.content CONTAINS "new Queue" ' +
-        'OR n.content CONTAINS "QUEUE_NAME" OR n.content CONTAINS "QueueName" ' +
-        'OR n.content CONTAINS "enum " OR n.content CONTAINS "Object.values(" ' +
-        // HOR-341: dispatch tables `[Enum.MEMBER]: () => this.ctrl.handler()` map runtime
-        // queues to owning code, and often live in a file with NO new Queue/Worker of their
-        // own (e.g. a scheduler controller) — so pull computed-key arrow entries too.
-        'OR n.content CONTAINS "]: (" ' +
-        'RETURN n.name, n.file_path, n.content',
-    )
-  ).rows;
+  const producerRows = await client.contentSearch([
+    // "new Queue" (no paren) so generic-typed `new Queue<T>(...)` also matches.
+    '@InjectQueue(',
+    'new Queue',
+    'QUEUE_NAME',
+    'QueueName',
+    'enum ',
+    'Object.values(',
+    // HOR-341: dispatch tables `[Enum.MEMBER]: () => this.ctrl.handler()` map runtime
+    // queues to owning code, and often live in a file with NO new Queue/Worker of their
+    // own (e.g. a scheduler controller) — so pull computed-key arrow entries too.
+    ']: (',
+  ]);
   const producerClasses: ProducerClassInput[] = producerRows.map((r) => ({
-    name: String(r[0] ?? ''),
-    filePath: String(r[1] ?? ''),
-    content: String(r[2] ?? ''),
+    name: r.name,
+    filePath: r.filePath,
+    content: r.content,
   }));
 
   // Workers: NestJS class-level @Processor, and raw `new Worker(...)`.
-  const workerRows = (
-    await client.cypher(
-      // "new Worker" (no paren) so generic-typed `new Worker<T>(...)` also matches.
-      'MATCH (n) WHERE n.content CONTAINS "@Processor(" OR n.content CONTAINS "new Worker" ' +
-        'RETURN n.name, n.file_path, n.content',
-    )
-  ).rows;
+  // "new Worker" (no paren) so generic-typed `new Worker<T>(...)` also matches.
+  const workerRows = await client.contentSearch(['@Processor(', 'new Worker']);
   const workerFiles: WorkerFileInput[] = workerRows.map((r) => ({
-    filePath: String(r[1] ?? ''),
-    content: String(r[2] ?? ''),
+    filePath: r.filePath,
+    content: r.content,
   }));
 
   const graph = extractQueueGraph({ producerClasses, workerFiles });
@@ -76,22 +72,26 @@ export async function stitch(
   // with extract.ts's CELERY_ENQUEUE_RE/CELERY_TASK_DEF_RE: candidate nodes that aren't fetched
   // here are invisible to the regex. arq's `.enqueue_job(` / rq's `.enqueue(` are fetched too, but
   // they have no worker-side decorator so their producers drop under the taskQueues filter.
-  const celeryRows = (
-    await client.cypher(
-      'MATCH (n) WHERE n.content CONTAINS ".delay(" OR n.content CONTAINS ".apply_async(" ' +
-        'OR n.content CONTAINS ".schedule(" ' +
-        'OR n.content CONTAINS ".defer(" OR n.content CONTAINS ".defer_async(" ' +
-        'OR n.content CONTAINS ".send(" OR n.content CONTAINS ".enqueue_job(" OR n.content CONTAINS ".enqueue(" ' +
-        'OR n.content CONTAINS "@shared_task" OR n.content CONTAINS "@task" OR n.content CONTAINS ".task" ' +
-        'OR n.content CONTAINS "@actor" ' +
-        'OR n.content CONTAINS "periodic_task" OR n.content CONTAINS "db_task" ' +
-        'RETURN n.name, n.file_path, n.content',
-    )
-  ).rows;
+  const celeryRows = await client.contentSearch([
+    '.delay(',
+    '.apply_async(',
+    '.schedule(',
+    '.defer(',
+    '.defer_async(',
+    '.send(',
+    '.enqueue_job(',
+    '.enqueue(',
+    '@shared_task',
+    '@task',
+    '.task',
+    '@actor',
+    'periodic_task',
+    'db_task',
+  ]);
   const celeryNodes: CeleryNodeInput[] = celeryRows.map((r) => ({
-    name: String(r[0] ?? ''),
-    filePath: String(r[1] ?? ''),
-    content: String(r[2] ?? ''),
+    name: r.name,
+    filePath: r.filePath,
+    content: r.content,
   }));
   const celery = extractCeleryQueueGraph(celeryNodes);
   // dramatiq is fetched by the same CONTAINS pre-filter (`.send(` + `@actor`) but modeled

@@ -2,10 +2,9 @@
  * HOR-208 — SourceCodeProvider.searchSymbols must resolve an exact symbol-name match
  * (e.g. `GaiaController`) ahead of fuzzy/semantic matches (e.g. `SchedulerController`).
  *
- * Root cause regression: the Phase-1 exact-match Cypher used `NOT n:File`, which Kùzu
- * rejects with a parser error. The throw was swallowed, so the exact phase produced
- * nothing and fuzzy search won. The fake client below throws on that bad syntax, so a
- * revert breaks these tests.
+ * Ported to the typed read path (HOR-392): the exact-name phase now calls the host's
+ * /api/symbols/exact endpoint (`exactSymbols`) instead of raw Cypher, and line ranges are
+ * hydrated via /api/nodes/lines (`nodesLines`). The fake client below models those shapes.
  */
 import { describe, it, expect } from 'vitest';
 import { SourceCodeProvider } from './provider.js';
@@ -13,30 +12,21 @@ import type { SourceHttpClient } from './client.js';
 
 function fakeClient(): SourceHttpClient {
   return {
-    async cypher(query: string) {
-      // Simulate Kùzu rejecting the old label-negation predicate.
-      if (/NOT\s+\w+:File/.test(query)) {
-        throw new Error('Parser exception: Invalid input <... AND NOT n:File>');
+    // Exact-name lookup (Phase 1) → return the real declaration, with line ranges.
+    async exactSymbols(name: string) {
+      if (name.toLowerCase() === 'gaiacontroller') {
+        return [
+          {
+            nodeId: 'class:src/controllers/gaia.controller.ts:GaiaController',
+            name: 'GaiaController',
+            filePath: 'src/controllers/gaia.controller.ts',
+            label: 'class',
+            startLine: 15,
+            endLine: 387,
+          },
+        ];
       }
-      // Exact-name lookup (Phase 1) → return the real declaration.
-      if (/toLower\(n\.name\)\s*=\s*toLower/.test(query)) {
-        return {
-          columns: ['n.id', 'n.name', 'n.file_path'],
-          rows: [
-            ['class:src/controllers/gaia.controller.ts:GaiaController', 'GaiaController', 'src/controllers/gaia.controller.ts'],
-          ],
-          rowCount: 1,
-        };
-      }
-      // Line-range hydration (HOR-211): batch lookup by id.
-      if (/n\.id IN \[/.test(query) && /start_line/.test(query)) {
-        return {
-          columns: ['n.id', 'n.start_line', 'n.end_line'],
-          rows: [['class:src/controllers/gaia.controller.ts:GaiaController', 15, 387]],
-          rowCount: 1,
-        };
-      }
-      return { columns: [], rows: [], rowCount: 0 };
+      return [];
     },
     // Semantic search ranks the wrong, fuzzily-related controller first (the bug).
     async search() {
@@ -50,6 +40,18 @@ function fakeClient(): SourceHttpClient {
           snippet: '',
         },
       ];
+    },
+    // Line-range hydration (HOR-211): batch lookup by id.
+    async nodesLines(ids: string[]) {
+      const out: Record<string, { filePath: string; startLine: number; endLine: number }> = {};
+      if (ids.includes('class:src/controllers/gaia.controller.ts:GaiaController')) {
+        out['class:src/controllers/gaia.controller.ts:GaiaController'] = {
+          filePath: 'src/controllers/gaia.controller.ts',
+          startLine: 15,
+          endLine: 387,
+        };
+      }
+      return out;
     },
   } as unknown as SourceHttpClient;
 }

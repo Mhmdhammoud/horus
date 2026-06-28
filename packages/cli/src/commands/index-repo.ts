@@ -64,6 +64,15 @@ async function stitchQueueMap(hostUrl: string, dbUrl: string, label: string): Pr
         `Stitched ${summary.edges} queue edge(s) across ${summary.queues} queue(s) — ` +
         `${summary.producers} producer(s), ${summary.workers} worker(s).`,
     );
+  } catch (err) {
+    // HOR-392: a content-search / DB query failure must DEGRADE the queue-map pass — not
+    // abort the whole `horus index`. Log it and report a zero-edge summary so indexing
+    // (knowledge pass, config write) still completes for the rest of the repo.
+    console.log(
+      pc.dim(`[${label}]  `) +
+        `Queue map skipped (degraded): ${(err as Error).message}. ` +
+        `Stitched 0 queue edge(s).`,
+    );
   } finally {
     await sql.end();
   }
@@ -116,21 +125,31 @@ export interface IndexOptions {
 }
 
 /**
- * Cap per-category Cypher pulls so a huge monorepo can't bloat the knowledge base
+ * Cap per-category pulls so a huge monorepo can't bloat the knowledge base
  * or stall `horus index`. Matches the knowledge bridge's own defensive cap.
  */
 const SOURCE_GRAPH_PULL_LIMIT = 5000;
 
+/** Source-graph labels (lowercase, matching the host's NodeLabel values) the KB ingests. */
+const SOURCE_SYMBOL_LABELS = [
+  'class',
+  'interface',
+  'type_alias',
+  'function',
+  'method',
+  'enum',
+];
+
 /**
- * Read the analysed source graph back from the running host over read-only Cypher
- * and shape it into a `SourceGraphExtract` (HOR-408). This is the bridge the
- * knowledge pass was missing: the rich analyse output (functions, classes,
- * interfaces, type aliases, enums, semantic communities, execution-flow
- * processes) is pulled here and mapped into the KB categories that were empty.
+ * Read the analysed source graph back from the running host over the TYPED endpoints
+ * (HOR-392) and shape it into a `SourceGraphExtract` (HOR-408). This is the bridge the
+ * knowledge pass was missing: the rich analyse output (functions, classes, interfaces,
+ * type aliases, enums, semantic communities, execution-flow processes) is pulled here
+ * and mapped into the KB categories that were empty.
  *
- * Best-effort and fully guarded — any query the backend rejects (older graph
- * shape, transient error) degrades to "no rows" for that slice so the rest of
- * the extract still lands. Returns `null` only if nothing at all could be read.
+ * Best-effort and fully guarded — any endpoint the backend rejects (older shape,
+ * transient error) degrades to "no rows" for that slice so the rest of the extract
+ * still lands. Returns `null` only if nothing at all could be read.
  */
 async function extractSourceGraph(
   hostUrl: string,
@@ -139,66 +158,47 @@ async function extractSourceGraph(
   const client = new SourceHttpClient({ baseUrl: hostUrl });
   const N = SOURCE_GRAPH_PULL_LIMIT;
 
-  const rows = async (query: string): Promise<unknown[][]> => {
-    try {
-      return (await client.cypher(query)).rows;
-    } catch {
-      return [];
-    }
-  };
-
   // Symbols: types (Class/Interface/TypeAlias), callables (Function/Method), enums.
-  const symbolRows = await rows(
-    'MATCH (n) WHERE label(n) IN ["Class","Interface","TypeAlias","Function","Method","Enum"] ' +
-      'RETURN label(n), n.name, n.file_path, n.start_line, n.end_line, n.class_name, ' +
-      `n.is_entry_point, n.is_exported, n.signature LIMIT ${N * 2}`,
-  );
+  const symbolRows = await client.symbolsByLabel(SOURCE_SYMBOL_LABELS, N * 2).catch(() => []);
   const symbols: SourceSymbolInput[] = symbolRows.map((r) => ({
-    label: String(r[0] ?? ''),
-    name: String(r[1] ?? ''),
-    filePath: r[2] != null ? String(r[2]) : undefined,
-    startLine: r[3] != null ? Number(r[3]) : undefined,
-    endLine: r[4] != null ? Number(r[4]) : undefined,
-    className: r[5] != null ? String(r[5]) : undefined,
-    isEntryPoint: Boolean(r[6]),
-    isExported: Boolean(r[7]),
-    signature: r[8] != null ? String(r[8]) : undefined,
+    label: r.label,
+    name: r.name,
+    filePath: r.filePath || undefined,
+    startLine: r.startLine > 0 ? r.startLine : undefined,
+    endLine: r.endLine > 0 ? r.endLine : undefined,
+    className: r.className || undefined,
+    isEntryPoint: Boolean(r.isEntryPoint),
+    isExported: Boolean(r.isExported),
+    signature: r.signature || undefined,
   }));
+
+  // Resolve process step ids → symbol names/files (the /api/processes steps carry only ids).
+  const nameById = new Map<string, { name: string; filePath?: string }>();
+  for (const r of symbolRows) {
+    if (r.id) nameById.set(r.id, { name: r.name, filePath: r.filePath || undefined });
+  }
 
   // Communities (semantic clusters → domain concepts).
-  const communityRows = await rows(
-    `MATCH (n:Community) RETURN n.id, n.name LIMIT ${N}`,
-  );
-  const communities = communityRows.map((r) => ({
-    id: r[0] != null ? String(r[0]) : undefined,
-    name: String(r[1] ?? ''),
+  const communityRows = await client.communities().catch(() => []);
+  const communities = communityRows.map((c) => ({
+    id: c.id ? String(c.id) : undefined,
+    name: String(c.name ?? ''),
   }));
 
-  // Processes (execution flows → data flows) + their ordered steps in one pull.
-  const processRows = await rows(`MATCH (n:Process) RETURN n.id, n.name LIMIT ${N}`);
-  const stepRows = await rows(
-    'MATCH (s)-[r:CodeRelation]->(p:Process) WHERE r.rel_type = "step_in_process" ' +
-      `RETURN p.id, s.name, s.file_path, r.step_number ORDER BY p.id, r.step_number LIMIT ${N * 4}`,
-  );
-  const stepsByProcess = new Map<string, { component: string; detail?: string }[]>();
-  for (const r of stepRows) {
-    const pid = String(r[0] ?? '');
-    if (!pid) continue;
-    const component = String(r[1] ?? '');
-    if (!component) continue;
-    const file = r[2] != null ? String(r[2]) : undefined;
-    const list = stepsByProcess.get(pid) ?? [];
-    list.push({ component, ...(file ? { detail: file } : {}) });
-    stepsByProcess.set(pid, list);
-  }
-  const processes: SourceProcessInput[] = processRows.map((r) => {
-    const id = r[0] != null ? String(r[0]) : undefined;
-    return {
-      id,
-      name: String(r[1] ?? ''),
-      steps: id ? (stepsByProcess.get(id) ?? []) : [],
-    };
-  });
+  // Processes (execution flows → data flows) + their ordered steps.
+  const processRows = await client.processes().catch(() => []);
+  const processes: SourceProcessInput[] = processRows.map((p) => ({
+    name: String(p.name ?? ''),
+    steps: (p.steps ?? [])
+      .map((s) => {
+        const resolved = nameById.get(s.nodeId);
+        const component = resolved?.name ?? s.nodeId;
+        if (!component) return null;
+        const detail = resolved?.filePath;
+        return { component, ...(detail ? { detail } : {}) };
+      })
+      .filter((s): s is { component: string; detail?: string } => s !== null),
+  }));
 
   if (
     symbols.length === 0 &&
@@ -465,8 +465,17 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
       return 1;
     }
 
-    // Build the queue map.
-    await stitchQueueMap(hostUrl, dbUrl, label);
+    // Build the queue map. Best-effort (HOR-392): a stitch/DB failure degrades to a
+    // zero-edge summary rather than aborting the whole index (knowledge pass + config
+    // write still run). stitchQueueMap already self-degrades; this guards openDb itself.
+    try {
+      await stitchQueueMap(hostUrl, dbUrl, label);
+    } catch (err) {
+      console.log(
+        pc.dim(`[${label}]  `) +
+          `Queue map skipped (degraded): ${(err as Error).message}. Stitched 0 queue edge(s).`,
+      );
+    }
 
     // Build/refresh the local project-knowledge snapshot (HOR-293). Best-effort.
     // Passes the live host so the analysed source graph is bridged into the KB (HOR-408).
