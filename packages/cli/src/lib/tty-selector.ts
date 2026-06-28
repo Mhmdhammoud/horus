@@ -240,3 +240,196 @@ export async function checkboxSearch(opts: CheckboxSearchOptions): Promise<strin
     render();
   });
 }
+
+export interface SelectSearchOptions {
+  message: string;
+  choices: string[];
+  pageSize?: number;
+  input?: NodeJS.ReadableStream;
+  output?: NodeJS.WritableStream;
+}
+
+/**
+ * Show a searchable, single-select prompt. The single-choice analogue of
+ * {@link checkboxSearch}.
+ *
+ * Keyboard controls:
+ *   ↑ / ↓     navigate
+ *   enter     confirm the highlighted choice
+ *   type      filter the list
+ *   backspace edit filter
+ *   esc       clear filter, or cancel when filter is empty
+ *   ctrl+c    cancel
+ *
+ * Returns the selected choice value. Throws ExitPromptError on cancel.
+ */
+export async function selectSearch(opts: SelectSearchOptions): Promise<string> {
+  const { message, choices } = opts;
+  const pageSize = opts.pageSize ?? 10;
+  const input = (opts.input ?? process.stdin) as ReadStream;
+  const output = opts.output ?? process.stdout;
+
+  if (!isInteractive(input)) {
+    throw new Error('selectSearch requires an interactive TTY');
+  }
+
+  if (choices.length === 0) {
+    throw new ExitPromptError('No choices to select from');
+  }
+
+  return new Promise((resolve, reject) => {
+    let filter = '';
+    let cursor = 0;
+    let filtered = choices;
+    let visibleOffset = 0;
+    let lastRenderLines = 0;
+    const wasRaw = input.isRaw;
+
+    function updateFiltered() {
+      const f = filter.toLowerCase();
+      filtered = f ? choices.filter((c) => c.toLowerCase().includes(f)) : choices;
+      cursor = Math.min(cursor, Math.max(0, filtered.length - 1));
+      updateVisibleOffset();
+    }
+
+    function updateVisibleOffset() {
+      if (cursor < visibleOffset) {
+        visibleOffset = cursor;
+      } else if (cursor >= visibleOffset + pageSize) {
+        visibleOffset = cursor - pageSize + 1;
+      }
+      const maxOffset = Math.max(0, filtered.length - pageSize);
+      visibleOffset = Math.max(0, Math.min(visibleOffset, maxOffset));
+    }
+
+    function clear() {
+      output.write('\x1B[?25l'); // hide cursor
+      if (lastRenderLines > 0) {
+        output.write(`\x1B[${lastRenderLines}A`); // move up
+        output.write('\x1B[0J'); // clear to end
+      }
+    }
+
+    function render() {
+      clear();
+      const lines: string[] = [];
+      lines.push(
+        `? ${pc.bold(message)} ${pc.dim('(↑↓ navigate • enter confirm • type filter)')}`,
+      );
+
+      const visible = filtered.slice(visibleOffset, visibleOffset + pageSize);
+      for (let i = 0; i < visible.length; i++) {
+        const idx = visibleOffset + i;
+        const choice = visible[i]!;
+        const isCursor = idx === cursor;
+        const pointer = isCursor ? pc.cyan('❯') : ' ';
+        const label = isCursor ? pc.cyan(choice) : choice;
+        lines.push(`  ${pointer} ${label}`);
+      }
+
+      if (filtered.length === 0) {
+        lines.push(pc.dim('  No matches'));
+      }
+
+      const statusParts = [`${filtered.length}/${choices.length} matches`];
+      if (filter) statusParts.push(`filter: ${filter}`);
+      lines.push(pc.dim(`  ${statusParts.join(' · ')}`));
+
+      output.write(lines.join('\n'));
+      lastRenderLines = lines.length;
+    }
+
+    function finish(value: string) {
+      cleanup();
+      output.write(`\n? ${pc.bold(message)} ${value}\n`);
+      resolve(value);
+    }
+
+    function cancel() {
+      cleanup();
+      reject(new ExitPromptError());
+    }
+
+    function cleanup() {
+      input.setRawMode(wasRaw);
+      input.pause();
+      input.removeListener('data', onData);
+      output.write('\x1B[?25h'); // show cursor
+    }
+
+    function onData(chunk: Buffer) {
+      const s = chunk.toString();
+
+      if (s === '\x03') {
+        // Ctrl+C
+        cancel();
+        return;
+      }
+
+      if (s === '\x1B') {
+        // Esc: clear filter, or cancel if filter is empty.
+        if (filter) {
+          filter = '';
+          cursor = 0;
+          updateFiltered();
+        } else {
+          cancel();
+        }
+        render();
+        return;
+      }
+
+      if (s === '\r' || s === '\n') {
+        const choice = filtered[cursor];
+        if (choice !== undefined) finish(choice);
+        return;
+      }
+
+      if (s === '\x7F' || s === '\b') {
+        // Backspace
+        if (filter.length > 0) {
+          filter = filter.slice(0, -1);
+          cursor = 0;
+          updateFiltered();
+        }
+        render();
+        return;
+      }
+
+      if (s === '\x1B[A') {
+        // Up
+        if (cursor > 0) {
+          cursor -= 1;
+          updateVisibleOffset();
+        }
+        render();
+        return;
+      }
+
+      if (s === '\x1B[B') {
+        // Down
+        if (cursor < filtered.length - 1) {
+          cursor += 1;
+          updateVisibleOffset();
+        }
+        render();
+        return;
+      }
+
+      // Printable ASCII: append to filter.
+      if (s.length === 1 && s.charCodeAt(0) >= 32 && s.charCodeAt(0) <= 126) {
+        filter += s;
+        cursor = 0;
+        updateFiltered();
+        render();
+      }
+    }
+
+    input.setRawMode(true);
+    input.resume();
+    input.on('data', onData);
+
+    updateFiltered();
+    render();
+  });
+}

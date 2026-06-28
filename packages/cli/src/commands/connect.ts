@@ -38,7 +38,7 @@ import {
   probeRedisDatabases,
   type RedisDbProbe,
 } from '@horus/connectors';
-import { checkboxSearch, isInteractive, ExitPromptError } from '../lib/tty-selector.js';
+import { checkboxSearch, selectSearch, isInteractive, ExitPromptError } from '../lib/tty-selector.js';
 import { runConnectAi } from './connect-ai.js';
 
 /** A logical Redis DB the user wants to configure, with its roles. */
@@ -305,14 +305,40 @@ async function fillInteractive(
         filled.url ?? ((await ask('Base URL (self-hosted)', 'https://sentry.io', false)) || undefined);
       break;
 
-    case 'axiom':
-      filled.dataset = filled.dataset ?? (await ask('Dataset', 'logs'));
-      filled.token = filled.token ?? ((await askPassword('API token')) || undefined);
-      filled.url =
-        filled.url ??
-        ((await ask('Base URL (US: https://api.axiom.co · EU: https://api.eu.axiom.co)', 'https://api.axiom.co', false)) ||
-          undefined);
+    case 'axiom': {
+      filled.token = filled.token ?? ((await askPassword('Axiom API token')) || undefined);
+
+      // Server/region — single-select (US / EU / Custom URL), unless --url was given.
+      if (filled.url === undefined) {
+        filled.url = await askAxiomRegion();
+      }
+
+      // Dataset — discover-then-select, unless --dataset was given.
+      if (filled.dataset === undefined) {
+        const baseUrl = filled.url ?? 'https://api.axiom.co';
+        let names: string[] = [];
+        if (filled.token) {
+          const client = new AxiomClient({ token: filled.token, dataset: '', baseUrl });
+          names = (await client.listDatasets()).map((d) => d.name).filter(Boolean);
+        }
+        if (names.length > 0) {
+          const picked = await askDatasetSelection(names);
+          if (picked) filled.dataset = picked;
+        }
+        // Fall back to manual entry if listing failed/empty or the user skipped.
+        if (filled.dataset === undefined) {
+          if (names.length === 0) {
+            console.log(
+              pc.yellow(
+                "  Couldn't list datasets (check token / network / region) — enter the name manually.",
+              ),
+            );
+          }
+          filled.dataset = await ask('Dataset name', 'logs');
+        }
+      }
       break;
+    }
 
     case 'grafana':
       filled.url = filled.url ?? (await ask('URL', 'https://grafana.example.com'));
@@ -961,6 +987,90 @@ export async function askDashboardSelection(
   }
 
   return [];
+}
+
+/**
+ * Single-select the Axiom server / region. Presents US / EU / Custom URL and
+ * resolves the choice to a base URL. "Custom URL…" then prompts for the URL.
+ * In a non-interactive context, defaults to the US region.
+ */
+export async function askAxiomRegion(): Promise<string> {
+  const US = 'US — api.axiom.co';
+  const EU = 'EU — api.eu.axiom.co';
+  const CUSTOM = 'Custom URL…';
+  const US_URL = 'https://api.axiom.co';
+  const EU_URL = 'https://api.eu.axiom.co';
+
+  let choice = US;
+  if (isInteractive()) {
+    try {
+      choice = await selectSearch({
+        message: 'Axiom server / region',
+        choices: [US, EU, CUSTOM],
+        pageSize: 3,
+      });
+    } catch (err) {
+      if (err instanceof ExitPromptError) throw err;
+      // Fall back to the default region on unexpected selector failures.
+      return US_URL;
+    }
+  } else {
+    return US_URL;
+  }
+
+  if (choice === EU) return EU_URL;
+  if (choice === CUSTOM) {
+    return (await ask('Custom Axiom base URL', US_URL)) || US_URL;
+  }
+  return US_URL;
+}
+
+/**
+ * Show discovered Axiom dataset names and let the user pick exactly ONE
+ * (mirrors askIndexSelection, but single-select). Returns the chosen name, or
+ * undefined if the user skipped (caller falls back to a manual text prompt).
+ */
+export async function askDatasetSelection(names: string[]): Promise<string | undefined> {
+  if (names.length === 0) return undefined;
+
+  if (isInteractive()) {
+    try {
+      return await selectSearch({
+        message: 'Select an Axiom dataset',
+        choices: names,
+        pageSize: 12,
+      });
+    } catch (err) {
+      if (err instanceof ExitPromptError) throw err;
+      // Fall back to plain text on unexpected selector failures.
+    }
+  }
+
+  const MAX_DISPLAY = 25;
+  const shown = names.slice(0, MAX_DISPLAY);
+
+  console.log('\n  Available Axiom datasets:');
+  shown.forEach((name, i) => {
+    console.log(`  ${pc.dim(`[${i + 1}]`)} ${name}`);
+  });
+  if (names.length > MAX_DISPLAY) {
+    console.log(pc.dim(`  … and ${names.length - MAX_DISPLAY} more`));
+  }
+
+  const input = (
+    await ask('  Select a dataset (e.g. 1 or Enter to type a name manually)', '', false)
+  ).trim();
+
+  if (!input) return undefined;
+
+  // Numeric input: treat as a 1-based pick from the displayed list.
+  if (/^\d+$/.test(input)) {
+    const idx = parseInt(input, 10) - 1;
+    if (idx >= 0 && idx < shown.length) return shown[idx];
+  }
+
+  // Otherwise treat the input as a manually-typed dataset name.
+  return input;
 }
 
 // ---------------------------------------------------------------------------
