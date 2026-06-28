@@ -23,6 +23,11 @@ function repoWithPkg(pkg: object): string {
   writeFileSync(join(d, 'package.json'), JSON.stringify(pkg));
   return d;
 }
+function repoWithFiles(files: Record<string, string>): string {
+  const d = tmp();
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(d, name), content);
+  return d;
+}
 
 describe('deriveRepositoryProfile', () => {
   it('detects frameworks/languages/data sources/integrations/auth + role from package.json', () => {
@@ -66,13 +71,114 @@ describe('deriveRepositoryProfile', () => {
     expect(p.languages).toContain('JavaScript');
   });
 
-  it('falls back to a minimal profile when package.json is missing', () => {
+  it('falls back to a minimal profile with no language/provenance when no manifest exists', () => {
     const d = tmp();
     const p = deriveRepositoryProfile({ name: 'bare', path: d }, { now: NOW });
     expect(p.name).toBe('bare');
     expect(p.frameworks).toEqual([]);
-    expect(p.languages).toContain('JavaScript');
+    // No manifest → claim no language and cite no file (HOR-407 honesty).
+    expect(p.languages).toEqual([]);
     expect(p.provenance.sourceType).toBe('parsed');
+    expect(p.provenance.filePath).toBeUndefined();
+  });
+});
+
+describe('deriveRepositoryProfile — Python repos (HOR-407 / HOR-408)', () => {
+  it('classifies a pyproject-only repo as Python with a non-empty profile and no phantom provenance', () => {
+    const path = repoWithFiles({
+      'pyproject.toml': `
+[project]
+name = "billing-svc"
+description = "Billing service"
+dependencies = [
+  "fastapi>=0.100",
+  "sqlalchemy[asyncio]>=2.0",
+  "asyncpg",
+  "redis>=4",
+  "celery",
+  "stripe",
+  "boto3 ; python_version >= '3.8'",
+]
+`,
+    });
+
+    const p = deriveRepositoryProfile(
+      { name: 'billing-svc', path },
+      { project: 'billing', gitSha: 'py123', now: NOW },
+    );
+
+    // HOR-407: language is Python, never JavaScript.
+    expect(p.languages).toEqual(['Python']);
+    expect(p.languages).not.toContain('JavaScript');
+
+    // HOR-408: profile is populated from Python deps.
+    expect(p.frameworks).toContain('FastAPI');
+    expect(p.frameworks).toContain('Celery (queue)');
+    expect(p.dataSources).toContain('SQLAlchemy');
+    expect(p.dataSources).toContain('PostgreSQL'); // asyncpg
+    expect(p.stateManagement).toContain('Redis');
+    expect(p.integrations).toEqual(expect.arrayContaining(['Stripe', 'AWS']));
+    expect(p.role).toBe('backend');
+    expect(p.name).toBe('billing-svc');
+    expect(p.summary).toBe('Billing service');
+    expect(p.frameworks.length + p.dataSources.length).toBeGreaterThan(0);
+
+    // HOR-407: provenance never cites a package.json that does not exist.
+    expect(p.provenance.filePath).toBe('pyproject.toml');
+    expect(p.provenance.filePath).not.toBe('package.json');
+    expect(p.provenance.gitSha).toBe('py123');
+  });
+
+  it('reads Poetry-style pyproject dependencies', () => {
+    const path = repoWithFiles({
+      'pyproject.toml': `
+[tool.poetry]
+name = "web-svc"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+django = "^5.0"
+psycopg2-binary = "*"
+`,
+    });
+    const p = deriveRepositoryProfile({ name: 'web-svc', path }, { now: NOW });
+    expect(p.languages).toEqual(['Python']);
+    expect(p.frameworks).toContain('Django');
+    expect(p.dataSources).toContain('PostgreSQL');
+    expect(p.provenance.filePath).toBe('pyproject.toml');
+  });
+
+  it('reads setup.cfg install_requires and cites setup.cfg', () => {
+    const path = repoWithFiles({
+      'setup.cfg': `
+[metadata]
+name = flasky
+description = A Flask app
+
+[options]
+install_requires =
+    flask>=2.0
+    peewee
+    redis==5.0
+python_requires = >=3.9
+`,
+    });
+    const p = deriveRepositoryProfile({ name: 'flasky', path }, { now: NOW });
+    expect(p.languages).toEqual(['Python']);
+    expect(p.frameworks).toContain('Flask');
+    expect(p.dataSources).toContain('Peewee');
+    expect(p.stateManagement).toContain('Redis');
+    expect(p.provenance.filePath).toBe('setup.cfg');
+    expect(p.provenance.filePath).not.toBe('package.json');
+  });
+
+  it('treats a mixed JS + Python repo as both languages, citing package.json', () => {
+    const path = repoWithPkg({ name: 'mixed', dependencies: { next: '14' } });
+    writeFileSync(join(path, 'pyproject.toml'), '[project]\ndependencies = ["fastapi"]\n');
+    const p = deriveRepositoryProfile({ name: 'mixed', path }, { now: NOW });
+    expect(p.languages).toEqual(expect.arrayContaining(['JavaScript', 'Python']));
+    expect(p.frameworks).toEqual(expect.arrayContaining(['Next.js', 'FastAPI']));
+    expect(p.provenance.filePath).toBe('package.json');
   });
 });
 
