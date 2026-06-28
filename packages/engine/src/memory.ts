@@ -34,6 +34,8 @@ import type {
   Rel,
   MemoryRel,
   AddLinkOpts,
+  RemoveLinkSpec,
+  RemoveLinkOpts,
   LinksOpts,
   AnnotatedMemoryLink,
 } from './memory-store.js';
@@ -687,6 +689,54 @@ export function createLocalMemoryStore(db: HorusDb): MemoryStore {
         },
       });
       return row;
+    },
+
+    async removeLink(spec: RemoveLinkSpec, opts?: RemoveLinkOpts): Promise<number> {
+      const rel = spec.rel;
+      // Only the FROZEN memory rels are hand-removable (M1 derived edges are not managed here).
+      if (!MEMORY_RELS.has(rel as Rel)) {
+        throw new Error(`unsupported memory_link rel for unlink: ${rel}`);
+      }
+
+      let fromId = spec.fromMemoryId;
+      let toRef = spec.toRef;
+      // `recurs-with` is stored canonically (smaller id first) — canonicalize the query the same way
+      // so either authored orientation removes the one stored row.
+      if (isSymmetricRel(rel) && fromId > toRef) [fromId, toRef] = [toRef, fromId];
+
+      const deleted = await db
+        .delete(memoryLink)
+        .where(
+          and(
+            eq(memoryLink.fromMemoryId, fromId),
+            eq(memoryLink.rel, rel),
+            eq(memoryLink.toRef, toRef),
+            eq(memoryLink.toKind, 'memory'),
+          ),
+        )
+        .returning();
+
+      // No matching edge → a no-op (not an error), and nothing is audited.
+      if (deleted.length === 0) return 0;
+
+      // Append an `unlink` audit row keyed to the (canonical) FROM item — honest provenance for the
+      // removal. HONESTY: this drops the CONTEXT edge only; neither item's status/confidence changes.
+      await appendAudit({
+        memoryId: fromId,
+        action: 'unlink',
+        actor: opts?.audit?.actor ?? { kind: 'system' },
+        fromStatus: null,
+        toStatus: null,
+        note: opts?.audit?.note ?? null,
+        detail: {
+          rel,
+          toKind: 'memory',
+          toRef,
+          removed: deleted.length,
+          ...(opts?.audit?.note ? { note: opts.audit.note } : {}),
+        },
+      });
+      return deleted.length;
     },
 
     async links(id: string, opts?: LinksOpts): Promise<AnnotatedMemoryLink[]> {

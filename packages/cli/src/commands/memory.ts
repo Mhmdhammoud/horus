@@ -39,6 +39,7 @@ import {
   memoryViewToJSON,
   createLocalMemoryStore,
   recallMemory,
+  detectMemoryEdges,
   route,
   formatRouteStep,
   NoopVectorIndex,
@@ -50,7 +51,9 @@ import {
   type MemoryLink,
   type MemoryAudit,
   type MemoryKind,
+  type MemoryRel,
   type MemoryStatus,
+  type ProposedEdge,
   type Visibility,
 } from '@horus/engine';
 import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
@@ -77,6 +80,13 @@ const MEMORY_KINDS: readonly MemoryKind[] = [
   'incident-pattern',
   'confirmed-outcome',
 ];
+
+/**
+ * The FROZEN day-0 memory→memory rel vocabulary accepted by `memory link`/`unlink`/`detect`. Every
+ * one of these is stored with `toKind:'memory'` (enforced by the store). `supersedes`/`contradicts`
+ * are directional; `recurs-with` is symmetric (canonicalized + deduped by the store).
+ */
+const MEMORY_RELS: readonly MemoryRel[] = ['supersedes', 'contradicts', 'recurs-with'];
 
 /** Default confidence for a human-asserted claim (deterministic; user-overridable via --confidence). */
 const DEFAULT_ADD_CONFIDENCE = 0.75;
@@ -632,6 +642,190 @@ export async function runMemoryList(opts: {
         console.log(JSON.stringify({ project, items: items.map(recalledToJSON) }, null, 2));
       } else {
         console.log(renderStoredItems(items));
+      }
+      return 0;
+    });
+  } catch (err) {
+    console.error(pc.red((err as Error).message));
+    return 1;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// memory link / unlink / detect — the memory→memory link graph (FROZEN day-0 rels)
+// ---------------------------------------------------------------------------
+
+/** Validate a `--rel` value against the FROZEN vocabulary; print + return null on a bad value. */
+function parseRel(rel: string | undefined): MemoryRel | null {
+  if (rel === undefined || !MEMORY_RELS.includes(rel as MemoryRel)) {
+    console.error(pc.red(`--rel must be one of: ${MEMORY_RELS.join(', ')}.`));
+    return null;
+  }
+  return rel as MemoryRel;
+}
+
+/**
+ * `horus memory link <a> <b> --rel <supersedes|contradicts|recurs-with>` — author a memory→memory
+ * edge between two items in the repo. Mirrors the resolveProject → withStore → store.addLink template
+ * (see `runMemoryConfirm`). The edge always carries `toKind:'memory'` and `detection:'manual'` (a
+ * human authored it); the store validates endpoints/repo/self-link and canonicalizes `recurs-with`.
+ *
+ * HONESTY INVARIANT (spec §8): the edge is CONTEXT ONLY. `contradicts` is a FLAG — linking never
+ * deletes or re-statuses either item; precedent (`supersedes`) never overrides live evidence.
+ */
+export async function runMemoryLink(
+  a: string,
+  b: string,
+  opts: { config?: string; repo?: string; rel?: string; note?: string; json?: boolean },
+): Promise<number> {
+  try {
+    const fromId = (a ?? '').trim();
+    const toId = (b ?? '').trim();
+    if (fromId === '' || toId === '') {
+      console.error(pc.red('Two memory item ids are required: `memory link <a> <b> --rel <rel>`.'));
+      return 1;
+    }
+    const rel = parseRel(opts.rel);
+    if (rel === null) return 1;
+
+    const config = await loadConfig(opts.config);
+    const project = resolveProject(config, opts.repo);
+    if (!project) return 1;
+
+    return await withStore(config.database.url, async (store) => {
+      const link = await store.addLink(
+        { id: '', fromMemoryId: fromId, rel, toKind: 'memory', toRef: toId },
+        { detection: 'manual', audit: { actor: { kind: 'user' }, note: opts.note } },
+      );
+      if (opts.json) {
+        console.log(
+          JSON.stringify(
+            { ok: true, id: link.id, rel: link.rel, from: link.fromMemoryId, to: link.toRef },
+            null,
+            2,
+          ),
+        );
+      } else {
+        console.log(
+          pc.green(`Linked ${link.fromMemoryId} ${pc.bold(link.rel)} ${link.toRef} (${link.id}).`),
+        );
+      }
+      return 0;
+    });
+  } catch (err) {
+    console.error(pc.red((err as Error).message));
+    return 1;
+  }
+}
+
+/**
+ * `horus memory unlink <a> <b> --rel <rel>` — remove a memory→memory edge (the inverse of `link`).
+ * `recurs-with` is canonicalized so either orientation removes the one stored row. Removing a
+ * non-existent edge is a no-op (exit 0, removed: 0) — never an error. HONESTY: removing the CONTEXT
+ * edge never mutates either item's status/confidence.
+ */
+export async function runMemoryUnlink(
+  a: string,
+  b: string,
+  opts: { config?: string; repo?: string; rel?: string; note?: string; json?: boolean },
+): Promise<number> {
+  try {
+    const fromId = (a ?? '').trim();
+    const toId = (b ?? '').trim();
+    if (fromId === '' || toId === '') {
+      console.error(pc.red('Two memory item ids are required: `memory unlink <a> <b> --rel <rel>`.'));
+      return 1;
+    }
+    const rel = parseRel(opts.rel);
+    if (rel === null) return 1;
+
+    const config = await loadConfig(opts.config);
+    const project = resolveProject(config, opts.repo);
+    if (!project) return 1;
+
+    return await withStore(config.database.url, async (store) => {
+      const removed = await store.removeLink(
+        { fromMemoryId: fromId, rel, toRef: toId },
+        { audit: { actor: { kind: 'user' }, note: opts.note } },
+      );
+      if (opts.json) {
+        console.log(JSON.stringify({ ok: true, removed, rel, from: fromId, to: toId }, null, 2));
+      } else if (removed === 0) {
+        console.log(pc.dim(`No ${rel} link from ${fromId} to ${toId} — nothing removed.`));
+      } else {
+        console.log(pc.green(`Unlinked ${fromId} ${pc.bold(rel)} ${toId} (${removed} edge removed).`));
+      }
+      return 0;
+    });
+  } catch (err) {
+    console.error(pc.red((err as Error).message));
+    return 1;
+  }
+}
+
+/** Render a proposed edge as a one-line preview (dry-run + applied output). */
+function renderProposal(p: ProposedEdge): string {
+  return `  ${pc.dim(`[${p.detection}]`)} ${p.fromMemoryId} ${pc.bold(p.rel)} ${p.toMemoryId} ${pc.dim(`— ${p.reason}`)}`;
+}
+
+/**
+ * `horus memory detect [--dry-run]` — run the auto-detectors over the repo's authored items and either
+ * PRINT the proposed memory→memory edges for operator confirmation (`--dry-run`, writes NOTHING) or
+ * persist each as an edge carrying its honest `auto:*` detection provenance.
+ *
+ * HONESTY INVARIANTS (spec §8), asserted in tests: the auto-detectors are CONTEXT-ONLY — they only
+ * PROPOSE edges and NEVER feed the confidence/verdict scoring path. A `contradicts` proposal is a FLAG
+ * — applying it records the edge but NEVER deletes or re-statuses either item (no `setStatus` here).
+ */
+export async function runMemoryDetect(opts: {
+  config?: string;
+  repo?: string;
+  dryRun?: boolean;
+  limit?: number;
+  json?: boolean;
+}): Promise<number> {
+  try {
+    const config = await loadConfig(opts.config);
+    const project = resolveProject(config, opts.repo);
+    if (!project) return 1;
+
+    const vectorIndex = buildVectorIndex(config, project);
+
+    return await withStore(config.database.url, async (store) => {
+      const proposals = await detectMemoryEdges(store, { repo: project, limit: opts.limit }, { vectorIndex });
+
+      // --dry-run: PRINT proposals for confirmation, write NOTHING.
+      if (opts.dryRun) {
+        if (opts.json) {
+          console.log(JSON.stringify({ ok: true, dryRun: true, proposed: proposals.length, applied: 0, edges: proposals }, null, 2));
+        } else if (proposals.length === 0) {
+          console.log(pc.dim('No memory→memory edges proposed.'));
+        } else {
+          console.log(pc.bold(`Proposed ${proposals.length} edge(s) ${pc.dim('(dry run — nothing written)')}:`));
+          for (const p of proposals) console.log(renderProposal(p));
+          console.log(pc.dim('Re-run without --dry-run to persist these edges.'));
+        }
+        return 0;
+      }
+
+      // Apply: persist each proposed edge with its honest auto:* detection label. The store never
+      // flips status from a link — contradiction stays a FLAG (HONESTY INVARIANT).
+      let applied = 0;
+      for (const p of proposals) {
+        await store.addLink(
+          { id: '', fromMemoryId: p.fromMemoryId, rel: p.rel, toKind: 'memory', toRef: p.toMemoryId },
+          { detection: p.detection, audit: { actor: { kind: 'system' }, note: p.reason } },
+        );
+        applied += 1;
+        if (!opts.json) console.log(`${pc.green('✓')}${renderProposal(p)}`);
+      }
+
+      if (opts.json) {
+        console.log(JSON.stringify({ ok: true, dryRun: false, proposed: proposals.length, applied, edges: proposals }, null, 2));
+      } else if (applied === 0) {
+        console.log(pc.dim('No memory→memory edges proposed.'));
+      } else {
+        console.log(pc.green(`Applied ${applied} detected edge(s).`));
       }
       return 0;
     });

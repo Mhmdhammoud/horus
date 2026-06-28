@@ -104,6 +104,22 @@ export interface AddLinkOpts {
   audit?: AuditCtx;
 }
 
+/**
+ * The unordered endpoints + relation that identify a memory→memory edge to remove. Only the FROZEN
+ * memory rels are addressable (the M1 code/incident/evidence edges are derived, not hand-managed).
+ * `recurs-with` is canonicalized on removal too, so either orientation matches the one stored row.
+ */
+export interface RemoveLinkSpec {
+  fromMemoryId: string;
+  rel: MemoryRel;
+  toRef: string;
+}
+
+/** Options for {@link MemoryStore.removeLink}. `audit` is the actor/note recorded on the `unlink` row. */
+export interface RemoveLinkOpts {
+  audit?: AuditCtx;
+}
+
 /** Options for {@link MemoryStore.links}. `direction` defaults to `both`; `rels` filters by relation. */
 export interface LinksOpts {
   rels?: Rel[];
@@ -193,6 +209,14 @@ export interface MemoryStore {
    * share a repo, and reject self-links; `recurs-with` is canonicalized + deduped (symmetric).
    */
   addLink(link: NewMemoryLink, opts?: AddLinkOpts): Promise<MemoryLink>;
+  /**
+   * Remove a memory→memory edge (the inverse of {@link addLink}) and append an `unlink` audit row to
+   * the FROM item's trail. Only the FROZEN memory rels are addressable; `recurs-with` is canonicalized
+   * so either orientation removes the one stored row. Returns the number of edges removed (0 when no
+   * matching edge exists — a no-op, never an error). HONESTY: removing an edge drops the CONTEXT link
+   * only; it NEVER mutates either item's status/confidence.
+   */
+  removeLink(spec: RemoveLinkSpec, opts?: RemoveLinkOpts): Promise<number>;
   /**
    * Traverse an item's edges, each annotated with its {@link LinkDirection}. `direction` defaults to
    * `both` (out = authored from the item; in = a `toKind:'memory'` edge pointing AT the item), so a

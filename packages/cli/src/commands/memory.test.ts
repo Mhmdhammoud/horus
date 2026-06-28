@@ -37,12 +37,14 @@ const connectors = vi.hoisted(() => ({
 const store = vi.hoisted(() => ({
   add: vi.fn(),
   addLink: vi.fn(),
+  removeLink: vi.fn(),
   setStatus: vi.fn(),
 }));
 const engine = vi.hoisted(() => ({
   buildMemoryView: vi.fn(),
   createLocalMemoryStore: vi.fn(() => store),
   recallMemory: vi.fn(),
+  detectMemoryEdges: vi.fn(),
 }));
 
 vi.mock('@horus/db', async (importOriginal) => {
@@ -65,6 +67,7 @@ vi.mock('@horus/engine', async (importOriginal) => {
     buildMemoryView: engine.buildMemoryView,
     createLocalMemoryStore: engine.createLocalMemoryStore,
     recallMemory: engine.recallMemory,
+    detectMemoryEdges: engine.detectMemoryEdges,
   };
 });
 
@@ -75,6 +78,9 @@ import {
   runMemoryForget,
   runMemoryPin,
   runMemoryList,
+  runMemoryLink,
+  runMemoryUnlink,
+  runMemoryDetect,
   runMemoryAccuracy,
 } from './memory.js';
 
@@ -235,7 +241,9 @@ beforeEach(() => {
   engine.createLocalMemoryStore.mockReturnValue(store);
   store.add.mockResolvedValue({ id: 'mem_new', kind: 'code-fact', scope: 'repo', visibility: 'private' });
   store.addLink.mockResolvedValue(undefined);
+  store.removeLink.mockResolvedValue(1);
   store.setStatus.mockResolvedValue(undefined);
+  engine.detectMemoryEdges.mockResolvedValue([]);
   connectors.memoryIndexForEnv.mockReturnValue(vectorIndex);
   vectorIndex.upsert.mockResolvedValue(undefined);
   vectorIndex.search.mockResolvedValue([]);
@@ -561,6 +569,167 @@ describe('runMemoryList', () => {
     expect(query.status).toEqual(
       expect.arrayContaining(['fresh', 'forgotten', 'deprecated', 'contradicted', 'pinned', 'possibly-stale']),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// memory link / unlink / detect — the memory→memory link graph (FROZEN day-0 rels)
+// ---------------------------------------------------------------------------
+
+describe('runMemoryLink', () => {
+  it('authors a memory→memory edge with toKind=memory and detection=manual', async () => {
+    store.addLink.mockResolvedValueOnce({ id: 'lnk_1', rel: 'supersedes', fromMemoryId: 'mem_a', toRef: 'mem_b' });
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryLink('mem_a', 'mem_b', { config, rel: 'supersedes', note: 'triage' });
+    expect(code).toBe(0);
+    expect(store.addLink).toHaveBeenCalledTimes(1);
+    const [link, opts] = store.addLink.mock.calls[0]!;
+    expect(link).toMatchObject({ fromMemoryId: 'mem_a', rel: 'supersedes', toKind: 'memory', toRef: 'mem_b' });
+    expect(opts).toMatchObject({ detection: 'manual', audit: { actor: { kind: 'user' }, note: 'triage' } });
+    expect(sqlEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('emits clean JSON under --json', async () => {
+    store.addLink.mockResolvedValueOnce({ id: 'lnk_1', rel: 'recurs-with', fromMemoryId: 'mem_a', toRef: 'mem_b' });
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryLink('mem_a', 'mem_b', { config, rel: 'recurs-with', json: true });
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout())).toEqual({ ok: true, id: 'lnk_1', rel: 'recurs-with', from: 'mem_a', to: 'mem_b' });
+  });
+
+  it('rejects an out-of-vocabulary --rel before touching the store (FROZEN vocab)', async () => {
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryLink('mem_a', 'mem_b', { config, rel: 'about-symbol' });
+    expect(code).toBe(1);
+    expect(store.addLink).not.toHaveBeenCalled();
+    expect(db.openDb).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.flat().join(' ')).toContain('--rel must be one of');
+  });
+
+  it('errors on a missing endpoint id without opening the DB', async () => {
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryLink('mem_a', '  ', { config, rel: 'supersedes' });
+    expect(code).toBe(1);
+    expect(db.openDb).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a store rejection (e.g. self-link / cross-repo) as a clean error', async () => {
+    store.addLink.mockRejectedValueOnce(new Error('memory_link rejects a self-link'));
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryLink('mem_a', 'mem_a', { config, rel: 'recurs-with' });
+    expect(code).toBe(1);
+    expect(errSpy.mock.calls.flat().join(' ')).toContain('self-link');
+    expect(sqlEnd).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('runMemoryUnlink', () => {
+  it('removes a memory→memory edge, recording the user actor', async () => {
+    store.removeLink.mockResolvedValueOnce(1);
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryUnlink('mem_a', 'mem_b', { config, rel: 'contradicts', note: 'resolved' });
+    expect(code).toBe(0);
+    expect(store.removeLink).toHaveBeenCalledWith(
+      { fromMemoryId: 'mem_a', rel: 'contradicts', toRef: 'mem_b' },
+      { audit: { actor: { kind: 'user' }, note: 'resolved' } },
+    );
+    // HONESTY: unlink never re-statuses an item.
+    expect(store.setStatus).not.toHaveBeenCalled();
+  });
+
+  it('a missing edge is a no-op (exit 0, removed: 0)', async () => {
+    store.removeLink.mockResolvedValueOnce(0);
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryUnlink('mem_a', 'mem_b', { config, rel: 'supersedes', json: true });
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout())).toEqual({ ok: true, removed: 0, rel: 'supersedes', from: 'mem_a', to: 'mem_b' });
+  });
+
+  it('rejects an out-of-vocabulary --rel before touching the store', async () => {
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryUnlink('mem_a', 'mem_b', { config, rel: 'has-evidence' });
+    expect(code).toBe(1);
+    expect(store.removeLink).not.toHaveBeenCalled();
+    expect(db.openDb).not.toHaveBeenCalled();
+  });
+});
+
+describe('runMemoryDetect', () => {
+  const recurrence = {
+    fromMemoryId: 'mem_a',
+    toMemoryId: 'mem_b',
+    rel: 'recurs-with' as const,
+    detection: 'auto:recurrence' as const,
+    reason: 'same retry-queue signature',
+  };
+  const contradiction = {
+    fromMemoryId: 'mem_c',
+    toMemoryId: 'mem_d',
+    rel: 'contradicts' as const,
+    detection: 'auto:contradiction' as const,
+    reason: 'opposing claims about idempotency',
+  };
+
+  it('invokes the detectors scoped to the resolved repo, threading the vector index', async () => {
+    engine.detectMemoryEdges.mockResolvedValueOnce([]);
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryDetect({ config });
+    expect(code).toBe(0);
+    expect(engine.detectMemoryEdges).toHaveBeenCalledWith(
+      store,
+      expect.objectContaining({ repo: 'my-api' }),
+      expect.objectContaining({ vectorIndex }),
+    );
+  });
+
+  it('--dry-run PRINTS proposals and writes NOTHING (no addLink, no status flip)', async () => {
+    engine.detectMemoryEdges.mockResolvedValueOnce([recurrence, contradiction]);
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryDetect({ config, dryRun: true });
+    expect(code).toBe(0);
+    const out = stdout();
+    expect(out).toContain('Proposed 2 edge(s)');
+    expect(out).toContain('auto:recurrence');
+    expect(out).toContain('auto:contradiction');
+    // HONESTY: dry-run is read-only — nothing is persisted or re-statused.
+    expect(store.addLink).not.toHaveBeenCalled();
+    expect(store.setStatus).not.toHaveBeenCalled();
+  });
+
+  it('--dry-run --json carries the proposed edges with applied=0', async () => {
+    engine.detectMemoryEdges.mockResolvedValueOnce([recurrence]);
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryDetect({ config, dryRun: true, json: true });
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout());
+    expect(parsed).toMatchObject({ ok: true, dryRun: true, proposed: 1, applied: 0 });
+    expect(parsed.edges[0]).toMatchObject({ rel: 'recurs-with', detection: 'auto:recurrence' });
+    expect(store.addLink).not.toHaveBeenCalled();
+  });
+
+  it('without --dry-run persists each edge with its honest auto:* detection label', async () => {
+    engine.detectMemoryEdges.mockResolvedValueOnce([recurrence, contradiction]);
+    store.addLink.mockResolvedValue({ id: 'lnk_x' });
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryDetect({ config });
+    expect(code).toBe(0);
+    expect(store.addLink).toHaveBeenCalledTimes(2);
+    const [link0, opts0] = store.addLink.mock.calls[0]!;
+    expect(link0).toMatchObject({ fromMemoryId: 'mem_a', rel: 'recurs-with', toKind: 'memory', toRef: 'mem_b' });
+    expect(opts0).toMatchObject({ detection: 'auto:recurrence', audit: { actor: { kind: 'system' } } });
+    const [link1, opts1] = store.addLink.mock.calls[1]!;
+    expect(link1).toMatchObject({ fromMemoryId: 'mem_c', rel: 'contradicts', toKind: 'memory', toRef: 'mem_d' });
+    expect(opts1).toMatchObject({ detection: 'auto:contradiction' });
+    // HONESTY: a detected contradiction is a FLAG — applying it NEVER re-statuses an item.
+    expect(store.setStatus).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the project cannot be resolved (HOR-46), without opening the DB', async () => {
+    const config = writeMultiProjectConfig();
+    const code = await runMemoryDetect({ config });
+    expect(code).toBe(1);
+    expect(db.openDb).not.toHaveBeenCalled();
+    expect(engine.detectMemoryEdges).not.toHaveBeenCalled();
   });
 });
 

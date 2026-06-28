@@ -192,6 +192,57 @@ describe('createLocalMemoryStore — memory→memory link graph (M3.1)', () => {
     expect(reFetchedA!.confidence).toBe(0.8);
   }, 30_000);
 
+  it('removeLink: removes a directional edge, audits an `unlink` row, and leaves items unchanged', async () => {
+    const a = await add({ claim: 'old way', status: 'fresh' });
+    const b = await add({ claim: 'new way', status: 'fresh' });
+    await store.addLink({ id: '', fromMemoryId: b.id, rel: 'supersedes', toKind: 'memory', toRef: a.id });
+    expect(await store.links(b.id, { direction: 'out', rels: ['supersedes'] })).toHaveLength(1);
+
+    const removed = await store.removeLink(
+      { fromMemoryId: b.id, rel: 'supersedes', toRef: a.id },
+      { audit: { actor, note: 'reverted' } },
+    );
+    expect(removed).toBe(1);
+    expect(await store.links(b.id, { direction: 'out', rels: ['supersedes'] })).toHaveLength(0);
+
+    // An `unlink` audit row is appended to the FROM item with the rel/toRef provenance.
+    const unlink = (await store.history(b.id)).find((h) => h.action === 'unlink');
+    expect(unlink).toBeDefined();
+    const detail = unlink!.detail as { rel: string; toRef: string; removed: number };
+    expect(detail).toMatchObject({ rel: 'supersedes', toRef: a.id, removed: 1 });
+
+    // HONESTY: removing the CONTEXT edge never mutates either item's status.
+    expect((await store.get(a.id))!.status).toBe('fresh');
+    expect((await store.get(b.id))!.status).toBe('fresh');
+  }, 30_000);
+
+  it('removeLink: canonicalizes `recurs-with` so EITHER orientation removes the one stored row', async () => {
+    const a = await add({ claim: 'incident A' });
+    const b = await add({ claim: 'incident B' });
+    await store.addLink({ id: '', fromMemoryId: a.id, rel: 'recurs-with', toKind: 'memory', toRef: b.id });
+
+    // Remove using the reverse orientation — canonicalization still matches the stored edge.
+    const removed = await store.removeLink({ fromMemoryId: b.id, rel: 'recurs-with', toRef: a.id });
+    expect(removed).toBe(1);
+    expect(await store.links(a.id, { rels: ['recurs-with'] })).toHaveLength(0);
+  }, 30_000);
+
+  it('removeLink: a missing edge is a no-op (returns 0, audits nothing)', async () => {
+    const a = await add({ claim: 'A' });
+    const b = await add({ claim: 'B' });
+    const removed = await store.removeLink({ fromMemoryId: a.id, rel: 'contradicts', toRef: b.id });
+    expect(removed).toBe(0);
+    expect((await store.history(a.id)).some((h) => h.action === 'unlink')).toBe(false);
+  }, 30_000);
+
+  it('removeLink: rejects a non-memory rel', async () => {
+    const a = await add();
+    await expect(
+      // @ts-expect-error — an M1 (non-memory) rel is not addressable by unlink
+      store.removeLink({ fromMemoryId: a.id, rel: 'about-file', toRef: 'src/x.ts' }),
+    ).rejects.toThrow(/unsupported memory_link rel for unlink/);
+  }, 30_000);
+
   it('HONESTY: `contradicts` is a FLAG, not a deletion — neither item is forgotten or status-flipped', async () => {
     const a = await add({ claim: 'X is true', status: 'fresh' });
     const b = await add({ claim: 'X is false', status: 'fresh' });

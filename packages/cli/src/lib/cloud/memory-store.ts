@@ -39,6 +39,8 @@ import type {
   MemoryAudit,
   MemoryEvidence,
   AddLinkOpts,
+  RemoveLinkSpec,
+  RemoveLinkOpts,
 } from "@horus/engine";
 import {
   CloudClient,
@@ -310,6 +312,13 @@ export function createCloudMemoryStore(client: CloudClient, cfg: CloudConfig): C
       };
     },
 
+    // Unlink has NO cloud endpoint in M3 (the sync API is additive/append-only). The local store is
+    // authoritative for removals; a future cloud `unlink` endpoint will mirror this. No-op for now so
+    // the dual-write wrapper never blocks a local unlink on the cloud.
+    async removeLink(_spec: RemoveLinkSpec, _opts?: RemoveLinkOpts): Promise<number> {
+      return 0;
+    },
+
     async pushAudit(rows: MemoryAudit[]): Promise<void> {
       if (rows.length === 0) return;
       await client.syncMemoryItems(projectId, { audit: rows.map(toAuditSyncInput) });
@@ -413,6 +422,13 @@ export function dualWriteMemoryStore(
       // link audit row (written locally with its detection provenance) is mirrored by `memory sync`.
       await mirror(() => cloud.addLink({ ...link, id: row.id }, opts));
       return row;
+    },
+    async removeLink(spec, opts) {
+      // Local is authoritative for removals; the cloud has no unlink endpoint in M3, so this is a
+      // local-only mutation (the cloud `removeLink` is a no-op). Reads/local stay the source of truth.
+      const removed = await local.removeLink(spec, opts);
+      await mirror(() => cloud.removeLink(spec, opts));
+      return removed;
     },
   };
 }

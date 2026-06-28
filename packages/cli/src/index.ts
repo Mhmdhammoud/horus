@@ -44,6 +44,9 @@ import {
   runMemoryForget,
   runMemoryPin,
   runMemoryList,
+  runMemoryLink,
+  runMemoryUnlink,
+  runMemoryDetect,
   runMemorySync,
   runMemoryAccuracy,
 } from './commands/memory.js';
@@ -505,6 +508,58 @@ Examples:
     .action(async (opts: { config?: string; repo?: string; all?: boolean; json?: boolean }) => {
       process.exitCode = await runMemoryList(opts);
     });
+
+  // Memory→memory link graph (FROZEN day-0 rels). NB: these are `memory link/unlink` SUBcommands —
+  // distinct from the unrelated top-level `link` (cloud link).
+  memory
+    .command('link <a> <b>')
+    .description('Author a memory→memory edge (supersedes|contradicts|recurs-with) between two items')
+    .requiredOption('--rel <rel>', 'relation: supersedes | contradicts | recurs-with')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--note <note>', 'note recorded in the audit trail')
+    .option('--json', 'output JSON')
+    .action(
+      async (
+        a: string,
+        b: string,
+        opts: { config?: string; repo?: string; rel?: string; note?: string; json?: boolean },
+      ) => {
+        process.exitCode = await runMemoryLink(a, b, opts);
+      },
+    );
+
+  memory
+    .command('unlink <a> <b>')
+    .description('Remove a memory→memory edge (inverse of `memory link`); a missing edge is a no-op')
+    .requiredOption('--rel <rel>', 'relation: supersedes | contradicts | recurs-with')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--note <note>', 'note recorded in the audit trail')
+    .option('--json', 'output JSON')
+    .action(
+      async (
+        a: string,
+        b: string,
+        opts: { config?: string; repo?: string; rel?: string; note?: string; json?: boolean },
+      ) => {
+        process.exitCode = await runMemoryUnlink(a, b, opts);
+      },
+    );
+
+  memory
+    .command('detect')
+    .description('Auto-detect memory→memory edges (recurrence/contradiction); --dry-run previews only')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--dry-run', 'print proposed edges for confirmation without writing')
+    .option('--limit <n>', 'max items to scan', (v) => Number(v))
+    .option('--json', 'output JSON')
+    .action(
+      async (opts: { config?: string; repo?: string; dryRun?: boolean; limit?: number; json?: boolean }) => {
+        process.exitCode = await runMemoryDetect(opts);
+      },
+    );
 
   memory
     .command('accuracy')

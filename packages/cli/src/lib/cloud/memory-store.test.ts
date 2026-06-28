@@ -294,6 +294,7 @@ describe("dualWriteMemoryStore", () => {
         toFilePath: link.toFilePath ?? null,
         createdAt: new Date("2026-06-01T00:00:00.000Z"),
       })),
+      removeLink: vi.fn(async () => 1),
       links: vi.fn(async () => []),
       history: vi.fn(async () => []),
     };
@@ -317,6 +318,16 @@ describe("dualWriteMemoryStore", () => {
     await expect(store.setStatus("01JADD", "pinned", AUDIT)).resolves.toBeUndefined();
     expect(local.setStatus).toHaveBeenCalledTimes(1);
     expect(onErr).toHaveBeenCalledTimes(1);
+  });
+
+  it("removeLink writes local (authoritative) first, then mirrors to cloud, returning the local count", async () => {
+    const local = makeLocal();
+    const cloud = makeLocal();
+    const store = dualWriteMemoryStore(local, cloud);
+    const removed = await store.removeLink({ fromMemoryId: "a", rel: "supersedes", toRef: "b" });
+    expect(removed).toBe(1);
+    expect(local.removeLink).toHaveBeenCalledTimes(1);
+    expect(cloud.removeLink).toHaveBeenCalledTimes(1);
   });
 
   it("reads always come from local", async () => {
