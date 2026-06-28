@@ -16,15 +16,20 @@
  * HONESTY (spec §6): this is a pure record store. `confidence`/`status`/`evidence` are opaque
  * authored attributes; nothing here computes or reads them into a scoring path.
  *
- * MINIMAL-CUT scope (spec critique): only `memory_items` is mirrored. Links, audit history, and the
- * legacy incident-recall seam (`recall`/`record`/`loadScoped`) are NOT cloud-backed — they return
- * empty / no-op here and stay local-only via the dual-write wrapper below.
+ * SCOPE: `memory_items`, `memory_links`, AND the append-only `memory_audit` trail are all mirrored
+ * (one cloud transaction per the `/v1/.../memory-items/sync` endpoint). Links go out through
+ * `addLink`; audit rows are mirrored by the dual-write wrapper via `pushAudit`, ALWAYS carrying the
+ * CLI's real local ids so a later bulk `horus memory sync` dedupes (links on idempotencyKey, audit
+ * on clientAuditId). Reads (`links`/`history`) and the legacy incident-recall seam
+ * (`recall`/`record`/`loadScoped`) stay local-only via the dual-write wrapper below — the cloud is a
+ * write mirror, never the read path.
  */
 
 import type {
   MemoryStore,
   MemoryItem,
   NewMemoryItem,
+  NewMemoryLink,
   MemoryQuery,
   MemoryStatus,
   Visibility,
@@ -33,7 +38,14 @@ import type {
   MemoryAudit,
   MemoryEvidence,
 } from "@horus/engine";
-import { CloudClient, CloudError, type MemoryItemRecord, type MemoryItemSyncInput } from "./api.js";
+import {
+  CloudClient,
+  CloudError,
+  type MemoryItemRecord,
+  type MemoryItemSyncInput,
+  type MemoryLinkSyncInput,
+  type MemoryAuditSyncInput,
+} from "./api.js";
 import type { CloudConfig } from "./context-store.js";
 
 /** Per-request cap so a runaway store never POSTs a multi-MB body (mirrors the cloud zod `.max`). */
@@ -78,6 +90,44 @@ function toSyncInput(item: NewMemoryItem): MemoryItemSyncInput {
 }
 
 /**
+ * Map a CLI `NewMemoryLink` → the cloud link sync wire shape. `idempotencyKey` is the CLI link row's
+ * own stable id (the cloud dedup key); `fromClientId` is the CLI item ULID the cloud resolves to its
+ * own uuid. A blank id is rejected — a link with no stable id cannot be deduped on re-sync.
+ */
+export function toLinkSyncInput(link: NewMemoryLink): MemoryLinkSyncInput {
+  const idempotencyKey = (link.id ?? "").trim();
+  if (idempotencyKey === "") throw new Error("cloud memory sync requires a client link id");
+  return {
+    idempotencyKey,
+    fromClientId: link.fromMemoryId,
+    rel: link.rel,
+    toKind: link.toKind,
+    toRef: link.toRef,
+    // The cloud schema omits (not nulls) an absent file path; map null/undefined away.
+    ...(link.toFilePath ? { toFilePath: link.toFilePath } : {}),
+  };
+}
+
+/**
+ * Map a CLI `MemoryAudit` row → the cloud audit sync wire shape. `clientAuditId` is the CLI audit
+ * row's own id (the append-only dedup key); `memoryClientId` is the CLI item ULID the cloud resolves.
+ * `actor` is the verbatim provenance object (NOT a vector). Optional status/note fields are omitted
+ * when absent so the body matches the cloud zod `.optional()` (which rejects null).
+ */
+export function toAuditSyncInput(row: MemoryAudit): MemoryAuditSyncInput {
+  return {
+    clientAuditId: row.id,
+    memoryClientId: row.memoryId,
+    action: row.action,
+    actor: (row.actor as Record<string, unknown> | null) ?? {},
+    ...(row.fromStatus ? { fromStatus: row.fromStatus } : {}),
+    ...(row.toStatus ? { toStatus: row.toStatus } : {}),
+    ...(row.note ? { note: row.note } : {}),
+    at: row.at instanceof Date ? row.at.toISOString() : String(row.at),
+  };
+}
+
+/**
  * Map a cloud record → the `MemoryItem` row shape callers expect. `id` is ALWAYS the local ULID
  * (`clientId`) so callers stay unaware of cloud uuids. `repo` is stamped from context (the cloud
  * keys on `projectId`, not the local repo string). `payload` is never returned (it never left).
@@ -105,11 +155,21 @@ function fromWire(r: MemoryItemRecord, repo: string): MemoryItem {
 }
 
 /**
+ * The cloud-backed store. Supersets `MemoryStore` with `pushAudit`: the append-only audit trail is
+ * NOT writable through any standard seam method (the local store mints audit rows internally), so the
+ * dual-write wrapper forwards the freshly-persisted local rows here, by their real ids.
+ */
+export interface CloudMemoryStore extends MemoryStore {
+  /** Mirror already-persisted local audit rows (real ids → re-sync dedupes on clientAuditId). */
+  pushAudit(rows: MemoryAudit[]): Promise<void>;
+}
+
+/**
  * The cloud-backed `MemoryStore`. `cfg.project.id` is required (HOR-46 fail-closed: a CLI with no
  * linked project cannot sync at all). Maps the M1 record's tenancy onto the cloud project/org via
  * `cloud.json` + the auth principal (server-resolved) — see the tenancy table in the spec §4.
  */
-export function createCloudMemoryStore(client: CloudClient, cfg: CloudConfig): MemoryStore {
+export function createCloudMemoryStore(client: CloudClient, cfg: CloudConfig): CloudMemoryStore {
   const projectId = cfg.project?.id;
   if (!projectId) throw new Error("cloud memory store requires a linked cloud project");
   // The cloud keys on projectId; we stamp this back onto read rows for the local `repo` field.
@@ -151,7 +211,7 @@ export function createCloudMemoryStore(client: CloudClient, cfg: CloudConfig): M
     async add(item: NewMemoryItem): Promise<MemoryItem> {
       const input = toSyncInput(item);
       const res = await client.syncMemoryItems(projectId, { items: [input] });
-      const record = res.items.find((r) => r.clientId === input.clientId);
+      const record = res.items?.find((r) => r.clientId === input.clientId);
       if (record) return fromWire(record, item.repo ?? repoFallback);
       // The cloud accepted the upsert but did not echo the row — synthesize from local input so the
       // caller still gets a coherent MemoryItem (id is the local ULID, as always).
@@ -227,10 +287,28 @@ export function createCloudMemoryStore(client: CloudClient, cfg: CloudConfig): M
       });
     },
 
-    // ---- links / audit: DEFERRED to M3.1 (no cloud reader exists) — local-only via dual-write ----
-    async addLink(): Promise<void> {
-      /* no-op in cloud: memory_links is not mirrored in the minimal M3 cut */
+    // ---- links / audit: WRITE-mirrored to the cloud; reads stay local via dual-write ----
+    async addLink(link: NewMemoryLink): Promise<MemoryLink> {
+      const input = toLinkSyncInput(link);
+      await client.syncMemoryItems(projectId, { links: [input] });
+      // Echo a coherent MemoryLink — `id` is the CLI link id (cloud uuids stay hidden, as for items).
+      return {
+        id: input.idempotencyKey,
+        fromMemoryId: link.fromMemoryId,
+        rel: link.rel,
+        toKind: link.toKind,
+        toRef: link.toRef,
+        toFilePath: link.toFilePath ?? null,
+        createdAt: link.createdAt instanceof Date ? link.createdAt : new Date(),
+      };
     },
+
+    async pushAudit(rows: MemoryAudit[]): Promise<void> {
+      if (rows.length === 0) return;
+      await client.syncMemoryItems(projectId, { audit: rows.map(toAuditSyncInput) });
+    },
+
+    // Reads are never cloud-backed (the cloud is a write mirror); the dual-write reads from local.
     async links(): Promise<MemoryLink[]> {
       return [];
     },
@@ -245,7 +323,12 @@ export function createCloudMemoryStore(client: CloudClient, cfg: CloudConfig): M
  *
  * Writes go to local FIRST (local Postgres stays source-of-truth), then to the cloud best-effort —
  * a cloud failure NEVER throws (memory must never block local work; spec §3c/§7). Reads always come
- * from local. The legacy recall seam + links/history stay local because the cloud store no-ops them.
+ * from local. The legacy recall seam + links/history reads stay local; the cloud is a write mirror.
+ *
+ * Every mirrored mutation ALSO forwards the append-only audit row the local store just appended, by
+ * its REAL local id (read back via `local.history`), so a later bulk `horus memory sync` dedupes
+ * rather than double-writing the trail. A `cloud` that lacks `pushAudit` (e.g. another local store in
+ * tests) simply skips audit mirroring. Links are forwarded with the persisted link's real id too.
  *
  * `onCloudError` lets the caller surface the failure (e.g. `reportCloudError`) without this layer
  * importing the command layer.
@@ -261,6 +344,16 @@ export function dualWriteMemoryStore(
     } catch (err) {
       onCloudError(err);
     }
+  };
+
+  // Present only on the cloud store (CloudMemoryStore) — a plain MemoryStore cannot accept audit.
+  const pushAudit = (cloud as Partial<CloudMemoryStore>).pushAudit?.bind(cloud);
+  /** Mirror the newest local audit row for `memoryId` (history is most-recent-first). */
+  const mirrorLatestAudit = async (memoryId: string): Promise<void> => {
+    if (!pushAudit) return;
+    const trail = await local.history(memoryId);
+    const latest = trail[0];
+    if (latest) await pushAudit([latest]);
   };
 
   return {
@@ -279,25 +372,39 @@ export function dualWriteMemoryStore(
     },
     async add(item, audit) {
       const row = await local.add(item, audit);
-      // Mirror with the persisted row's id so the cloud upserts on the same ULID.
-      await mirror(() => cloud.add({ ...item, id: row.id }, audit));
+      // Mirror with the persisted row's id so the cloud upserts on the same ULID, then the audit row.
+      await mirror(async () => {
+        await cloud.add({ ...item, id: row.id }, audit);
+        await mirrorLatestAudit(row.id);
+      });
       return row;
     },
     async setStatus(id, status, audit) {
       await local.setStatus(id, status, audit);
-      await mirror(() => cloud.setStatus(id, status, audit));
+      await mirror(async () => {
+        await cloud.setStatus(id, status, audit);
+        await mirrorLatestAudit(id);
+      });
     },
     async setVisibility(id, v, audit) {
       await local.setVisibility(id, v, audit);
-      await mirror(() => cloud.setVisibility(id, v, audit));
+      await mirror(async () => {
+        await cloud.setVisibility(id, v, audit);
+        await mirrorLatestAudit(id);
+      });
     },
     async verify(id, snap, audit) {
       await local.verify(id, snap, audit);
-      await mirror(() => cloud.verify(id, snap, audit));
+      await mirror(async () => {
+        await cloud.verify(id, snap, audit);
+        await mirrorLatestAudit(id);
+      });
     },
     async addLink(link) {
-      await local.addLink(link);
-      await mirror(() => cloud.addLink(link));
+      const row = await local.addLink(link);
+      // Forward the persisted link's REAL id so the cloud dedupes on the same idempotencyKey.
+      await mirror(() => cloud.addLink({ ...link, id: row.id }));
+      return row;
     },
   };
 }

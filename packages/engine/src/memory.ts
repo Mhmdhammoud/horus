@@ -590,12 +590,15 @@ export function createLocalMemoryStore(db: HorusDb): MemoryStore {
       });
     },
 
-    async addLink(link: NewMemoryLink): Promise<void> {
+    async addLink(link: NewMemoryLink): Promise<MemoryLink> {
       if (!M1_RELS.has(link.rel as Rel)) {
         throw new Error(`unsupported memory_link rel in M1: ${link.rel}`);
       }
       const id = (link.id ?? '').trim() || genId('lnk');
-      await db.insert(memoryLink).values({ ...link, id });
+      const inserted = await db.insert(memoryLink).values({ ...link, id }).returning();
+      const row = inserted[0];
+      if (row === undefined) throw new Error('memory_link insert returned no row');
+      return row;
     },
 
     async links(id: string, opts?: { rels?: Rel[] }): Promise<MemoryLink[]> {

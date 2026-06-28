@@ -208,6 +208,46 @@ export interface MemoryItemSyncInput {
   clientCreatedAt?: string | null;
 }
 
+/**
+ * Horus Memory (M3): one authored link as it travels to the cloud sync endpoint.
+ *
+ * `idempotencyKey` is the CLI link row's own stable id (`memory_link.id`) — the cloud dedups on
+ * `(organization_id, idempotency_key)`, so re-sync is a no-op. `fromClientId` is the CLI item ULID
+ * (`memory_link.from_memory_id`); the cloud resolves it to the cloud item uuid server-side (against
+ * the batch's just-upserted items OR pre-existing rows). NO vectors/embeddings here by construction.
+ */
+export interface MemoryLinkSyncInput {
+  /** CLI memory_link.id — the (org, idempotencyKey) dedup key. */
+  idempotencyKey: string;
+  /** CLI from-item ULID (memory_link.from_memory_id), resolved to the cloud uuid server-side. */
+  fromClientId: string;
+  rel: string;
+  toKind: string;
+  toRef: string;
+  toFilePath?: string;
+}
+
+/**
+ * Horus Memory (M3): one APPEND-ONLY audit row mirrored from the CLI. `clientAuditId` is the CLI
+ * audit row's own id (`memory_audit.id`) and the `(organization_id, client_audit_id)` dedup key —
+ * re-sync NEVER updates an existing row. `memoryClientId` is the CLI item ULID (`memory_audit.
+ * memory_id`), resolved to the cloud uuid server-side. `actor` is the verbatim provenance object.
+ */
+export interface MemoryAuditSyncInput {
+  /** CLI memory_audit.id — the (org, clientAuditId) dedup key. */
+  clientAuditId: string;
+  /** CLI item ULID (memory_audit.memory_id), resolved to the cloud uuid server-side. */
+  memoryClientId: string;
+  action: string;
+  /** Verbatim {kind, id?, name?} provenance — NOT a vector. */
+  actor: Record<string, unknown>;
+  fromStatus?: string;
+  toStatus?: string;
+  note?: string;
+  /** The CLI audit timestamp (ISO-8601); provenance + ordering on the trail. */
+  at: string;
+}
+
 /** A memory item as the cloud returns it. `clientId` round-trips the CLI ULID. */
 export interface MemoryItemRecord {
   id: string;
@@ -231,11 +271,25 @@ export interface MemoryItemRecord {
   updatedAt: string;
 }
 
+/** Per-array outcome of one sync transaction (links/audit) — created vs deduped/skipped. */
+export interface MemorySyncBatchCounts {
+  created: number;
+  skipped: number;
+  total: number;
+}
+
 export interface MemorySyncResult {
-  items: MemoryItemRecord[];
-  counts?: { created: number; updated: number; skipped: number };
+  /** Echoed item records — present only when the cloud build returns them (older builds did). */
+  items?: MemoryItemRecord[];
+  created?: number;
+  updated?: number;
+  total?: number;
   /** clientId (ULID) → cloud uuid. */
   idMap?: Record<string, string>;
+  /** Outcome of the links half of the transaction. */
+  links?: MemorySyncBatchCounts;
+  /** Outcome of the audit half of the transaction. */
+  audit?: MemorySyncBatchCounts;
 }
 
 export interface MemoryListQuery {
@@ -470,11 +524,21 @@ export class CloudClient {
   // ── Memory items (HOR Memory M3) ───────────────────────────────────────────
 
   /**
-   * Batch-upsert authored memory items into the linked cloud project. Idempotent per element on
-   * the CLI's `clientId` ULID (cloud `ON CONFLICT (organization_id, client_id) DO UPDATE`), so the
-   * whole call is re-runnable. Vectors are NEVER part of the body (privacy invariant).
+   * Batch-upsert authored memory items + links + audit into the linked cloud project, in ONE cloud
+   * transaction. Idempotent per element on the CLI's stable ids — items on `clientId` (cloud
+   * `ON CONFLICT (organization_id, client_id) DO UPDATE`), links on `(organization_id,
+   * idempotency_key) DO NOTHING`, audit on `(organization_id, client_audit_id) DO NOTHING` (audit is
+   * append-only) — so the whole call is re-runnable. `links`/`audit` default to empty server-side, so
+   * `{ items }` alone stays valid. Vectors are NEVER part of the body (privacy invariant).
    */
-  syncMemoryItems(projectId: string, body: { items: MemoryItemSyncInput[] }): Promise<MemorySyncResult> {
+  syncMemoryItems(
+    projectId: string,
+    body: {
+      items?: MemoryItemSyncInput[];
+      links?: MemoryLinkSyncInput[];
+      audit?: MemoryAuditSyncInput[];
+    },
+  ): Promise<MemorySyncResult> {
     return this.request<MemorySyncResult>(
       "POST",
       `/v1/projects/${projectId}/memory-items/sync`,

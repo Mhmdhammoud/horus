@@ -1,9 +1,21 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { CloudClient, CloudError } from "./api.js";
-import type { MemoryItemRecord, MemoryItemSyncInput, MemorySyncResult } from "./api.js";
+import type {
+  MemoryItemRecord,
+  MemoryItemSyncInput,
+  MemoryLinkSyncInput,
+  MemoryAuditSyncInput,
+  MemorySyncResult,
+} from "./api.js";
 import { createCloudMemoryStore, dualWriteMemoryStore } from "./memory-store.js";
 import type { CloudConfig } from "./context-store.js";
-import type { AuditCtx, NewMemoryItem, MemoryStore } from "@horus/engine";
+import type {
+  AuditCtx,
+  NewMemoryItem,
+  NewMemoryLink,
+  MemoryAudit,
+  MemoryStore,
+} from "@horus/engine";
 
 const CFG: CloudConfig = {
   context: "cloud",
@@ -36,15 +48,23 @@ function record(over: Partial<MemoryItemRecord> & { clientId: string }): MemoryI
   };
 }
 
+type SyncBody = {
+  items?: MemoryItemSyncInput[];
+  links?: MemoryLinkSyncInput[];
+  audit?: MemoryAuditSyncInput[];
+};
+
 /** A CloudClient with syncMemoryItems/listMemoryItems stubbed; the real `request` never runs. */
 function mockClient(over?: {
-  sync?: (projectId: string, body: { items: MemoryItemSyncInput[] }) => Promise<MemorySyncResult>;
+  sync?: (projectId: string, body: SyncBody) => Promise<MemorySyncResult>;
   list?: (projectId: string, q?: unknown) => Promise<{ items: MemoryItemRecord[]; nextCursor?: string }>;
 }) {
   const sync = vi.fn(
     over?.sync ??
-      (async (_p: string, body: { items: MemoryItemSyncInput[] }) => ({
-        items: body.items.map((i) => record({ ...i })),
+      (async (_p: string, body: SyncBody) => ({
+        items: (body.items ?? []).map((i) => record({ ...i })),
+        links: { created: body.links?.length ?? 0, skipped: 0, total: body.links?.length ?? 0 },
+        audit: { created: body.audit?.length ?? 0, skipped: 0, total: body.audit?.length ?? 0 },
       })),
   );
   const list = vi.fn(over?.list ?? (async () => ({ items: [] as MemoryItemRecord[] })));
@@ -69,7 +89,7 @@ describe("createCloudMemoryStore", () => {
   let client: CloudClient;
   let sync: ReturnType<typeof vi.fn>;
   let list: ReturnType<typeof vi.fn>;
-  let store: MemoryStore;
+  let store: ReturnType<typeof createCloudMemoryStore>;
 
   beforeEach(() => {
     const m = mockClient();
@@ -148,7 +168,79 @@ describe("createCloudMemoryStore", () => {
     });
   });
 
-  it("links/history are not cloud-backed in M3 (return empty)", async () => {
+  it("addLink() pushes the link to the cloud sync endpoint (real id → idempotencyKey)", async () => {
+    const link: NewMemoryLink = {
+      id: "lnk_1",
+      fromMemoryId: "01JADD",
+      rel: "about-symbol",
+      toKind: "node",
+      toRef: "Function:src/q.ts:consume",
+      toFilePath: "src/q.ts",
+    };
+    const row = await store.addLink(link);
+    expect(sync).toHaveBeenCalledWith("proj-1", {
+      links: [
+        {
+          idempotencyKey: "lnk_1",
+          fromClientId: "01JADD",
+          rel: "about-symbol",
+          toKind: "node",
+          toRef: "Function:src/q.ts:consume",
+          toFilePath: "src/q.ts",
+        },
+      ],
+    });
+    // The echoed row keeps the local link id (cloud uuids stay hidden, as for items).
+    expect(row.id).toBe("lnk_1");
+  });
+
+  it("addLink() never sends a memory item alongside the link", async () => {
+    await store.addLink({
+      id: "lnk_2",
+      fromMemoryId: "01JADD",
+      rel: "has-evidence",
+      toKind: "evidence",
+      toRef: "ev_9",
+    } as NewMemoryLink);
+    const body = sync.mock.calls[0]![1] as { items?: unknown[]; links?: unknown[] };
+    expect(body.items).toBeUndefined();
+    expect(body.links).toHaveLength(1);
+  });
+
+  it("pushAudit() mirrors append-only audit rows by their real local ids", async () => {
+    const rows: MemoryAudit[] = [
+      {
+        id: "aud_1",
+        memoryId: "01JADD",
+        action: "add",
+        actor: { kind: "user", id: "u1" },
+        fromStatus: null,
+        toStatus: "fresh",
+        note: null,
+        at: new Date("2026-06-02T03:04:05.000Z"),
+      },
+    ];
+    await store.pushAudit(rows);
+    expect(sync).toHaveBeenCalledWith("proj-1", {
+      audit: [
+        {
+          clientAuditId: "aud_1",
+          memoryClientId: "01JADD",
+          action: "add",
+          actor: { kind: "user", id: "u1" },
+          toStatus: "fresh",
+          at: "2026-06-02T03:04:05.000Z",
+        },
+      ],
+    });
+  });
+
+  it("pushAudit() is a no-op for an empty batch (no request)", async () => {
+    await store.pushAudit([]);
+    expect(sync).not.toHaveBeenCalled();
+  });
+
+  it("link/audit reads stay local-only (the cloud is a write mirror)", async () => {
     expect(await store.links("01JADD")).toEqual([]);
     expect(await store.history("01JADD")).toEqual([]);
   });
@@ -166,7 +258,15 @@ describe("dualWriteMemoryStore", () => {
       setStatus: vi.fn(async () => {}),
       setVisibility: vi.fn(async () => {}),
       verify: vi.fn(async () => {}),
-      addLink: vi.fn(async () => {}),
+      addLink: vi.fn(async (link: NewMemoryLink) => ({
+        id: link.id ?? "lnk_local",
+        fromMemoryId: link.fromMemoryId,
+        rel: link.rel,
+        toKind: link.toKind,
+        toRef: link.toRef,
+        toFilePath: link.toFilePath ?? null,
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      })),
       links: vi.fn(async () => []),
       history: vi.fn(async () => []),
     };
@@ -199,5 +299,57 @@ describe("dualWriteMemoryStore", () => {
     await store.query({ repo: "horus" });
     expect(local.query).toHaveBeenCalledTimes(1);
     expect(cloud.query).not.toHaveBeenCalled();
+  });
+
+  it("forwards the freshly-written audit row to the cloud by its real local id", async () => {
+    const local = makeLocal();
+    const auditRow: MemoryAudit = {
+      id: "aud_1",
+      memoryId: "01JADD",
+      action: "add",
+      actor: { kind: "user" },
+      fromStatus: null,
+      toStatus: "fresh",
+      note: null,
+      at: new Date("2026-06-01T00:00:00.000Z"),
+    };
+    (local.history as ReturnType<typeof vi.fn>).mockResolvedValue([auditRow]);
+    const pushAudit = vi.fn(async () => {});
+    const cloud = { ...makeLocal(), pushAudit };
+    const store = dualWriteMemoryStore(local, cloud);
+    await store.add(newItem(), AUDIT);
+    expect(local.history).toHaveBeenCalledWith("01JADD");
+    expect(pushAudit).toHaveBeenCalledWith([auditRow]);
+  });
+
+  it("addLink forwards the persisted link's real id to the cloud mirror", async () => {
+    const local = makeLocal();
+    (local.addLink as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "lnk_real",
+      fromMemoryId: "01JADD",
+      rel: "about-symbol",
+      toKind: "node",
+      toRef: "x",
+      toFilePath: null,
+      createdAt: new Date(),
+    });
+    const cloud = makeLocal();
+    const store = dualWriteMemoryStore(local, cloud);
+    await store.addLink({
+      id: "",
+      fromMemoryId: "01JADD",
+      rel: "about-symbol",
+      toKind: "node",
+      toRef: "x",
+    } as NewMemoryLink);
+    expect(cloud.addLink).toHaveBeenCalledWith(expect.objectContaining({ id: "lnk_real" }));
+  });
+
+  it("skips audit mirroring when the mirror is a plain store without pushAudit", async () => {
+    const local = makeLocal();
+    const cloud = makeLocal(); // no pushAudit capability
+    const store = dualWriteMemoryStore(local, cloud);
+    await store.add(newItem(), AUDIT);
+    expect(local.history).not.toHaveBeenCalled();
   });
 });

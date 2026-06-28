@@ -41,13 +41,20 @@ import {
   type MemoryVectorIndex,
   type RecalledMemory,
   type MemoryItem,
+  type MemoryLink,
+  type MemoryAudit,
   type MemoryKind,
   type MemoryStatus,
   type Visibility,
 } from '@horus/engine';
 import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
 import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
-import { createCloudMemoryStore, dualWriteMemoryStore } from '../lib/cloud/memory-store.js';
+import {
+  createCloudMemoryStore,
+  dualWriteMemoryStore,
+  toLinkSyncInput,
+  toAuditSyncInput,
+} from '../lib/cloud/memory-store.js';
 import type { MemoryItemSyncInput } from '../lib/cloud/api.js';
 import { reportCloudError } from './context.js';
 
@@ -619,8 +626,11 @@ export async function runMemoryList(opts: {
 // memory sync — bulk backfill of LOCAL authored items into the linked cloud project
 // ---------------------------------------------------------------------------
 
-/** Per-request cap so a backfill never POSTs a multi-MB body (mirrors the cloud zod `.max`). */
+/** Per-request item cap so a backfill never POSTs a multi-MB body (mirrors the cloud zod `.max`). */
 const MEMORY_SYNC_BATCH_MAX = 500;
+
+/** Links/audit per-request cap (mirrors the cloud zod `.max(2000)` on each array). */
+const MEMORY_SYNC_EDGE_BATCH_MAX = 2000;
 
 /** Soft-deleted items are NOT backfilled (spec §3c: read all non-forgotten rows). */
 const SYNCABLE_STATUSES: MemoryStatus[] = ALL_STATUSES.filter((s) => s !== 'forgotten');
@@ -657,13 +667,18 @@ function toSyncInput(item: MemoryItem): MemoryItemSyncInput {
 }
 
 /**
- * `horus memory sync` — push LOCAL authored memory items to the linked cloud project, through the
- * cloud `/v1` API (never the cloud DB). Mirrors `horus cloud sync` (investigations): idempotent
- * (the server upserts on the CLI's stable ULID `clientId`), best-effort, `--dry-run`/`--yes` gated,
- * and the LOCAL store is NEVER mutated.
+ * `horus memory sync` — push LOCAL authored memory items, their typed links, AND the append-only
+ * audit trail to the linked cloud project, through the cloud `/v1` API (never the cloud DB). Mirrors
+ * `horus cloud sync` (investigations): idempotent (the server upserts items on the CLI's stable ULID
+ * `clientId`, dedupes links on their idempotencyKey, and treats audit as append-only on its
+ * clientAuditId), best-effort, `--dry-run`/`--yes` gated, and the LOCAL store is NEVER mutated.
  *
- * PRIVACY (non-negotiable, spec §5): the payload is a positive allowlist via {@link toSyncInput} —
- * VECTORS NEVER LEAVE THE DEVICE, and confirmed-outcome items are clamped to `private`.
+ * Items are pushed FIRST so the server can resolve every link's `fromClientId` and every audit row's
+ * `memoryClientId` to a persisted cloud item (against pre-existing rows), then links + audit follow.
+ *
+ * PRIVACY (non-negotiable, spec §5): the payload is a positive allowlist via {@link toSyncInput} (and
+ * the link/audit mappers) — VECTORS NEVER LEAVE THE DEVICE, and confirmed-outcome items are clamped
+ * to `private`.
  *
  * `--json` is clean: it emits a single JSON object, suppresses the preview/prompt, and proceeds
  * non-interactively (the operation is idempotent + local-safe). `--dry-run` is still honored.
@@ -707,8 +722,11 @@ export async function runMemorySync(opts: {
   const project = resolveProject(config, opts.repo);
   if (!project) return 1;
 
-  // Source: all non-forgotten local items for this repo. The local store is read-only here.
+  // Source: all non-forgotten local items for this repo, plus their links + audit. The local store
+  // is the source of truth for all three and is read-only here.
   let items: MemoryItem[];
+  let links: MemoryLink[];
+  let auditRows: MemoryAudit[];
   const { db, sql } = await openDb(config.database.url);
   try {
     const store = createLocalMemoryStore(db);
@@ -717,15 +735,31 @@ export async function runMemorySync(opts: {
       status: SYNCABLE_STATUSES,
       limit: opts.limit ?? 5000,
     });
+    // Gather the links + audit for exactly these items (forgotten items are excluded above, so
+    // their trail is not backfilled — spec §3c). Both are keyed by the same local ULIDs the cloud
+    // resolves against, so re-running stays idempotent (links dedupe; audit is append-only).
+    const linkLists = await Promise.all(items.map((it) => store.links(it.id)));
+    const auditLists = await Promise.all(items.map((it) => store.history(it.id)));
+    links = linkLists.flat();
+    auditRows = auditLists.flat();
   } finally {
     await sql.end();
   }
 
   const inputs = items.map(toSyncInput);
+  const linkInputs = links.map(toLinkSyncInput);
+  const auditInputs = auditRows.map(toAuditSyncInput);
   const target = `${cfg.organization?.slug}/${cfg.workspace?.slug}/${cfg.project.slug}`;
 
   if (inputs.length === 0) {
-    if (json) console.log(JSON.stringify({ ok: true, target, synced: 0, failed: 0, total: 0 }, null, 2));
+    if (json)
+      console.log(
+        JSON.stringify(
+          { ok: true, target, synced: 0, failed: 0, total: 0, links: { synced: 0, total: 0 }, audit: { synced: 0, total: 0 } },
+          null,
+          2,
+        ),
+      );
     else console.log(pc.dim('No local memory items to sync.'));
     return 0;
   }
@@ -733,7 +767,10 @@ export async function runMemorySync(opts: {
   // Preview (human mode only — keeps --json clean).
   if (!json) {
     console.log(
-      pc.bold(`Will sync ${inputs.length} memory item(s) to ${target} ${pc.dim('(cloud)')}:`),
+      pc.bold(
+        `Will sync ${inputs.length} memory item(s), ${linkInputs.length} link(s), ` +
+          `${auditInputs.length} audit row(s) to ${target} ${pc.dim('(cloud)')}:`,
+      ),
     );
     for (const it of items.slice(0, 20)) {
       console.log(`  ${pc.dim(it.id.slice(0, 8))}  ${pc.dim(`[${it.kind}]`)} ${it.claim.slice(0, 70)}`);
@@ -742,7 +779,14 @@ export async function runMemorySync(opts: {
   }
 
   if (opts.dryRun) {
-    if (json) console.log(JSON.stringify({ ok: true, dryRun: true, target, total: inputs.length }, null, 2));
+    if (json)
+      console.log(
+        JSON.stringify(
+          { ok: true, dryRun: true, target, total: inputs.length, links: linkInputs.length, audit: auditInputs.length },
+          null,
+          2,
+        ),
+      );
     else console.log(pc.dim('Dry run — nothing uploaded. Re-run without --dry-run to sync.'));
     return 0;
   }
@@ -769,10 +813,15 @@ export async function runMemorySync(opts: {
     }
   }
 
-  // Push in batches (best-effort): a failed batch is counted, never fatal. Re-running is safe —
-  // the server dedups on (organization_id, client_id).
+  // Push in batches (best-effort): a failed batch is counted, never fatal. Re-running is safe — the
+  // server upserts items on (organization_id, client_id), dedupes links on (organization_id,
+  // idempotency_key), and appends audit on (organization_id, client_audit_id).
   let synced = 0;
+  let syncedLinks = 0;
+  let syncedAudit = 0;
   let failed = 0;
+
+  // 1) Items FIRST — so links/audit can resolve their client ids against persisted cloud rows.
   for (let i = 0; i < inputs.length; i += MEMORY_SYNC_BATCH_MAX) {
     const batch = inputs.slice(i, i + MEMORY_SYNC_BATCH_MAX);
     try {
@@ -786,18 +835,59 @@ export async function runMemorySync(opts: {
     }
   }
 
+  // 2) Links.
+  for (let i = 0; i < linkInputs.length; i += MEMORY_SYNC_EDGE_BATCH_MAX) {
+    const batch = linkInputs.slice(i, i + MEMORY_SYNC_EDGE_BATCH_MAX);
+    try {
+      const res = await session.client.syncMemoryItems(cfg.project.id, { links: batch });
+      syncedLinks += res.links?.total ?? batch.length;
+      if (!json) console.log(`${pc.green('✓')} synced ${batch.length} link(s)`);
+    } catch (err) {
+      failed += batch.length;
+      if (json) reportCloudError(err);
+      else console.error(`${pc.red('✗')} ${(err as Error).message}`);
+    }
+  }
+
+  // 3) Audit (append-only).
+  for (let i = 0; i < auditInputs.length; i += MEMORY_SYNC_EDGE_BATCH_MAX) {
+    const batch = auditInputs.slice(i, i + MEMORY_SYNC_EDGE_BATCH_MAX);
+    try {
+      const res = await session.client.syncMemoryItems(cfg.project.id, { audit: batch });
+      syncedAudit += res.audit?.total ?? batch.length;
+      if (!json) console.log(`${pc.green('✓')} synced ${batch.length} audit row(s)`);
+    } catch (err) {
+      failed += batch.length;
+      if (json) reportCloudError(err);
+      else console.error(`${pc.red('✗')} ${(err as Error).message}`);
+    }
+  }
+
   if (json) {
     console.log(
-      JSON.stringify({ ok: failed === 0, target, synced, failed, total: inputs.length }, null, 2),
+      JSON.stringify(
+        {
+          ok: failed === 0,
+          target,
+          synced,
+          failed,
+          total: inputs.length,
+          links: { synced: syncedLinks, total: linkInputs.length },
+          audit: { synced: syncedAudit, total: auditInputs.length },
+        },
+        null,
+        2,
+      ),
     );
   } else {
     console.log('');
     console.log(
-      `${pc.bold('Memory sync complete:')} ${pc.green(`${synced} synced`)}, ` +
+      `${pc.bold('Memory sync complete:')} ${pc.green(`${synced} item(s)`)}, ` +
+        `${pc.green(`${syncedLinks} link(s)`)}, ${pc.green(`${syncedAudit} audit row(s)`)}, ` +
         (failed ? pc.red(`${failed} failed`) : '0 failed') + '.',
     );
     console.log(
-      pc.dim('Local data was not modified. Re-running is safe — items dedupe by client id. Vectors never sync.'),
+      pc.dim('Local data was not modified. Re-running is safe — items/links dedupe by client id, audit is append-only. Vectors never sync.'),
     );
   }
   return failed > 0 ? 1 : 0;

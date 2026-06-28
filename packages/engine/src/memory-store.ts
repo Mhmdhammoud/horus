@@ -142,7 +142,8 @@ export interface MemoryStore {
   setVisibility(id: string, v: Visibility, audit: AuditCtx): Promise<void>;
   /** Refresh the staleness snapshot (lastVerifiedHash/At) and audit the verification. */
   verify(id: string, snap: { lastVerifiedHash: string | null }, audit: AuditCtx): Promise<void>;
-  addLink(link: NewMemoryLink): Promise<void>;
+  /** Insert a typed link; returns the persisted row (with its minted id) so mirrors can forward it. */
+  addLink(link: NewMemoryLink): Promise<MemoryLink>;
   links(id: string, opts?: { rels?: Rel[] }): Promise<MemoryLink[]>;
   /** The append-only audit trail for an item, most-recent-first. */
   history(id: string): Promise<MemoryAudit[]>;
