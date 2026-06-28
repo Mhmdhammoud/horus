@@ -64,7 +64,7 @@ import type {
 } from './types.js';
 import { buildTimeline } from './timeline.js';
 import { correlate } from './correlate.js';
-import { rankSeeds, isTypeLikeName, executableBaseName, parseSeedQualifier } from './seeds.js';
+import { rankSeeds, isTypeLikeName, executableBaseName, parseSeedQualifier, parseNamedSymbols } from './seeds.js';
 import { normalizeEvidence } from './normalize.js';
 import { computeWeightedEvidenceConfidence } from './confidence.js';
 import {
@@ -788,6 +788,17 @@ export async function investigate(
   // a. PARSE
   const hint = input.hint.trim();
 
+  // HOR-385: classify the structural intent BEFORE seed resolution so source-impact mode can
+  // steer seeding onto the PROMPT-named symbol (not the central node). EVERY source-impact branch
+  // below is gated on `sourceImpactHint` and defaults to the incident behavior, so an incident
+  // hint's report is byte-identical. `namedSymbols` is read positionally for verify-isolation
+  // (`[0]` = the seed X, `[1]` = the isolation target Y).
+  const intent = classifyIntent(hint, input.since);
+  const namedSymbols = parseNamedSymbols(hint);
+  const sourceImpactHint = intent === 'source-impact';
+  const preferNamed =
+    sourceImpactHint && namedSymbols.length > 0 ? namedSymbols[0] : undefined;
+
   // Evidence accumulator + factory. ids double as the persisted PKs.
   const evidence: Evidence[] = [];
   const collectedAt = new Date().toISOString();
@@ -881,7 +892,7 @@ export async function investigate(
   // hint pins the seed to that EXACT symbol — strongly prefer the candidate whose name and
   // class/file both match, not an unrelated same-named symbol.
   const seedQualifier = parseSeedQualifier(hint);
-  const ranked = rankSeeds(rawSeeds, hintTokens, changedFilePaths, hintHasCode, seedQualifier);
+  const ranked = rankSeeds(rawSeeds, hintTokens, changedFilePaths, hintHasCode, seedQualifier, preferNamed);
   // Keep the top-ranked handful as candidate seeds — the wider pool was only needed so the
   // ranker could see (and promote) a lower-search-ranked implementation (HOR-361).
   let seeds = ranked.map((r) => r.symbol).slice(0, 5);
@@ -926,6 +937,30 @@ export async function investigate(
         seeds = [altTop, ...seeds.filter((s) => s.id !== altTop.id)];
         top = altTop;
       }
+    }
+  }
+
+  // HOR-385: source-impact mode pins the seed to the PROMPT-named symbol, not a central node.
+  // When the named symbol isn't already the top (the full-hint search may rank a central
+  // controller/resolver higher), re-search for it and adopt — mirroring the HOR-337 qualifier
+  // re-search/adopt mechanism, with `preferNamed` forcing the decisive boost on the re-rank.
+  if (preferNamed && code && (!top || top.name.toLowerCase() !== preferNamed.toLowerCase())) {
+    const altRanked = rankSeeds(
+      (await code.searchSymbols(preferNamed, seedSearchLimit)).filter(inScope),
+      hintTokens,
+      changedFilePaths,
+      hintHasCode,
+      seedQualifier,
+      preferNamed,
+    );
+    const altTop = altRanked[0]?.symbol;
+    if (
+      altTop &&
+      altTop.name.toLowerCase() === preferNamed.toLowerCase() &&
+      altTop.id !== top?.id
+    ) {
+      seeds = [altTop, ...seeds.filter((s) => s.id !== altTop.id)].slice(0, 5);
+      top = altTop;
     }
   }
 
@@ -2075,6 +2110,7 @@ export async function investigate(
     queueStarvationEvIdsByQueue,
     queueMetricEvIdsByQueue,
     sinceProvided: input.since !== undefined,
+    suppressRuntimeHypotheses: sourceImpactHint,
     graph,
   });
 
@@ -2404,7 +2440,9 @@ export async function investigate(
     });
   }
 
-  if (changeEvId) {
+  // HOR-385: source-impact mode never frames a structural question as a deployment regression —
+  // suppress the cause at its source (the hypothesis is suppressed in generateHypotheses).
+  if (changeEvId && !sourceImpactHint) {
     // File-overlap boost: if the seed's file appears among changed files, the
     // deployment-regression hypothesis is more likely — raise base score to 0.45.
     // In degraded runtime-only mode there is no seed, so the cause is offered
@@ -2698,6 +2736,9 @@ export async function investigate(
     providerReliability,
     request: { hint: input.hint, service: input.service },
     ...(priorIncidents.size > 0 ? { priorIncidents } : {}),
+    // HOR-385: drop the structural-only / finding-uncertainty / info-priority penalties so the
+    // blast-radius cause (the actual answer) is not demoted as a weak topology guess.
+    ...(sourceImpactHint ? { mode: 'source-impact' as const } : {}),
   });
 
   // g. confidence
@@ -2744,7 +2785,9 @@ export async function investigate(
   // #2 calibration — a headline that isn't structurally linked to the seed is a co-occurring
   // signal, not a verified diagnosis: cap it in the "possible" band so it never reads as a
   // confident "likely" diagnosis (and so confidence actually discriminates linked vs not).
-  if (headlineCause && !headlineLinked) confidence = Math.min(confidence, 0.6);
+  // HOR-385: in source-impact mode the summary is the structural impact result, not a cause
+  // headline, so the unlinked-headline cap is irrelevant — skip it.
+  if (headlineCause && !headlineLinked && !sourceImpactHint) confidence = Math.min(confidence, 0.6);
   const banner = degradedNoSource ? 'Runtime-only (source intelligence unavailable). ' : '';
   // HOR-355: never present a weak semantic guess as "resolved to X" — it reads as a (wrong)
   // answer and undercuts the disclaimer. Only claim localization for a confident seed match;
@@ -2782,7 +2825,11 @@ export async function investigate(
   // dogfood GAP E: `--since <ref>` is an explicit request to analyse what changed across a
   // commit range — a regression hunt, never a "how does it work" explanation. Suppress the
   // behavioral route when it is set so the deployment-regression path runs.
-  const explanatoryHint = looksExplanatory(hint) && input.since === undefined;
+  // HOR-385: a structural source-impact hint ("what depends on X") also reads as a leading
+  // interrogative to `looksExplanatory`, so source-impact must take precedence over the
+  // behavioral walkthrough — exclude it here and lead with the impact result below instead.
+  // (Incident and pure-explain hints are unaffected: sourceImpactHint is false for them.)
+  const explanatoryHint = looksExplanatory(hint) && input.since === undefined && !sourceImpactHint;
   let behavioral: BehavioralWalkthrough | undefined;
   if (explanatoryHint) {
     // Gap #5: a "how does X work" hint is a request for an explanation, not a fault hunt —
@@ -2836,6 +2883,35 @@ export async function investigate(
       `Connect a metrics source (\`horus connect grafana\`) and re-run, or name the specific slow operation.`;
   }
 
+  // HOR-385: source-impact mode LEADS with the structural impact result (blast radius, or an
+  // isolation verdict) instead of a runtime cause headline — runtime evidence is irrelevant to
+  // "what depends on X / is X isolated from Y". Placed last so it wins over the cause/explanatory/
+  // performance summaries above. The impact data already exists (`impact` = code.impact(top, 2)).
+  if (sourceImpactHint && top && impact) {
+    const affected = impact.affected;
+    const depthChain = impact.byDepth
+      .filter((d) => d.symbols.length > 0)
+      .map((d) => `depth ${d.depth}: ${d.symbols.length}`)
+      .join(', ');
+    // verify-isolation: namedSymbols are positional — [0] = X (the seed), [1] = Y (isolation
+    // target). Check whether Y is reachable in the impact set and render a verdict.
+    const isolationTarget =
+      looksVerifyIsolation(hint) && namedSymbols.length >= 2 ? namedSymbols[1] : undefined;
+    if (isolationTarget !== undefined) {
+      const reachDepth = impact.byDepth.find((d) =>
+        d.symbols.some((s) => s.name.toLowerCase() === isolationTarget.toLowerCase()),
+      )?.depth;
+      summary =
+        reachDepth !== undefined
+          ? `${top.name} DOES affect ${isolationTarget} via a dependency path (reaches it at depth ${reachDepth}; ${affected} affected symbol(s) total).`
+          : `${top.name} is isolated from ${isolationTarget} — no dependency path found (${affected} affected symbol(s) total, none matching ${isolationTarget}).`;
+    } else {
+      summary =
+        `Impact of ${top.name}: ${affected} affected symbol(s)` +
+        (depthChain ? ` (${depthChain}).` : '.');
+    }
+  }
+
   // i. nextActions
   const nextActions = buildNextActions(top, ctx, impact, queueHits, changes, input);
   // Gap #5: for a behavioral hint, point the user at the entry point for a deeper structural trace.
@@ -2862,6 +2938,7 @@ export async function investigate(
     id: globalThis.crypto.randomUUID(),
     input,
     summary,
+    intent,
     seeds,
     evidence,
     timeline,
@@ -2915,12 +2992,23 @@ export async function investigate(
         logsCompatibilityError,
         sinceProvided: input.since !== undefined,
       };
-  const gapAnalysis = detectMissingEvidence(report, connectorFlags);
+  // HOR-385: in source-impact mode the gap detector suppresses the runtime gaps and forces the
+  // ceiling to 1.0 (a complete structural answer is not "missing" runtime data).
+  const gapAnalysis = detectMissingEvidence(
+    report,
+    connectorFlags,
+    sourceImpactHint ? 'source-impact' : undefined,
+  );
   report.gapAnalysis = gapAnalysis;
-  report.confidence = Math.min(report.confidence, gapAnalysis.confidenceCeiling);
+  // HOR-385: each confidence ceiling below is an INCIDENT honesty guard — skip them in
+  // source-impact mode where the structural answer is complete and the named seed is intentional.
+  if (!sourceImpactHint) {
+    report.confidence = Math.min(report.confidence, gapAnalysis.confidenceCeiling);
+  }
   // HOR-335: a fuzzy/zero-support seed can never claim more than low confidence,
-  // regardless of how much (unrelated) runtime evidence happens to be present.
-  if (seedIsLowConfidence) report.confidence = Math.min(report.confidence, 0.45);
+  // regardless of how much (unrelated) runtime evidence happens to be present. The named seed in
+  // source-impact mode is intentional, not a weak guess — exempt it.
+  if (seedIsLowConfidence && !sourceImpactHint) report.confidence = Math.min(report.confidence, 0.45);
   // HOR-336: the headline must reflect DIAGNOSIS strength, not just localization +
   // evidence volume. A run can localize a seed and surface lots of evidence yet
   // produce no meaningful root cause — that is "localized, cause unknown", not a
@@ -2931,7 +3019,9 @@ export async function investigate(
   // strong cause (>=~0.5) permits high confidence. It is only ever a ceiling —
   // it never raises confidence.
   const topCauseScore = report.suspectedCauses[0]?.finalScore ?? 0;
-  report.confidence = Math.min(report.confidence, confidenceCeilingForCause(topCauseScore));
+  if (!sourceImpactHint) {
+    report.confidence = Math.min(report.confidence, confidenceCeilingForCause(topCauseScore));
+  }
   report.nextActions.push(...gapNextActions(gapAnalysis.gaps));
   report.sourceStatus = buildRuntimeSourceStatus(evidence, connectorFlags);
 

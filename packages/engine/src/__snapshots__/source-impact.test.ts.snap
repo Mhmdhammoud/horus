@@ -1,0 +1,47 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`incident path is unchanged by source-impact mode (HOR-385 invariant) > byte-stable snapshot of the normalized incident report 1`] = `
+{
+  "causes": [
+    {
+      "band": "observation",
+      "category": "deployment-regression",
+      "id": "cause:deployment-regression",
+    },
+  ],
+  "confidence": 0.28125,
+  "confidenceCeiling": 0.68,
+  "findingTitles": [
+    "Seed resolves to AppController at src/app.controller.ts:10-80",
+    "Candidate areas (ranked): AppController [controller], SlideEditorProvider [code]",
+    "Changing AppController impacts 2 symbol(s) (blast radius)",
+    "1 symbol(s) changed in range HEAD~5..HEAD..HEAD",
+  ],
+  "gapDimensions": [
+    "logs",
+    "metrics",
+    "ownership",
+    "traces",
+  ],
+  "hypotheses": [
+    {
+      "category": "deployment-regression",
+      "verdict": "supported",
+    },
+    {
+      "category": "external-api-latency",
+      "verdict": "unconfirmed",
+    },
+    {
+      "category": "retry-storm",
+      "verdict": "unconfirmed",
+    },
+    {
+      "category": "infrastructure",
+      "verdict": "unconfirmed",
+    },
+  ],
+  "intent": "incident",
+  "summary": "⚠ No symbol closely matched "AppController is throwing 500s" — "AppController" is a low-confidence closest match (semantic). Refine with an exact symbol or error code to target precisely. Investigation of "AppController is throwing 500s" could not be confidently localized from source alone. No dominant suspected cause emerged from the available structural evidence.",
+}
+`;

@@ -130,6 +130,15 @@ export interface ScoringContext {
    * present, Factor 10 boosts a cause whose code has a prior-incident history. Omit to skip.
    */
   priorIncidents?: Map<string, number>;
+  /**
+   * HOR-385 (source-impact mode): when `'source-impact'`, the structural penalties that
+   * exist to demote topology-only causes in an INCIDENT are dropped — they would wrongly
+   * punish the blast-radius cause that IS the answer to "what depends on X". Specifically
+   * factor-6 signal-strength (the −0.05 "all evidence is structural") and factor-7
+   * finding-uncertainty are skipped, and the info-priority arm of factor-1 evidence-quality
+   * (the −0.05) is suppressed. Default undefined ⇒ incident scoring is unchanged.
+   */
+  mode?: 'source-impact';
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -176,12 +185,18 @@ export function getBand(score: number): CauseBand {
  * and returns the deviation from a 0.5 neutral baseline. All-info-priority
  * evidence incurs a small penalty.
  */
-function factorEvidenceQuality(items: Evidence[]): ScoreExplanation | null {
+function factorEvidenceQuality(
+  items: Evidence[],
+  suppressInfoPenalty = false,
+): ScoreExplanation | null {
   const scored = items.filter(
     (ev) => ev.priority !== undefined && ev.priority !== 'info',
   );
   if (scored.length === 0) {
     if (items.length === 0) return null;
+    // HOR-385: in source-impact mode "all evidence is info priority" is the EXPECTED shape of a
+    // purely structural cause, not a signal weakness — don't penalise it.
+    if (suppressInfoPenalty) return null;
     return {
       factor: 'evidence-quality',
       delta: -0.05,
@@ -523,14 +538,17 @@ export function scoreCause(input: CauseInput, ctx: ScoringContext): CauseCandida
   const idSet = new Set(input.sourceEvidenceIds);
   const attached = ctx.evidence.filter((e) => idSet.has(e.id));
 
+  const sourceImpact = ctx.mode === 'source-impact';
   const rawFactors = [
-    factorEvidenceQuality(attached),
+    factorEvidenceQuality(attached, sourceImpact),
     factorSourceDiversity(attached),
     factorGraphProximity(input.sourceEvidenceIds, ctx.graph),
     factorRuntimeSignals(attached, now),
     factorBlastRadius(input.metadata),
-    factorSignalStrength(attached),
-    factorFindingUncertainty(input.sourceEvidenceIds, ctx.findings ?? []),
+    // HOR-385: drop the structural-only penalty (factor 6) and finding-uncertainty (factor 7)
+    // for a source-impact cause — the blast-radius cause IS the answer, not a weak topology guess.
+    sourceImpact ? null : factorSignalStrength(attached),
+    sourceImpact ? null : factorFindingUncertainty(input.sourceEvidenceIds, ctx.findings ?? []),
     ctx.providerReliability ? factorProviderReliability(attached, ctx.providerReliability) : null,
     ctx.request ? factorRequestContext(input.sourceEvidenceIds, ctx.graph, ctx.request) : null,
     ctx.priorIncidents

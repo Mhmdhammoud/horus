@@ -55,6 +55,14 @@ export interface HypothesisContext {
    */
   sinceProvided?: boolean;
   /**
+   * HOR-385 (source-impact mode): when true, the runtime/incident hypotheses
+   * (deployment-regression, per-queue backlog/worker-slowdown, external-api-latency,
+   * retry-storm, infrastructure) are NOT emitted — a "what depends on X / is X isolated"
+   * question is structural, so a regression/latency framing would be noise. Default
+   * undefined/false ⇒ the full competing set is generated exactly as before.
+   */
+  suppressRuntimeHypotheses?: boolean;
+  /**
    * Typed evidence graph built from all collected evidence.
    * When provided, hypothesis generation consults graph-derived implicated node sets
    * in addition to (not instead of) raw evidence kind checks, so topology links can
@@ -123,6 +131,12 @@ export function generateHypotheses(
     : [];
 
   const hyps: Hypothesis[] = [];
+
+  // HOR-385: in source-impact mode every hypothesis below is a runtime/incident framing
+  // (regression, queue, latency, retry, infra) that is irrelevant to a structural
+  // "what depends on X / is X isolated" question — emit none. Default off ⇒ incident path
+  // is byte-identical.
+  if (ctx.suppressRuntimeHypotheses === true) return hyps;
 
   // a. deployment-regression — always emitted
   hyps.push({

@@ -65,6 +65,13 @@ export interface InvestigationReport {
   persisted?: boolean;
   input: InvestigationInput;
   summary: string;
+  /**
+   * HOR-385: the deterministic structural intent the engine classified the hint as
+   * (`incident` | `source-impact` | `explain`). Drives source-impact mode (suppressed
+   * runtime evidence + impact-led summary) and is read by the next-step router (HOR-386).
+   * Absent on reports that predate the classifier.
+   */
+  intent?: 'incident' | 'source-impact' | 'explain';
   /** Symbols that the hint resolved to. */
   seeds: Symbol[];
   evidence: Evidence[];

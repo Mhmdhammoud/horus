@@ -1,6 +1,7 @@
 import type { CodeProvider } from '@horus/connectors';
 import type { Symbol } from '@horus/core';
 import { listQueueEdges, type HorusDb } from '@horus/db';
+import { rankSeeds, parseNamedSymbols } from './seeds.js';
 
 export interface AsyncDependency {
   queueName: string;
@@ -25,8 +26,12 @@ export async function analyzeBlastRadius(
   deps: { code: CodeProvider; db: HorusDb; project?: string },
   depth = 3,
 ): Promise<BlastRadiusReport | null> {
-  const seeds = await deps.code.searchSymbols(query, 5);
-  const top = seeds[0];
+  // HOR-385: rank a WIDER candidate pool (rather than blindly taking searchSymbols[0]) and pin the
+  // PROMPT-named symbol so a routed-in blast-radius query (HOR-386) lands on the symbol the user
+  // named, not a central node the raw search happened to rank first.
+  const rawSeeds = await deps.code.searchSymbols(query, 20);
+  const preferNamed = parseNamedSymbols(query)[0];
+  const top = rankSeeds(rawSeeds, undefined, undefined, false, null, preferNamed)[0]?.symbol;
   if (!top) return null;
 
   const [ctx, impact] = await Promise.all([

@@ -236,6 +236,14 @@ export function scoreSeed(
   changedFiles?: Set<string>,
   hintHasCode?: boolean,
   qualifier?: SeedQualifier | null,
+  /**
+   * HOR-385 (source-impact mode): the PROMPT-named symbol this investigation must pin onto.
+   * When set, (i) a candidate whose name equals it earns a decisive boost so it beats a central
+   * node, and (ii) the architectural-role PREFER promotion is suppressed so a central
+   * controller/resolver/service cannot outrank the symbol the user actually named. Default
+   * undefined ⇒ scoring is byte-identical to the incident path.
+   */
+  preferNamed?: string,
 ): number {
   const hay = `${s.name} ${s.filePath}`.toLowerCase();
   let score = 0;
@@ -243,8 +251,10 @@ export function scoreSeed(
   // when the hint names a specific code (HTTPFLT001, ERR243_04) the search surfaces its raise site
   // as an exact-content head match, and that raise site — wherever it lives — must win over a
   // same-score service-named symbol that merely co-occurs (dogfood gap 9). For a prose hint the
-  // role stays a strong signal.
-  if (PREFER.test(hay)) score += hintHasCode ? 0 : 3;
+  // role stays a strong signal. HOR-385: also suppressed when a named symbol is being pinned, so
+  // the central-node promotion can't steal the seed from the prompt-named symbol.
+  const suppressRole = hintHasCode || preferNamed !== undefined;
+  if (PREFER.test(hay)) score += suppressRole ? 0 : 3;
   if (DEMOTE.test(hay)) score -= 3;
   // GAP H: a presentation/format helper is not the failing actor.
   if (PRESENTATION_NAME.test(s.name)) score -= 3;
@@ -266,8 +276,8 @@ export function scoreSeed(
   // window is far more likely to be the culprit. Strong boost so the seed follows the diff
   // instead of locking onto an unrelated unchanged function (HOR-328 round-3).
   if (changedFiles !== undefined && changedFiles.has(s.filePath)) score += 5;
-  // Strong file-suffix signals (suppressed for a code hint — see above).
-  if (/\.(resolver|controller|service)\.[jt]sx?$/i.test(s.filePath)) score += hintHasCode ? 0 : 2;
+  // Strong file-suffix signals (suppressed for a code hint or a named-symbol pin — see above).
+  if (/\.(resolver|controller|service)\.[jt]sx?$/i.test(s.filePath)) score += suppressRole ? 0 : 2;
   // Scripts/migrations are rarely the incident surface.
   if (/(^|\/)scripts?\//i.test(s.filePath)) score -= 2;
   // Tests assert behaviour and their names hug hints (`test_login_incorrect_password` for a
@@ -322,6 +332,9 @@ export function scoreSeed(
   // Class.method / path:symbol EXACT disambiguator (HOR-337): strongly prefer the seed whose
   // name === the qualifier symbol AND whose class/file matches the qualifier container.
   if (qualifier) score += qualifierBoost(s, qualifier);
+  // HOR-385: decisive boost for the PROMPT-named symbol in source-impact mode — a `qualifierBoost`-
+  // class +40 so the named symbol wins over a central node that merely scores high on role/fan-in.
+  if (preferNamed !== undefined && s.name.toLowerCase() === preferNamed.toLowerCase()) score += 40;
   return score;
 }
 
@@ -349,10 +362,12 @@ export function rankSeeds(
   changedFiles?: Set<string>,
   hintHasCode?: boolean,
   qualifier?: SeedQualifier | null,
+  /** HOR-385: the prompt-named symbol to pin in source-impact mode (see scoreSeed). */
+  preferNamed?: string,
 ): RankedSeed[] {
   const scored = seeds.map((symbol, i) => ({
     symbol,
-    score: scoreSeed(symbol, i, hintTokens, changedFiles, hintHasCode, qualifier),
+    score: scoreSeed(symbol, i, hintTokens, changedFiles, hintHasCode, qualifier, preferNamed),
     role: seedRole(symbol),
     i,
     deprio: isDeprioritizedSeedPath(symbol.filePath),

@@ -99,7 +99,17 @@ export interface GapAnalysis {
 export function detectMissingEvidence(
   r: InvestigationReport,
   connectors: ConnectorFlags = {},
+  /**
+   * HOR-385: when `'source-impact'`, runtime evidence is irrelevant to the structural
+   * question ("what depends on X / is X isolated"), so the runtime gaps (logs, metrics,
+   * queue-state, deployment, traces) are NOT pushed and the confidence ceiling is forced
+   * to 1.0 — a complete structural answer is not "missing" runtime data. Ownership (a
+   * structural gap) is still surfaced for display. Default undefined ⇒ incident path
+   * unchanged.
+   */
+  mode?: 'source-impact',
 ): GapAnalysis {
+  const sourceImpact = mode === 'source-impact';
   // ── Presence flags ──────────────────────────────────────────────────────────
   const hasLog = r.evidence.some((e) => e.kind === 'log');
   const hasMetric = r.evidence.some((e) => e.kind === 'metric');
@@ -114,7 +124,7 @@ export function detectMissingEvidence(
 
   // ── Candidate gaps — text reflects what's actually CONFIGURED, not tickets ──
 
-  if (!hasLog) {
+  if (!hasLog && !sourceImpact) {
     let logWhy: string;
     let logNextSource: string;
     // Sentry is a second ERROR source (its evidence is also `kind: 'log'`). Treat the
@@ -156,7 +166,7 @@ export function detectMissingEvidence(
 
   // Only add a metrics gap when metrics are genuinely missing.
   // Successful collection with no anomalies is negative evidence — not a gap.
-  if (!hasMetric && !(connectors.grafana && connectors.metricsCollected)) {
+  if (!hasMetric && !(connectors.grafana && connectors.metricsCollected) && !sourceImpact) {
     const failureDetail = connectors.metricsFailureReason
       ? ` (${connectors.metricsFailureReason})`
       : '';
@@ -175,7 +185,7 @@ export function detectMissingEvidence(
     blindSpots.push('Cannot validate latency-based hypotheses.');
   }
 
-  if (hasQueueTopology && !hasQueueState) {
+  if (hasQueueTopology && !hasQueueState && !sourceImpact) {
     gaps.push({
       dimension: 'queue runtime state',
       why: connectors.redis
@@ -189,7 +199,7 @@ export function detectMissingEvidence(
     blindSpots.push('Cannot determine if the queue is actually backed up.');
   }
 
-  if (!hasCommit) {
+  if (!hasCommit && !sourceImpact) {
     gaps.push({
       dimension: 'deployment records',
       why: connectors.sinceProvided
@@ -213,7 +223,7 @@ export function detectMissingEvidence(
     blindSpots.push('Cannot route to an owner.');
   }
 
-  if (!hasTrace) {
+  if (!hasTrace && !sourceImpact) {
     gaps.push({
       dimension: 'traces',
       why: 'No distributed traces — cannot follow a single request across the async queue boundary.',
@@ -228,7 +238,8 @@ export function detectMissingEvidence(
   for (const gap of gaps) {
     totalImpact += gap.confidenceImpact;
   }
-  const raw = 1 - totalImpact;
+  // HOR-385: a structural source-impact answer is complete — runtime gaps don't cap it.
+  const raw = sourceImpact ? 1 : 1 - totalImpact;
   const confidenceCeiling = Math.round(Math.max(0.3, raw) * 100) / 100;
 
   return { gaps, blindSpots, confidenceCeiling };
