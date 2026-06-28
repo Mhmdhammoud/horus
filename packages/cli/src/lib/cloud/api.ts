@@ -95,6 +95,23 @@ export interface InvestigationDetail extends InvestigationRecord {
   repositoryIds: string[];
 }
 
+/**
+ * The human outcome label that rides the tenant-scoped investigation sync (HOR-390 → cloud).
+ *
+ * FROZEN CONTRACT: this is the durable eval-store verdict (did Horus point at the real cause?)
+ * keyed to the investigation being synced. Additive + back-compat — absent when the local eval
+ * store carries no label for the investigation. This is the SAME tenant-scoped, visibility-enforced
+ * investigation payload as the rest of the sync; it is distinct from the anonymous vendor telemetry.
+ */
+export interface InvestigationOutcome {
+  resolved: "yes" | "partly" | "no";
+  note?: string;
+  confirmedCause?: string;
+  source: "feedback" | "confirm";
+  /** ISO-8601 attestation time of the label. */
+  labeledAt: string;
+}
+
 export interface EvidenceRecord {
   id: string;
   investigationId: string;
@@ -474,6 +491,8 @@ export class CloudClient {
       hint?: string;
       repositoryIds?: string[];
       idempotencyKey?: string;
+      /** Optional human outcome label (HOR-390); omitted when the eval store has none. */
+      outcome?: InvestigationOutcome;
     },
   ): Promise<InvestigationRecord> {
     return this.request<InvestigationRecord>("POST", `/v1/projects/${projectId}/investigations`, body);

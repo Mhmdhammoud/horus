@@ -9,6 +9,7 @@ import type {
   CitationNode,
   CloudClient,
   EvidenceRecord,
+  InvestigationOutcome,
   InvestigationRecord,
   ProvenanceEvidenceInput,
 } from "./api.js";
@@ -16,6 +17,8 @@ import { CloudError, CloudOfflineError } from "./api.js";
 import type { CloudConfig } from "./context-store.js";
 import type { InvestigationReport } from "@horus/engine";
 import { HORUS_VERSION } from "@horus/core";
+import { getLatestOutcomeLabel, isOutcomeResolved, isOutcomeSource } from "@horus/db";
+import type { HorusDb, OutcomeLabel } from "@horus/db";
 
 // The cloud evidence schema (HOR-227/HOR-233) requires a valid `type` enum plus
 // title/content/contentFormat. A Horus report snapshot is stored as a `note`
@@ -276,16 +279,66 @@ async function writeInvestigationProvenance(
 }
 
 /**
+ * Map an eval-store outcome label (HOR-390) onto the frozen-contract `outcome` payload that rides
+ * the investigation sync. Returns `undefined` for no label — and, defensively, for a label whose
+ * `resolved`/`source` fail the validate-on-read firewall — so a bad row never pollutes the sync.
+ * Pure: same label → same payload. `note`/`confirmedCause` are included only when non-empty.
+ */
+export function toInvestigationOutcome(
+  label: OutcomeLabel | null | undefined,
+): InvestigationOutcome | undefined {
+  if (!label) return undefined;
+  if (!isOutcomeResolved(label.resolved) || !isOutcomeSource(label.source)) return undefined;
+  const labeledAt =
+    label.at instanceof Date ? label.at.toISOString() : new Date(label.at).toISOString();
+  const outcome: InvestigationOutcome = {
+    resolved: label.resolved,
+    source: label.source,
+    labeledAt,
+  };
+  const note = label.note?.trim();
+  if (note) outcome.note = note;
+  const confirmedCause = label.confirmedCause?.trim();
+  if (confirmedCause) outcome.confirmedCause = confirmedCause;
+  return outcome;
+}
+
+/**
+ * Resolve the current human outcome label for an investigation from the local eval store and map it
+ * onto the frozen-contract `outcome` payload. Best-effort: a missing/unreachable store (or a bad
+ * row) yields `undefined` so the sync stays additive and never fails on the label lookup. The label
+ * is keyed by the engine investigation id (`report.id`) — the same cross-seam id `horus feedback` /
+ * `horus memory confirm` write under.
+ */
+async function resolveOutcomeForSync(
+  db: HorusDb | undefined,
+  investigationId: string,
+): Promise<InvestigationOutcome | undefined> {
+  if (!db) return undefined;
+  try {
+    const label = await getLatestOutcomeLabel(db, investigationId);
+    return toInvestigationOutcome(label);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Upload the results of a locally-run investigation to Horus Cloud.
  *
  * Creates the investigation, attaches a snapshot of the full report as
  * evidence, and records the CLI execution as an AgentRun. This keeps the
  * deterministic engine local while sharing results through the cloud API.
+ *
+ * When `opts.db` is provided, the current human outcome label for this investigation (HOR-390 eval
+ * store) rides the tenant-scoped create payload as an additive `{outcome}` object (frozen contract);
+ * no label → no `outcome` field (back-compat). The anonymous feedback telemetry path is untouched.
  */
 export async function uploadInvestigationToCloud(
   client: CloudClient,
   cfg: CloudConfig,
   report: InvestigationReport,
+  opts: { db?: HorusDb } = {},
 ): Promise<CloudInvestigationRefs> {
   if (!cfg.project) {
     throw new Error("Cloud config is missing a linked project.");
@@ -294,11 +347,14 @@ export async function uploadInvestigationToCloud(
   const projectId = cfg.project.id;
   const repositoryIds = cfg.repository?.id ? [cfg.repository.id] : undefined;
 
+  const outcome = await resolveOutcomeForSync(opts.db, report.id);
+
   const investigation = await client.createInvestigation(projectId, {
     title: report.input.hint.slice(0, 500) || "Untitled investigation",
     hint: report.input.hint,
     repositoryIds,
     idempotencyKey: idempotencyKey(report.id, "investigation"),
+    ...(outcome ? { outcome } : {}),
   });
 
   await client.createEvidence(projectId, investigation.id, {

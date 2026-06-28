@@ -204,11 +204,13 @@ export async function runCloudSync(
     return 1;
   }
 
-  // Source: local investigations that carry a stored report (others can't be uploaded).
+  // Source: local investigations that carry a stored report (others can't be uploaded). The db
+  // stays open through the upload loop so each investigation's human outcome label (HOR-390 eval
+  // store) can ride its sync; closed once in the finally below.
   const { db, sql } = await openDb(await resolveDbUrl(opts.config));
-  const uploadable: { id: string; title: string | null; report: InvestigationReport }[] = [];
-  let skippedNoReport = 0;
   try {
+    const uploadable: { id: string; title: string | null; report: InvestigationReport }[] = [];
+    let skippedNoReport = 0;
     const rows = await listInvestigationsWithReports(db, opts.limit ?? 1000);
     for (const row of rows) {
       if (row.report && typeof row.report === "object") {
@@ -217,79 +219,79 @@ export async function runCloudSync(
         skippedNoReport++;
       }
     }
+
+    const target = `${cfg.organization?.slug}/${cfg.workspace?.slug}/${cfg.project.slug}`;
+
+    if (uploadable.length === 0) {
+      console.log(
+        pc.dim(
+          `No local investigations with reports to upload.` +
+            (skippedNoReport ? ` (${skippedNoReport} without a report skipped)` : ""),
+        ),
+      );
+      return 0;
+    }
+
+    // Preview what will be uploaded (HOR-240: show before migrating).
+    console.log(pc.bold(`Will upload ${uploadable.length} investigation(s) to ${target} ${pc.dim("(cloud)")}:`));
+    for (const c of uploadable.slice(0, 20)) {
+      console.log(`  ${pc.dim(c.id.slice(0, 8))}  ${(c.title ?? "untitled").slice(0, 70)}`);
+    }
+    if (uploadable.length > 20) console.log(pc.dim(`  …and ${uploadable.length - 20} more`));
+    if (skippedNoReport) console.log(pc.dim(`  (${skippedNoReport} local investigation(s) without a report will be skipped)`));
+
+    if (opts.dryRun) {
+      console.log(pc.dim("Dry run — nothing uploaded. Re-run without --dry-run to upload."));
+      return 0;
+    }
+
+    // Confirm unless --yes. Non-interactive without --yes is treated as a safe stop.
+    if (!opts.yes) {
+      if (!process.stdin.isTTY) {
+        console.error(
+          pc.yellow(`Re-run with ${pc.bold("--yes")} to upload, or ${pc.bold("--dry-run")} to preview only.`),
+        );
+        return 1;
+      }
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        const answer = (await rl.question(`Upload ${uploadable.length} investigation(s) to ${target}? (y/N) `))
+          .trim()
+          .toLowerCase();
+        if (answer !== "y" && answer !== "yes") {
+          console.log(pc.dim("Aborted. Nothing uploaded."));
+          return 0;
+        }
+      } finally {
+        rl.close();
+      }
+    }
+
+    let created = 0;
+    let failed = 0;
+    for (const c of uploadable) {
+      try {
+        const refs = await uploadInvestigationToCloud(session.client, cfg, c.report, { db });
+        created++;
+        console.log(`${pc.green("✓")} ${pc.dim(c.id.slice(0, 8))} → ${refs.investigationId}`);
+      } catch (err) {
+        failed++;
+        console.error(`${pc.red("✗")} ${pc.dim(c.id.slice(0, 8))} ${(err as Error).message}`);
+      }
+    }
+
+    console.log("");
+    console.log(
+      `${pc.bold("Sync complete:")} ${pc.green(`${created} uploaded`)}, ${skippedNoReport} skipped, ` +
+        (failed ? pc.red(`${failed} failed`) : "0 failed") + ".",
+    );
+    console.log(
+      pc.dim("Local data was not modified. Re-running is safe — duplicates are deduped by idempotency key."),
+    );
+    return failed > 0 ? 1 : 0;
   } finally {
     await sql.end();
   }
-
-  const target = `${cfg.organization?.slug}/${cfg.workspace?.slug}/${cfg.project.slug}`;
-
-  if (uploadable.length === 0) {
-    console.log(
-      pc.dim(
-        `No local investigations with reports to upload.` +
-          (skippedNoReport ? ` (${skippedNoReport} without a report skipped)` : ""),
-      ),
-    );
-    return 0;
-  }
-
-  // Preview what will be uploaded (HOR-240: show before migrating).
-  console.log(pc.bold(`Will upload ${uploadable.length} investigation(s) to ${target} ${pc.dim("(cloud)")}:`));
-  for (const c of uploadable.slice(0, 20)) {
-    console.log(`  ${pc.dim(c.id.slice(0, 8))}  ${(c.title ?? "untitled").slice(0, 70)}`);
-  }
-  if (uploadable.length > 20) console.log(pc.dim(`  …and ${uploadable.length - 20} more`));
-  if (skippedNoReport) console.log(pc.dim(`  (${skippedNoReport} local investigation(s) without a report will be skipped)`));
-
-  if (opts.dryRun) {
-    console.log(pc.dim("Dry run — nothing uploaded. Re-run without --dry-run to upload."));
-    return 0;
-  }
-
-  // Confirm unless --yes. Non-interactive without --yes is treated as a safe stop.
-  if (!opts.yes) {
-    if (!process.stdin.isTTY) {
-      console.error(
-        pc.yellow(`Re-run with ${pc.bold("--yes")} to upload, or ${pc.bold("--dry-run")} to preview only.`),
-      );
-      return 1;
-    }
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    try {
-      const answer = (await rl.question(`Upload ${uploadable.length} investigation(s) to ${target}? (y/N) `))
-        .trim()
-        .toLowerCase();
-      if (answer !== "y" && answer !== "yes") {
-        console.log(pc.dim("Aborted. Nothing uploaded."));
-        return 0;
-      }
-    } finally {
-      rl.close();
-    }
-  }
-
-  let created = 0;
-  let failed = 0;
-  for (const c of uploadable) {
-    try {
-      const refs = await uploadInvestigationToCloud(session.client, cfg, c.report);
-      created++;
-      console.log(`${pc.green("✓")} ${pc.dim(c.id.slice(0, 8))} → ${refs.investigationId}`);
-    } catch (err) {
-      failed++;
-      console.error(`${pc.red("✗")} ${pc.dim(c.id.slice(0, 8))} ${(err as Error).message}`);
-    }
-  }
-
-  console.log("");
-  console.log(
-    `${pc.bold("Sync complete:")} ${pc.green(`${created} uploaded`)}, ${skippedNoReport} skipped, ` +
-      (failed ? pc.red(`${failed} failed`) : "0 failed") + ".",
-  );
-  console.log(
-    pc.dim("Local data was not modified. Re-running is safe — duplicates are deduped by idempotency key."),
-  );
-  return failed > 0 ? 1 : 0;
 }
 
 interface LinkTriple {

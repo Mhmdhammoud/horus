@@ -1,5 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { CloudClient } from "./api.js";
+
+// HOR-390: the outcome label rides the sync. getLatestOutcomeLabel is the only DB-touching call we
+// stub; the real validate-on-read guards (isOutcomeResolved/isOutcomeSource) stay live so a bad row
+// is exercised against the genuine firewall.
+const dbMock = vi.hoisted(() => ({ getLatestOutcomeLabel: vi.fn() }));
+vi.mock("@horus/db", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@horus/db")>();
+  return { ...actual, getLatestOutcomeLabel: dbMock.getLatestOutcomeLabel };
+});
+
 import {
   uploadInvestigationToCloud,
   fetchInvestigationReportFromCloud,
@@ -7,10 +17,30 @@ import {
   buildEvidenceItems,
   buildCitationEdges,
   resolveCitationEdges,
+  toInvestigationOutcome,
 } from "./investigation-sync.js";
 import type { CloudConfig } from "./context-store.js";
 import type { InvestigationReport } from "@horus/engine";
+import type { HorusDb, OutcomeLabel } from "@horus/db";
 import { HORUS_VERSION } from "@horus/core";
+
+/** A fake db handle — never touched, because getLatestOutcomeLabel is mocked. */
+const fakeDb = {} as HorusDb;
+
+function labelRow(over: Partial<OutcomeLabel> = {}): OutcomeLabel {
+  return {
+    id: "ol_1",
+    investigationId: "rep-1",
+    resolved: "yes",
+    source: "feedback",
+    confirmedCause: null,
+    note: null,
+    project: "horus",
+    payload: null,
+    at: new Date("2026-06-28T12:00:00.000Z"),
+    ...over,
+  } as OutcomeLabel;
+}
 
 const API = "https://api.test";
 
@@ -160,6 +190,7 @@ describe("investigation-sync", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    dbMock.getLatestOutcomeLabel.mockReset();
   });
 
   it("uploads a report snapshot to cloud", async () => {
@@ -438,5 +469,106 @@ describe("investigation-sync", () => {
 
     const refs = await uploadInvestigationToCloud(client, cfg, richReport());
     expect(refs).toEqual({ projectId: "p1", investigationId: "inv-1" });
+  });
+
+  // ── HOR-390: human outcome label rides the tenant-scoped investigation sync ──
+
+  function createInvestigationBody(): Record<string, unknown> {
+    const call = fetchSpy.mock.calls.find(
+      (c: unknown[]) =>
+        (c[0] as string).endsWith("/investigations") &&
+        (c[1] as RequestInit)?.method === "POST",
+    );
+    expect(call).toBeDefined();
+    return JSON.parse((call![1] as RequestInit).body as string) as Record<string, unknown>;
+  }
+
+  it("includes the outcome object when the eval store has a label for the investigation", async () => {
+    dbMock.getLatestOutcomeLabel.mockResolvedValue(
+      labelRow({
+        resolved: "partly",
+        source: "confirm",
+        note: "  partial fix  ",
+        confirmedCause: "N+1 query in OrderService",
+        at: new Date("2026-06-28T12:00:00.000Z"),
+      }),
+    );
+
+    await uploadInvestigationToCloud(client, cfg, makeReport(), { db: fakeDb });
+
+    // The label is looked up by the engine investigation id (report.id), the cross-seam key.
+    expect(dbMock.getLatestOutcomeLabel).toHaveBeenCalledWith(fakeDb, "rep-1");
+    expect(createInvestigationBody().outcome).toEqual({
+      resolved: "partly",
+      source: "confirm",
+      note: "partial fix",
+      confirmedCause: "N+1 query in OrderService",
+      labeledAt: "2026-06-28T12:00:00.000Z",
+    });
+  });
+
+  it("omits empty note/confirmedCause from the outcome (only verdict + source + time)", async () => {
+    dbMock.getLatestOutcomeLabel.mockResolvedValue(
+      labelRow({ resolved: "yes", source: "feedback", note: "   ", confirmedCause: null }),
+    );
+
+    await uploadInvestigationToCloud(client, cfg, makeReport(), { db: fakeDb });
+
+    expect(createInvestigationBody().outcome).toEqual({
+      resolved: "yes",
+      source: "feedback",
+      labeledAt: "2026-06-28T12:00:00.000Z",
+    });
+  });
+
+  it("omits the outcome field when the investigation has no label (back-compat)", async () => {
+    dbMock.getLatestOutcomeLabel.mockResolvedValue(null);
+
+    await uploadInvestigationToCloud(client, cfg, makeReport(), { db: fakeDb });
+
+    expect(dbMock.getLatestOutcomeLabel).toHaveBeenCalledWith(fakeDb, "rep-1");
+    expect(createInvestigationBody()).not.toHaveProperty("outcome");
+  });
+
+  it("omits the outcome field (and never looks it up) when no db is provided", async () => {
+    await uploadInvestigationToCloud(client, cfg, makeReport());
+
+    expect(dbMock.getLatestOutcomeLabel).not.toHaveBeenCalled();
+    expect(createInvestigationBody()).not.toHaveProperty("outcome");
+  });
+
+  it("is best-effort: an eval-store error never fails the sync (no outcome attached)", async () => {
+    dbMock.getLatestOutcomeLabel.mockRejectedValue(new Error("db down"));
+
+    const refs = await uploadInvestigationToCloud(client, cfg, makeReport(), { db: fakeDb });
+
+    expect(refs).toEqual({ projectId: "p1", investigationId: "inv-1" });
+    expect(createInvestigationBody()).not.toHaveProperty("outcome");
+  });
+});
+
+describe("toInvestigationOutcome", () => {
+  it("returns undefined for a null/absent label", () => {
+    expect(toInvestigationOutcome(null)).toBeUndefined();
+    expect(toInvestigationOutcome(undefined)).toBeUndefined();
+  });
+
+  it("maps a full label onto the frozen-contract shape", () => {
+    expect(
+      toInvestigationOutcome(
+        labelRow({ resolved: "no", source: "confirm", note: "still broken", confirmedCause: "cache" }),
+      ),
+    ).toEqual({
+      resolved: "no",
+      source: "confirm",
+      note: "still broken",
+      confirmedCause: "cache",
+      labeledAt: "2026-06-28T12:00:00.000Z",
+    });
+  });
+
+  it("drops a row that fails the validate-on-read firewall (bad resolved/source)", () => {
+    expect(toInvestigationOutcome(labelRow({ resolved: "maybe" as never }))).toBeUndefined();
+    expect(toInvestigationOutcome(labelRow({ source: "telemetry" as never }))).toBeUndefined();
   });
 });

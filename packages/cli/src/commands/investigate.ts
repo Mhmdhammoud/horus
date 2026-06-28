@@ -361,7 +361,10 @@ export async function runInvestigate(
 
       if (cloudActive && cloudSession && cloudCfg) {
         try {
-          const refs = await uploadInvestigationToCloud(cloudSession.client, cloudCfg, report);
+          // Pass the local db so a recorded human outcome label (HOR-390) rides the sync.
+          const refs = await uploadInvestigationToCloud(cloudSession.client, cloudCfg, report, {
+            db,
+          });
           // Never write the human notice to STDOUT under --json — it corrupts the
           // machine-readable output (a trailing non-JSON line breaks every parser).
           const cloudNote = pc.dim(`[cloud] investigation saved: ${refs.investigationId}`);
