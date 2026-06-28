@@ -44,6 +44,7 @@ import {
   runMemoryForget,
   runMemoryPin,
   runMemoryList,
+  runMemorySync,
 } from './commands/memory.js';
 import { runSimulate } from './commands/simulate.js';
 import { runLogs } from './commands/logs.js';
@@ -503,6 +504,28 @@ Examples:
     .action(async (opts: { config?: string; repo?: string; all?: boolean; json?: boolean }) => {
       process.exitCode = await runMemoryList(opts);
     });
+
+  memory
+    .command('sync')
+    .description('Push local memory items to the linked cloud project (idempotent, best-effort)')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--limit <n>', 'max local items to scan', (v) => Number(v))
+    .option('--dry-run', 'preview what would be synced without uploading')
+    .option('--yes', 'skip the confirmation prompt')
+    .option('--json', 'output JSON')
+    .action(
+      async (opts: {
+        config?: string;
+        repo?: string;
+        limit?: number;
+        dryRun?: boolean;
+        yes?: boolean;
+        json?: boolean;
+      }) => {
+        process.exitCode = await runMemorySync(opts);
+      },
+    );
 
   program
     .command('mcp')

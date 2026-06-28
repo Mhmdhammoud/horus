@@ -17,6 +17,7 @@
  */
 
 import pc from 'picocolors';
+import { createInterface } from 'node:readline/promises';
 import type { HorusConfig } from '@horus/core';
 import { loadConfig, resolveEnvironment, findRepoRoot } from '@horus/core';
 import { createConnectors, memoryIndexForEnv } from '@horus/connectors';
@@ -37,12 +38,15 @@ import {
   type MemoryStore,
   type MemoryVectorIndex,
   type RecalledMemory,
+  type MemoryItem,
   type MemoryKind,
   type MemoryStatus,
+  type Visibility,
 } from '@horus/engine';
 import { readCloudConfig, isCloudActive } from '../lib/cloud/context-store.js';
 import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
 import { createCloudMemoryStore, dualWriteMemoryStore } from '../lib/cloud/memory-store.js';
+import type { MemoryItemSyncInput } from '../lib/cloud/api.js';
 import { reportCloudError } from './context.js';
 
 // ---------------------------------------------------------------------------
@@ -603,4 +607,192 @@ export async function runMemoryList(opts: {
     console.error(pc.red((err as Error).message));
     return 1;
   }
+}
+
+// ---------------------------------------------------------------------------
+// memory sync — bulk backfill of LOCAL authored items into the linked cloud project
+// ---------------------------------------------------------------------------
+
+/** Per-request cap so a backfill never POSTs a multi-MB body (mirrors the cloud zod `.max`). */
+const MEMORY_SYNC_BATCH_MAX = 500;
+
+/** Soft-deleted items are NOT backfilled (spec §3c: read all non-forgotten rows). */
+const SYNCABLE_STATUSES: MemoryStatus[] = ALL_STATUSES.filter((s) => s !== 'forgotten');
+
+/**
+ * confirmed-outcome can never be 'team' (spec §5.2) — clamp before anything leaves the device.
+ * The server clamps too; this is defense in depth on the CLI side.
+ */
+function clampVisibilityForSync(item: MemoryItem): Visibility {
+  if (item.kind === 'confirmed-outcome' || item.source === 'confirmed-outcome') return 'private';
+  return (item.visibility as Visibility | undefined) ?? 'private';
+}
+
+/**
+ * Map a LOCAL `MemoryItem` row → the cloud sync wire shape. PRIVACY CHOKE POINT (spec §5): this is
+ * an explicit positive allowlist. `payload` (where a vector/embedding could hide) is intentionally
+ * NEVER serialized — vectors stay device-local and never cross the trust boundary.
+ */
+function toSyncInput(item: MemoryItem): MemoryItemSyncInput {
+  return {
+    clientId: item.id,
+    kind: item.kind,
+    claim: item.claim,
+    scope: item.scope,
+    source: item.source,
+    status: item.status,
+    confidence: item.confidence,
+    visibility: clampVisibilityForSync(item),
+    evidence: item.evidence,
+    lastVerifiedAt: item.lastVerifiedAt ? item.lastVerifiedAt.toISOString() : null,
+    lastVerifiedHash: item.lastVerifiedHash ?? null,
+    clientCreatedAt: item.createdAt ? item.createdAt.toISOString() : null,
+  };
+}
+
+/**
+ * `horus memory sync` — push LOCAL authored memory items to the linked cloud project, through the
+ * cloud `/v1` API (never the cloud DB). Mirrors `horus cloud sync` (investigations): idempotent
+ * (the server upserts on the CLI's stable ULID `clientId`), best-effort, `--dry-run`/`--yes` gated,
+ * and the LOCAL store is NEVER mutated.
+ *
+ * PRIVACY (non-negotiable, spec §5): the payload is a positive allowlist via {@link toSyncInput} —
+ * VECTORS NEVER LEAVE THE DEVICE, and confirmed-outcome items are clamped to `private`.
+ *
+ * `--json` is clean: it emits a single JSON object, suppresses the preview/prompt, and proceeds
+ * non-interactively (the operation is idempotent + local-safe). `--dry-run` is still honored.
+ */
+export async function runMemorySync(opts: {
+  config?: string;
+  cwd?: string;
+  repo?: string;
+  yes?: boolean;
+  dryRun?: boolean;
+  limit?: number;
+  json?: boolean;
+}): Promise<number> {
+  const json = opts.json === true;
+  const fail = (msg: string): number => {
+    if (json) console.log(JSON.stringify({ ok: false, error: msg }, null, 2));
+    else console.error(pc.red(msg));
+    return 1;
+  };
+
+  const root = repoRootOrCwd(opts.cwd);
+  const cfg = readCloudConfig(root);
+  if (!isCloudActive(cfg) || !cfg.project) {
+    return fail("This repo isn't linked to a cloud project. Run `horus cloud link` first.");
+  }
+  const session = authedClient();
+  if (!session) {
+    return fail('Not logged in. Run `horus login` first.');
+  }
+
+  let config: HorusConfig;
+  try {
+    config = await loadConfig(opts.config);
+  } catch (err) {
+    return fail((err as Error).message);
+  }
+
+  // Resolve the LOCAL repo identity (HOR-46 fail-closed) used to scope the local query. The cloud
+  // tenancy (org/workspace/project + owner) is resolved SERVER-SIDE from the path project + the
+  // auth principal — the CLI never drives cloud scope from its local nullable tenancy columns.
+  const project = resolveProject(config, opts.repo);
+  if (!project) return 1;
+
+  // Source: all non-forgotten local items for this repo. The local store is read-only here.
+  let items: MemoryItem[];
+  const { db, sql } = await openDb(config.database.url);
+  try {
+    const store = createLocalMemoryStore(db);
+    items = await store.query({
+      repo: project,
+      status: SYNCABLE_STATUSES,
+      limit: opts.limit ?? 5000,
+    });
+  } finally {
+    await sql.end();
+  }
+
+  const inputs = items.map(toSyncInput);
+  const target = `${cfg.organization?.slug}/${cfg.workspace?.slug}/${cfg.project.slug}`;
+
+  if (inputs.length === 0) {
+    if (json) console.log(JSON.stringify({ ok: true, target, synced: 0, failed: 0, total: 0 }, null, 2));
+    else console.log(pc.dim('No local memory items to sync.'));
+    return 0;
+  }
+
+  // Preview (human mode only — keeps --json clean).
+  if (!json) {
+    console.log(
+      pc.bold(`Will sync ${inputs.length} memory item(s) to ${target} ${pc.dim('(cloud)')}:`),
+    );
+    for (const it of items.slice(0, 20)) {
+      console.log(`  ${pc.dim(it.id.slice(0, 8))}  ${pc.dim(`[${it.kind}]`)} ${it.claim.slice(0, 70)}`);
+    }
+    if (items.length > 20) console.log(pc.dim(`  …and ${items.length - 20} more`));
+  }
+
+  if (opts.dryRun) {
+    if (json) console.log(JSON.stringify({ ok: true, dryRun: true, target, total: inputs.length }, null, 2));
+    else console.log(pc.dim('Dry run — nothing uploaded. Re-run without --dry-run to sync.'));
+    return 0;
+  }
+
+  // Confirm unless --yes (human mode only). Non-interactive without --yes is a safe stop.
+  if (!opts.yes && !json) {
+    if (!process.stdin.isTTY) {
+      console.error(
+        pc.yellow(`Re-run with ${pc.bold('--yes')} to sync, or ${pc.bold('--dry-run')} to preview only.`),
+      );
+      return 1;
+    }
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      const answer = (await rl.question(`Sync ${inputs.length} memory item(s) to ${target}? (y/N) `))
+        .trim()
+        .toLowerCase();
+      if (answer !== 'y' && answer !== 'yes') {
+        console.log(pc.dim('Aborted. Nothing synced.'));
+        return 0;
+      }
+    } finally {
+      rl.close();
+    }
+  }
+
+  // Push in batches (best-effort): a failed batch is counted, never fatal. Re-running is safe —
+  // the server dedups on (organization_id, client_id).
+  let synced = 0;
+  let failed = 0;
+  for (let i = 0; i < inputs.length; i += MEMORY_SYNC_BATCH_MAX) {
+    const batch = inputs.slice(i, i + MEMORY_SYNC_BATCH_MAX);
+    try {
+      const res = await session.client.syncMemoryItems(cfg.project.id, { items: batch });
+      synced += res.items?.length ?? batch.length;
+      if (!json) console.log(`${pc.green('✓')} synced ${batch.length} item(s)`);
+    } catch (err) {
+      failed += batch.length;
+      if (json) reportCloudError(err);
+      else console.error(`${pc.red('✗')} ${(err as Error).message}`);
+    }
+  }
+
+  if (json) {
+    console.log(
+      JSON.stringify({ ok: failed === 0, target, synced, failed, total: inputs.length }, null, 2),
+    );
+  } else {
+    console.log('');
+    console.log(
+      `${pc.bold('Memory sync complete:')} ${pc.green(`${synced} synced`)}, ` +
+        (failed ? pc.red(`${failed} failed`) : '0 failed') + '.',
+    );
+    console.log(
+      pc.dim('Local data was not modified. Re-running is safe — items dedupe by client id. Vectors never sync.'),
+    );
+  }
+  return failed > 0 ? 1 : 0;
 }
