@@ -468,7 +468,7 @@ const DRAMATIQ_SEND_RE = /([A-Za-z_]\w*)\s*\.\s*send(?:_with_options)?\s*\(/g;
 // `queue_name="emails"` inside an `@actor(...)` decorator's arg text.
 const DRAMATIQ_QUEUE_NAME_RE = /queue_name\s*=\s*['"]([^'"]+)['"]/;
 
-/** A pytest-style test function/file should not be reported as a real producer. */
+/** A pytest-style test function/file should not be reported as a real producer OR worker. */
 function isTestUnit(name: string, filePath: string): boolean {
   if (/^test_/.test(name) || /_test$/.test(name)) return true;
   const file = filePath.split('/').pop() ?? filePath;
@@ -477,13 +477,33 @@ function isTestUnit(name: string, filePath: string): boolean {
   return false;
 }
 
+// A Python `def`/`async def` header — used to resolve the function that ENCLOSES a `.send()` call
+// site so the producer is attributed to the real enqueuing function, not the node's class/module
+// name (HOR-411 round 2: a Class node like `results/middleware.py::Results` would otherwise report
+// the producer symbol as "Results" rather than the method that actually calls `.send()`).
+const PY_DEF_RE = /(?:^|\n)[ \t]*(?:async[ \t]+)?def[ \t]+(\w+)/g;
+/** The name of the `def` immediately enclosing `index` in `content`, or null if the call sits at
+ *  class/module body level (no enclosing function — we'd otherwise fall back to an arbitrary
+ *  class/module name, which is exactly the misattribution we're avoiding). */
+function enclosingDefName(content: string, index: number): string | null {
+  let name: string | null = null;
+  for (const m of content.matchAll(PY_DEF_RE)) {
+    if (m.index !== undefined && m.index <= index) name = m[1] ?? name;
+    else break;
+  }
+  return name;
+}
+
 /**
  * Pure dramatiq queue-graph extraction (HOR-411). An `@actor def foo` is a worker bound to a broker
  * queue (default `"default"`, or its `queue_name=` kwarg); a `foo.send(...)` call site is a producer
  * for that same actor. Producers and workers are joined by actor name, and the edge's `queueName` is
  * the actor's broker queue — NOT the actor/function name. Honesty rules:
  *  - only actors with a real `@actor` def become queues (a stray `socket.send()` never synthesizes one),
- *  - test functions/files are excluded from producers (dramatiq's own `test_*` suite is not topology),
+ *  - test functions/files are excluded from BOTH workers and producers (dramatiq's own `test_*` suite
+ *    is not topology — neither the ~45 `@actor` test workers nor their `.send()` call sites),
+ *  - producers are attributed to the function ENCLOSING the `.send()` call, not the node's
+ *    class/module name (a Class node's `.send()` reports the method, never the class name),
  *  - `actor -> actor` self-edges (an actor re-enqueueing itself) are dropped.
  */
 export function extractDramatiqQueueGraph(nodes: CeleryNodeInput[]): QueueGraph {
@@ -494,8 +514,12 @@ export function extractDramatiqQueueGraph(nodes: CeleryNodeInput[]): QueueGraph 
 
   const FILE_NODE_RE = /\.(py|pyi|js|jsx|ts|tsx|mjs|cjs)$/i;
 
-  // Pass 1: collect actors and the broker queue each binds to.
+  // Pass 1: collect actors and the broker queue each binds to. Skip test files/functions so the
+  // worker list (and the queues derived from it) isn't polluted by dramatiq's own `@actor` test
+  // suite (~45 `test_*` actors under tests/ — HOR-411 round 2). A test-only actor never registers,
+  // so a `.send()` referencing it also drops in pass 2.
   for (const n of nodes) {
+    if (isTestUnit(n.name, n.filePath)) continue;
     for (const m of n.content.matchAll(DRAMATIQ_ACTOR_RE)) {
       const args = m[1] ?? '';
       const actor = m[2];
@@ -508,15 +532,21 @@ export function extractDramatiqQueueGraph(nodes: CeleryNodeInput[]): QueueGraph 
 
   // Pass 2: `.send()` producers that reference a real actor. Skip File nodes (so producers attribute
   // to the enclosing function, not the file) and test functions/files (dramatiq's own test suite).
+  // Attribute each producer to the function that ENCLOSES the `.send()` call, not the node's name:
+  // for a Class node (e.g. `results/middleware.py::Results`) `n.name` is the class, which is an
+  // arbitrary symbol, not the real enqueue site. If the call has no enclosing `def` (class/module
+  // body level), we can't name a real call site, so we drop it rather than report the class/module.
   for (const n of nodes) {
     if (FILE_NODE_RE.test(n.name)) continue;
     if (isTestUnit(n.name, n.filePath)) continue;
     for (const m of n.content.matchAll(DRAMATIQ_SEND_RE)) {
       const actor = m[1];
       if (!actor || !actorQueue.has(actor)) continue;
+      const symbol = enclosingDefName(n.content, m.index ?? 0);
+      if (!symbol) continue;
       producers.push({
         queue: actorQueue.get(actor)!,
-        symbol: n.name || baseName(n.filePath),
+        symbol,
         file: n.filePath,
         actor,
       });

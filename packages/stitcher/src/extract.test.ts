@@ -215,6 +215,101 @@ describe('extractDramatiqQueueGraph (HOR-411)', () => {
     expect(producers).toContain('enqueue');
     expect(producers).not.toContain('views.py');
   });
+
+  // --- HOR-411 round 2: worker/producer attribution noise ---
+
+  it('excludes @actor test workers (tests/ + test_*) from the worker list and queues', () => {
+    const g = extractDramatiqQueueGraph([
+      // Real actor.
+      { name: 'count_words', filePath: 'app/tasks.py', content: '@actor\ndef count_words(url):\n    pass' },
+      // A test-suite actor by file (tests/) — not topology.
+      {
+        name: 'test_actor_worker',
+        filePath: 'tests/test_actors.py',
+        content: '@actor\ndef test_actor_worker():\n    pass',
+      },
+      // A test-suite actor by function-name convention.
+      {
+        name: 'test_count_words_actor',
+        filePath: 'app/conftest.py',
+        content: '@actor\ndef test_count_words_actor():\n    pass',
+      },
+    ]);
+    const workerSymbols = g.workers.map((w) => w.symbol);
+    expect(workerSymbols).toContain('count_words');
+    expect(workerSymbols).not.toContain('test_actor_worker');
+    expect(workerSymbols).not.toContain('test_count_words_actor');
+    // A test-only actor never registers, so it isn't a queue/edge either.
+    expect(g.workers.every((w) => !/(^|\/)tests?\//.test(w.file))).toBe(true);
+    expect(g.edges.some((e) => e.workerSymbol === 'test_actor_worker')).toBe(false);
+  });
+
+  it('attributes a producer to the enclosing method, not the Class node name', () => {
+    const g = extractDramatiqQueueGraph([
+      { name: 'reindex', filePath: 'app/tasks.py', content: '@actor\ndef reindex(doc):\n    pass' },
+      // A Class node: `n.name` is the class ("SearchService"), but the real enqueue site is the
+      // `schedule_reindex` method. The producer must be the method, never the class name.
+      {
+        name: 'SearchService',
+        filePath: 'app/search/service.py',
+        content:
+          'class SearchService:\n    def schedule_reindex(self, doc):\n        reindex.send(doc)\n',
+      },
+    ]);
+    expect(has(g, 'default', 'schedule_reindex', 'reindex')).toBe(true);
+    expect(g.edges.some((e) => e.producerSymbol === 'SearchService')).toBe(false);
+    expect(g.producers.some((p) => p.symbol === 'SearchService')).toBe(false);
+  });
+
+  it('drops a class/module-body `.send()` with no enclosing def (arbitrary class/module name)', () => {
+    const g = extractDramatiqQueueGraph([
+      { name: 'reindex', filePath: 'app/tasks.py', content: '@actor\ndef reindex(doc):\n    pass' },
+      // A Class node whose `.send()` sits at class body level — no enclosing `def`, so there is no
+      // real call-site function to name. We must NOT report the class ("Results") as the producer.
+      {
+        name: 'Results',
+        filePath: 'app/results/middleware.py',
+        content: 'class Results:\n    reindex.send(None)\n',
+      },
+    ]);
+    expect(g.edges.some((e) => e.producerSymbol === 'Results')).toBe(false);
+    expect(g.producers.some((p) => p.symbol === 'Results')).toBe(false);
+    // The actor is still a real worker on the default queue (worker-only edge).
+    expect(has(g, 'default', null, 'reindex')).toBe(true);
+  });
+
+  it('handles a mixed dramatiq fixture: workers exclude tests/, producers are real enqueuers', () => {
+    const g = extractDramatiqQueueGraph([
+      { name: 'send_email', filePath: 'app/tasks.py', content: '@actor\ndef send_email(to):\n    pass' },
+      {
+        name: 'resize',
+        filePath: 'app/tasks.py',
+        content: '@dramatiq.actor(queue_name="images")\ndef resize(p):\n    pass',
+      },
+      // Real enqueue sites (functions/methods).
+      {
+        name: 'Mailer',
+        filePath: 'app/mail/mailer.py',
+        content: 'class Mailer:\n    def notify(self, to):\n        send_email.send(to)\n',
+      },
+      { name: 'handle_upload', filePath: 'app/views.py', content: 'def handle_upload(p):\n    resize.send_with_options(args=(p,))' },
+      // Test workers + test producers — all noise.
+      {
+        name: 'test_send_email',
+        filePath: 'tests/test_mail.py',
+        content: '@actor\ndef test_worker():\n    pass\n\ndef test_send_email():\n    send_email.send("x")',
+      },
+    ]);
+    const workerSymbols = g.workers.map((w) => w.symbol).sort();
+    expect(workerSymbols).toEqual(['resize', 'send_email']);
+    expect(g.workers.every((w) => !/(^|\/)tests?\//.test(w.file))).toBe(true);
+    const producerSymbols = g.producers.map((p) => p.symbol).sort();
+    // Real enqueuers only — the enclosing method/function, no class names, no test files.
+    expect(producerSymbols).toEqual(['handle_upload', 'notify']);
+    expect(g.producers.every((p) => !/(^|\/)tests?\//.test(p.file))).toBe(true);
+    expect(has(g, 'default', 'notify', 'send_email')).toBe(true);
+    expect(has(g, 'images', 'handle_upload', 'resize')).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
