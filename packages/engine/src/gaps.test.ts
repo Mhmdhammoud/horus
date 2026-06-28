@@ -428,6 +428,14 @@ describe('gapNextActions', () => {
     });
     const { gaps } = detectMissingEvidence(report, { redis: false });
     const actions = gapNextActions(gaps);
-    expect(actions.some((a) => a.toLowerCase().includes('redis') || a.toLowerCase().includes('bullmq'))).toBe(true);
+    // The tip names the connector to add (redis)…
+    expect(actions.some((a) => a.toLowerCase().includes('redis'))).toBe(true);
+    // …but is stack-agnostic — it must NOT name a Node-only queue lib (BullMQ) which leaks
+    // onto Python/Redis repos (HOR-428). Assert across both the gap text and the routeHint reason.
+    for (const gap of gaps) {
+      expect(gap.why.toLowerCase()).not.toContain('bullmq');
+      expect(gap.nextSource.toLowerCase()).not.toContain('bullmq');
+      expect((gap.routeHint?.reason ?? '').toLowerCase()).not.toContain('bullmq');
+    }
   });
 });

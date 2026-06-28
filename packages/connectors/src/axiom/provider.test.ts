@@ -177,6 +177,23 @@ describe('buildTitle', () => {
     expect(title).toContain('Axiom logs');
     expect(title).toContain('[error]');
     expect(title).toContain('boom');
+    // A raw example row (no `count`) is NOT a rollup — no "×N" suffix.
+    expect(title).not.toContain('×');
+  });
+
+  it('folds the COUNT into the title for an aggregated signature row (×N + latest)', () => {
+    const title = buildTitle(
+      {
+        timestamp: '2026-06-22T17:16:00Z',
+        fields: { level: 'error', message: 'Klaviyo API request failed', count: 3302 },
+      },
+      'logs',
+    );
+    expect(title).toContain('Klaviyo API request failed');
+    // Volume folded into the title with a thousands separator…
+    expect(title).toContain('×3,302');
+    // …and the max(_time) surfaced as the latest occurrence.
+    expect(title).toContain('latest');
   });
 
   it('falls back to a placeholder when no message field exists', () => {

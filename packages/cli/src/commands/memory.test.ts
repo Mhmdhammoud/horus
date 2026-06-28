@@ -809,6 +809,53 @@ describe('runMemoryAccuracy — eval-set read path', () => {
     expect(query.since).toBeInstanceOf(Date);
   });
 
+  it('windows to a default recent range when no time flag is given (HOR-427)', async () => {
+    db.listOutcomeLabels.mockResolvedValueOnce([]);
+    const config = writeSingleProjectConfig();
+    const before = Date.now() - 31 * 24 * 60 * 60 * 1000;
+    const code = await runMemoryAccuracy({ config, json: true });
+    const after = Date.now() - 29 * 24 * 60 * 60 * 1000;
+    expect(code).toBe(0);
+    // The query carries a default lower bound (~30d ago) so pre-fix history can't drag the metric.
+    const [, query] = db.listOutcomeLabels.mock.calls[0]!;
+    expect(query.since).toBeInstanceOf(Date);
+    expect(query.since.getTime()).toBeGreaterThan(before);
+    expect(query.since.getTime()).toBeLessThan(after);
+    const parsed = JSON.parse(stdout());
+    expect(parsed.since).not.toBeNull();
+    expect(parsed.window).toContain('default');
+  });
+
+  it('--all disables the window (full retained history)', async () => {
+    db.listOutcomeLabels.mockResolvedValueOnce([]);
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryAccuracy({ config, all: true, json: true });
+    expect(code).toBe(0);
+    const [, query] = db.listOutcomeLabels.mock.calls[0]!;
+    expect(query.since).toBeUndefined();
+    const parsed = JSON.parse(stdout());
+    expect(parsed.since).toBeNull();
+    expect(parsed.window).toBe('all time');
+  });
+
+  it('--since accepts an absolute date and uses it as the lower bound', async () => {
+    db.listOutcomeLabels.mockResolvedValueOnce([]);
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryAccuracy({ config, since: '2026-06-01', json: true });
+    expect(code).toBe(0);
+    const [, query] = db.listOutcomeLabels.mock.calls[0]!;
+    expect(query.since).toBeInstanceOf(Date);
+    expect(query.since.toISOString().slice(0, 10)).toBe('2026-06-01');
+  });
+
+  it('rejects an unparseable --since without opening the DB', async () => {
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryAccuracy({ config, since: 'not-a-date' });
+    expect(code).toBe(1);
+    expect(db.openDb).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.flat().join(' ')).toContain('--since must be a parseable date');
+  });
+
   it('rejects an invalid --source without opening the DB', async () => {
     const config = writeSingleProjectConfig();
     const code = await runMemoryAccuracy({ config, source: 'bogus' });
@@ -830,7 +877,7 @@ describe('runMemoryAccuracy — eval-set read path', () => {
     const config = writeSingleProjectConfig();
     const code = await runMemoryAccuracy({ config });
     expect(code).toBe(0);
-    expect(stdout()).toContain('No outcome labels yet');
+    expect(stdout()).toContain('No outcome labels in this window');
   });
 });
 

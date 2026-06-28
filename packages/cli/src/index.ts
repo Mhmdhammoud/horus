@@ -574,7 +574,9 @@ Examples:
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
     .option('--source <source>', 'filter to one signal source: feedback | confirm')
+    .option('--since <date>', 'only count labels on/after this date (e.g. 2026-06-01)')
     .option('--days <n>', 'only count labels from the last N days', (v) => Number(v))
+    .option('--all', 'count the full retained history (disable the default recent window)')
     .option('--limit <n>', 'max labels to scan', (v) => Number(v))
     .option('--json', 'output JSON')
     .action(
@@ -582,7 +584,9 @@ Examples:
         config?: string;
         repo?: string;
         source?: string;
+        since?: string;
         days?: number;
+        all?: boolean;
         limit?: number;
         json?: boolean;
       }) => {

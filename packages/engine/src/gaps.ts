@@ -239,10 +239,12 @@ export function detectMissingEvidence(
       dimension: 'queue runtime state',
       why: connectors.redis
         ? 'Queue topology is known but live depth + failed/delayed counts were not collected.'
-        : 'Queue topology is known but there is no Redis/BullMQ connector for live depth/failures.',
+        : 'Queue topology is known but there is no Redis connector for live queue depth/failures.',
+      // Stack-agnostic: the tip names Redis (the connector to add) but NOT a specific queue
+      // library — "BullMQ" is Node-only and was leaking onto Python/Redis repos (HOR-428).
       nextSource: connectors.redis
         ? 'Run `horus queues --live` to see real-time queue depths and failed-job counts'
-        : 'Add a `redis` connector to read live BullMQ state',
+        : 'Add a `redis` connector to read live queue state',
       confidenceImpact: 0.1,
       // Redis wired → read live state with `queues --live`; otherwise `connect redis` first.
       routeHint: connectors.redis
@@ -254,7 +256,7 @@ export function detectMissingEvidence(
         : {
             nextTool: 'connect',
             args: 'redis',
-            reason: 'Add a `redis` connector to read live BullMQ state',
+            reason: 'Add a `redis` connector to read live queue state',
           },
     });
     blindSpots.push('Cannot determine if the queue is actually backed up.');

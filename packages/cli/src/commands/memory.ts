@@ -1198,19 +1198,37 @@ function outcomeLabelToJSON(l: OutcomeLabel): Record<string, unknown> {
 }
 
 /**
+ * Default accuracy window in days (HOR-427). The eval store is append-only and KEEPS pre-fix
+ * historical labels (which document old, since-corrected behavior). Averaging those into the
+ * headline hit-rate makes a fixed build read 0%/all-partly. So with no explicit window flag the
+ * report defaults to the recent window — reflecting the current (fixed) build — while `--all`
+ * (or an explicit `--since`/`--days`) widens it back over the full retained history.
+ */
+const DEFAULT_ACCURACY_WINDOW_DAYS = 30;
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
  * `horus memory accuracy` — the read path over the converged eval store (HOR-390). Reports
  * Horus's own measured hit-rate ("did it point at the cause?") over the outcome labels written by
  * `horus memory confirm` (source=confirm) and `horus feedback` (source=feedback).
  *
  * HOR-46 (project isolation): scoped to the resolved project, fail-closed — an unresolved project
- * is a hard error, never a silent cross-project read. Optional `--source` and `--days` slice the
- * dataset. `--json` stays a single parseable document.
+ * is a hard error, never a silent cross-project read.
+ *
+ * HOR-427 (windowing): the metric is WINDOWED so it reflects only the fixed-build labels and isn't
+ * dragged to 0% by pre-fix history (which the store retains). `--since <date>` (absolute) and
+ * `--days <n>` (relative) set the lower bound; with neither, a sensible default window applies, and
+ * `--all` disables it (full retained history). `--source` filters the signal source. `--json` stays
+ * a single parseable document and carries the resolved `since` + a human `window` label.
  */
 export async function runMemoryAccuracy(opts: {
   config?: string;
   repo?: string;
   source?: string;
+  since?: string;
   days?: number;
+  all?: boolean;
   limit?: number;
   json?: boolean;
 }): Promise<number> {
@@ -1224,13 +1242,32 @@ export async function runMemoryAccuracy(opts: {
       source = opts.source;
     }
 
+    // Resolve the time window (HOR-427). Precedence: --all (full history) > --since (absolute date)
+    // > --days (relative) > the default recent window. `window` is a human label for the output.
     let since: Date | undefined;
-    if (opts.days !== undefined) {
+    let window: string;
+    if (opts.all) {
+      window = 'all time';
+    } else if (opts.since !== undefined) {
+      const parsed = new Date(opts.since);
+      if (Number.isNaN(parsed.getTime())) {
+        console.error(
+          pc.red('--since must be a parseable date (e.g. 2026-06-01 or an ISO timestamp).'),
+        );
+        return 1;
+      }
+      since = parsed;
+      window = `since ${parsed.toISOString().slice(0, 10)}`;
+    } else if (opts.days !== undefined) {
       if (!Number.isFinite(opts.days) || opts.days <= 0) {
         console.error(pc.red('--days must be a positive number.'));
         return 1;
       }
-      since = new Date(Date.now() - opts.days * 24 * 60 * 60 * 1000);
+      since = new Date(Date.now() - opts.days * MS_PER_DAY);
+      window = `last ${opts.days} day(s)`;
+    } else {
+      since = new Date(Date.now() - DEFAULT_ACCURACY_WINDOW_DAYS * MS_PER_DAY);
+      window = `last ${DEFAULT_ACCURACY_WINDOW_DAYS} day(s) (default — pass --all for full history)`;
     }
 
     const config = await loadConfig(opts.config);
@@ -1240,7 +1277,7 @@ export async function runMemoryAccuracy(opts: {
     const { db, sql } = await openDb(config.database.url);
     try {
       // HOR-46: every query is project-scoped. Newest-first; `summarize` is order-independent and
-      // dedupes to the current verdict per investigation.
+      // dedupes to the current verdict per investigation. `since` windows the eval set (HOR-427).
       const labels = await listOutcomeLabels(db, {
         project,
         source,
@@ -1256,6 +1293,7 @@ export async function runMemoryAccuracy(opts: {
               project,
               source: source ?? null,
               since: since ? since.toISOString() : null,
+              window,
               summary,
               labels: labels.map(outcomeLabelToJSON),
             },
@@ -1265,12 +1303,14 @@ export async function runMemoryAccuracy(opts: {
         );
       } else {
         const pct = (n: number): string => `${(n * 100).toFixed(0)}%`;
-        console.log(pc.bold(`Investigation accuracy — ${project}`));
+        console.log(pc.bold(`Investigation accuracy — ${project}`) + pc.dim(`  ·  window: ${window}`));
         if (summary.evaluated === 0) {
           console.log(
             pc.dim(
-              'No outcome labels yet. Confirm an investigation (`horus memory confirm <id>`) or ' +
-                'leave feedback (`horus feedback <id> --resolved yes|partly|no`) to start the eval set.',
+              `No outcome labels in this window (${window}). Confirm an investigation ` +
+                '(`horus memory confirm <id>`) or leave feedback (`horus feedback <id> --resolved ' +
+                'yes|partly|no`) to add to the eval set' +
+                (opts.all ? '.' : ', or pass --all to include older labels.'),
             ),
           );
         } else {

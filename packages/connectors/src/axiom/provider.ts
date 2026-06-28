@@ -176,6 +176,20 @@ export function buildTitle(rec: AxiomLogRecord, dataset: string): string {
   const level = pickField(rec.fields, LEVEL_FIELDS);
   const lvl = level ? `[${level}] ` : '';
   const body = msg ? redactSecrets(msg) : '(log event)';
+
+  // Aggregated signature rows carry a `count` (from the `summarize count() + max(_time) by
+  // message` query). Fold the volume INTO the title — e.g. "… ×3,302 (latest 06-22 17:16)" — so a
+  // high-volume storm reads as one ranked signature with its real weight, not N lookalike rows.
+  // The `_time` here is `max(_time)`, i.e. the LATEST occurrence. Raw example rows have no `count`
+  // and keep the plain "· <ts>" form.
+  const rawCount = rec.fields['count'];
+  const count =
+    typeof rawCount === 'number' && Number.isFinite(rawCount) && rawCount > 1 ? rawCount : undefined;
+  if (count !== undefined) {
+    const latest = rec.timestamp ? ` (latest ${shortTs(rec.timestamp)})` : '';
+    return `Axiom ${dataset}: ${lvl}${body} ×${count.toLocaleString('en-US')}${latest}`.slice(0, 220);
+  }
+
   const ts = rec.timestamp ? ` · ${shortTs(rec.timestamp)}` : '';
   return `Axiom ${dataset}: ${lvl}${body}${ts}`.slice(0, 220);
 }
