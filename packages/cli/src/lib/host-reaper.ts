@@ -62,7 +62,7 @@ export async function listRunningSourceHosts(): Promise<RunningHost[]> {
 }
 
 /** Is `pid` alive? Uses signal 0 (no-op probe). */
-function isAlive(pid: number): boolean {
+export function isPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -70,6 +70,58 @@ function isAlive(pid: number): boolean {
     // EPERM means it exists but we can't signal it → treat as alive.
     return (err as NodeJS.ErrnoException).code === 'EPERM';
   }
+}
+
+/** Back-compat internal alias. */
+const isAlive = isPidAlive;
+
+/**
+ * A registered host as `horus hosts` sees it: a registry entry plus what we actually probed
+ * about the process behind it. `hostUrl`/`pid`/`port` come from the repo's host records;
+ * `healthy` is the HTTP `/api/health` result; `pidAlive` is a signal-0 liveness probe of the
+ * recorded pid (null when no pid is recorded).
+ */
+export interface RegisteredHostState {
+  name: string;
+  hostUrl: string | null;
+  pid: number | null;
+  port: number | null;
+  healthy: boolean;
+  pidAlive: boolean | null;
+}
+
+/**
+ * Is this registered host backed by a LIVE process? (HOR-389)
+ *
+ * Authoritative signal is the HTTP health check: a reachable `/api/health` means a server is
+ * up. As a fallback — when no host URL is recorded to probe — a recorded pid that is still
+ * alive also counts as live. A stale entry (process gone: health fails and pid dead/absent)
+ * is NOT live.
+ */
+export function isLiveRegisteredHost(h: RegisteredHostState): boolean {
+  if (h.healthy) return true;
+  if (h.hostUrl === null && h.pidAlive === true) return true;
+  return false;
+}
+
+/**
+ * Count DISTINCT live source-host PROCESSES among registered hosts (HOR-389).
+ *
+ * The backend runs at most one host per repo, but several registry entries can resolve to the
+ * SAME running process (e.g. many repos whose host.json points at one shared port, or a stale +
+ * a fresh entry for the same pid). Counting registry rows then reports "40 hosts running" when a
+ * single process exists. We dedupe by the underlying process identity — pid when known, else
+ * port, else name — so each live process is counted exactly once.
+ */
+export function countDistinctLiveHosts(hosts: RegisteredHostState[]): number {
+  const seen = new Set<string>();
+  for (const h of hosts) {
+    if (!isLiveRegisteredHost(h)) continue;
+    const key =
+      h.pid != null ? `pid:${h.pid}` : h.port != null ? `port:${h.port}` : `name:${h.name}`;
+    seen.add(key);
+  }
+  return seen.size;
 }
 
 /** SIGTERM then escalate to SIGKILL; resolves true once the pid is gone. */

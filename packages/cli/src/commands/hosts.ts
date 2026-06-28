@@ -11,32 +11,53 @@ import {
   readSourceHostPid,
   readSpawnedHost,
 } from '@horus/connectors';
-import { listRunningSourceHosts, selectOrphans, reapPid } from '../lib/host-reaper.js';
+import {
+  listRunningSourceHosts,
+  selectOrphans,
+  reapPid,
+  isPidAlive,
+  isLiveRegisteredHost,
+  countDistinctLiveHosts,
+  type RegisteredHostState,
+} from '../lib/host-reaper.js';
+
+interface HostRow extends RegisteredHostState {
+  root: string;
+  live: boolean;
+}
 
 export async function runHosts(opts: { reap?: boolean } = {}): Promise<number> {
   const registry = readRegistry();
   const projects = Object.entries(registry.projects);
 
   // ── Registered hosts ────────────────────────────────────────────────────
-  const rows: Array<{ name: string; hostUrl: string | null; healthy: boolean; root: string }> = [];
+  // Each entry is reconciled against the LIVE process behind it — an HTTP health probe plus,
+  // as a fallback, a pid-liveness check — so stale registry entries don't masquerade as
+  // running hosts (HOR-389).
+  const rows: HostRow[] = [];
   await Promise.all(
     projects.map(async ([name, entry]) => {
       const hostUrl = readSourceHostUrl(entry.root);
+      const rec = readSourceHostPid(entry.root);
+      const pid = rec?.pid ?? readSpawnedHost(entry.root)?.pid ?? null;
+      const port =
+        (hostUrl ? extractPort(hostUrl) : null) ??
+        (rec && Number.isFinite(rec.port) ? rec.port : null);
       const healthy = hostUrl ? await isHostHealthy(hostUrl) : false;
-      rows.push({ name, hostUrl: hostUrl ?? null, healthy, root: entry.root });
+      const pidAlive = pid != null ? isPidAlive(pid) : null;
+      const state: RegisteredHostState = { name, hostUrl, pid, port, healthy, pidAlive };
+      rows.push({ ...state, root: entry.root, live: isLiveRegisteredHost(state) });
     }),
   );
-  rows.sort((a, b) =>
-    a.healthy !== b.healthy ? (a.healthy ? -1 : 1) : a.name.localeCompare(b.name),
-  );
+  rows.sort((a, b) => (a.live !== b.live ? (a.live ? -1 : 1) : a.name.localeCompare(b.name)));
 
   console.log('');
   let printedAny = false;
   for (const row of rows) {
     if (row.hostUrl === null) continue;
     printedAny = true;
-    const status = row.healthy ? pc.green('● running') : pc.red('● stopped');
-    const port = extractPort(row.hostUrl) ?? '?';
+    const status = row.live ? pc.green('● running') : pc.red('● stopped');
+    const port = row.port ?? '?';
     console.log(
       `  ${status}  ${pc.bold(row.name.padEnd(24))} port ${String(port).padEnd(6)} ${pc.dim(row.root)}`,
     );
@@ -90,7 +111,9 @@ export async function runHosts(opts: { reap?: boolean } = {}): Promise<number> {
     return 0;
   }
 
-  const running = rows.filter((r) => r.healthy).length;
+  // Count DISTINCT live processes, not registry rows — many entries can resolve to one process
+  // (e.g. a shared port), which is what produced the inflated "40 hosts running" (HOR-389).
+  const running = countDistinctLiveHosts(rows);
   console.log(
     pc.dim(
       `${running} running${orphans.length ? ` · ${orphans.length} orphan(s)` : ''} · ` +
