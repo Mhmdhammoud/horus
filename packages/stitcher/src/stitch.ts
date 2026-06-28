@@ -8,6 +8,7 @@ import { replaceQueueEdges, type HorusDb, type NewQueueEdge } from '@horus/db';
 import {
   extractQueueGraph,
   extractCeleryQueueGraph,
+  extractDramatiqQueueGraph,
   type ProducerClassInput,
   type WorkerFileInput,
   type CeleryNodeInput,
@@ -93,8 +94,11 @@ export async function stitch(
     content: String(r[2] ?? ''),
   }));
   const celery = extractCeleryQueueGraph(celeryNodes);
+  // dramatiq is fetched by the same CONTAINS pre-filter (`.send(` + `@actor`) but modeled
+  // separately: its queue is the broker queue (default "default"), not the actor name (HOR-411).
+  const dramatiq = extractDramatiqQueueGraph(celeryNodes);
 
-  const edges: NewQueueEdge[] = [...graph.edges, ...celery.edges].map((e) => ({
+  const edges: NewQueueEdge[] = [...graph.edges, ...celery.edges, ...dramatiq.edges].map((e) => ({
     queueName: e.queueName,
     producerSymbol: e.producerSymbol,
     producerFile: e.producerFile,
@@ -107,9 +111,9 @@ export async function stitch(
   await replaceQueueEdges(db, edges, { project: opts.project });
 
   return {
-    queues: graph.queues.length + celery.queues.length,
-    producers: graph.producers.length + celery.producers.length,
-    workers: graph.workers.length + celery.workers.length,
+    queues: graph.queues.length + celery.queues.length + dramatiq.queues.length,
+    producers: graph.producers.length + celery.producers.length + dramatiq.producers.length,
+    workers: graph.workers.length + celery.workers.length + dramatiq.workers.length,
     edges: edges.length,
   };
 }

@@ -354,27 +354,29 @@ export function extractQueueGraph(input: {
 }
 
 // --- Celery (Python) patterns (HOR-356) ---
-// A Python task-queue worker def: a Celery `@task`/`@shared_task`/`@app.task`/`@celery.task`,
-// a huey `@huey.task`/`@db_task`/`@db_periodic_task`, OR a dramatiq `@actor` decorator (optionally
-// with args + stacked decorators) directly on a `def`. The task name is the function name — what
-// `.delay()`/`.apply_async()`/`.schedule()`/`.send()`/`.defer()` call sites reference (HOR-356/380).
+// A Python task-queue worker def: a Celery `@task`/`@shared_task`/`@app.task`/`@celery.task`, or
+// a huey `@huey.task`/`@db_task`/`@db_periodic_task` decorator (optionally with args + stacked
+// decorators) directly on a `def`. The task name is the function name — what
+// `.delay()`/`.apply_async()`/`.schedule()`/`.defer()` call sites reference (HOR-356/380).
 // Captures the def name. The `(?:[\w]+\.)*` prefix already covers the `huey.`/`app.` qualifier;
-// db_task/db_periodic_task are huey-specific names the Celery set missed; actor is dramatiq's.
+// db_task/db_periodic_task are huey-specific names the Celery set missed. dramatiq (`@actor` /
+// `.send()`) is intentionally NOT here — its queue model is the broker queue, not the actor name,
+// so it has its own extractor (extractDramatiqQueueGraph, HOR-411).
 // Note: rq's `.enqueue()` and arq's `.enqueue_job()` have NO worker-side decorator (workers are
 // registered by import path / function reference), so their producers can't be linked to a def
 // here and are dropped by the taskQueues filter — that's the achievable coverage (HOR-380).
 const CELERY_TASK_DEF_RE =
-  /@(?:[\w]+\.)*(?:shared_task|db_periodic_task|periodic_task|db_task|task|actor)\b[^\n]*(?:\n[ \t]*@[^\n]*)*\n[ \t]*(?:async[ \t]+)?def[ \t]+(\w+)/g;
+  /@(?:[\w]+\.)*(?:shared_task|db_periodic_task|periodic_task|db_task|task)\b[^\n]*(?:\n[ \t]*@[^\n]*)*\n[ \t]*(?:async[ \t]+)?def[ \t]+(\w+)/g;
 // An enqueue/producer call site: Celery `<task>.delay(`/`<task>.apply_async(`, huey
-// `<task>.schedule(`, procrastinate `<task>.defer(`/`<task>.defer_async(`, dramatiq `<task>.send(`,
+// `<task>.schedule(`, procrastinate `<task>.defer(`/`<task>.defer_async(`,
 // arq `<task>.enqueue_job(`, or rq `<task>.enqueue(` (HOR-380). Captures the immediate identifier
 // before the call (the task name), e.g. `tasks.send_email.delay(` -> `send_email`. The broad verbs
-// (`.schedule(`/`.send(`/`.enqueue(`/`.defer(`) are kept honest by the taskQueues filter, which
-// keeps a producer only when it names a real @task/@actor def, so non-task call sites
+// (`.schedule(`/`.enqueue(`/`.defer(`) are kept honest by the taskQueues filter, which
+// keeps a producer only when it names a real @task def, so non-task call sites
 // (cron/APScheduler/event emitters) are dropped. `defer_async` precedes `defer` and `enqueue_job`
-// precedes `enqueue` so the longer verb wins.
+// precedes `enqueue` so the longer verb wins. dramatiq's `.send()` is handled separately (HOR-411).
 const CELERY_ENQUEUE_RE =
-  /([A-Za-z_]\w*)\s*\.\s*(?:delay|apply_async|schedule|defer_async|defer|enqueue_job|enqueue|send)\s*\(/g;
+  /([A-Za-z_]\w*)\s*\.\s*(?:delay|apply_async|schedule|defer_async|defer|enqueue_job|enqueue)\s*\(/g;
 
 export interface CeleryNodeInput {
   name: string;
@@ -446,6 +448,122 @@ export function extractCeleryQueueGraph(nodes: CeleryNodeInput[]): QueueGraph {
     queues,
     producers: producers.filter((p) => taskQueues.has(p.queue)),
     workers,
+    edges,
+  };
+}
+
+// --- dramatiq (Python) patterns (HOR-411) ---
+// dramatiq's queue model differs from Celery/huey: an `@actor`-decorated `def` binds to a *broker
+// queue* (the `queue_name=` kwarg, default `"default"`), NOT to a queue named after the function.
+// `foo.send(...)` / `foo.send_with_options(...)` enqueues to actor `foo`'s queue. So we link a
+// producer to its worker by ACTOR NAME (`foo`), but the edge's `queueName` is the real broker queue
+// — otherwise we conflate actor/function names with queue names and massively over-report topology.
+//
+// `@actor` / `@dramatiq.actor(...)` directly on a `def` (optionally with args + stacked decorators).
+// Group 1 = the decorator's arg text (to find `queue_name=`); group 2 = the actor/def name.
+const DRAMATIQ_ACTOR_RE =
+  /@(?:[\w]+\.)*actor\b([^\n]*)(?:\n[ \t]*@[^\n]*)*\n[ \t]*(?:async[ \t]+)?def[ \t]+(\w+)/g;
+// `<actor>.send(` / `<actor>.send_with_options(` — captures the actor identifier before the call.
+const DRAMATIQ_SEND_RE = /([A-Za-z_]\w*)\s*\.\s*send(?:_with_options)?\s*\(/g;
+// `queue_name="emails"` inside an `@actor(...)` decorator's arg text.
+const DRAMATIQ_QUEUE_NAME_RE = /queue_name\s*=\s*['"]([^'"]+)['"]/;
+
+/** A pytest-style test function/file should not be reported as a real producer. */
+function isTestUnit(name: string, filePath: string): boolean {
+  if (/^test_/.test(name) || /_test$/.test(name)) return true;
+  const file = filePath.split('/').pop() ?? filePath;
+  if (/^test_/.test(file) || /_test\.[A-Za-z]+$/.test(file)) return true;
+  if (/(^|\/)tests?\//i.test(filePath)) return true;
+  return false;
+}
+
+/**
+ * Pure dramatiq queue-graph extraction (HOR-411). An `@actor def foo` is a worker bound to a broker
+ * queue (default `"default"`, or its `queue_name=` kwarg); a `foo.send(...)` call site is a producer
+ * for that same actor. Producers and workers are joined by actor name, and the edge's `queueName` is
+ * the actor's broker queue — NOT the actor/function name. Honesty rules:
+ *  - only actors with a real `@actor` def become queues (a stray `socket.send()` never synthesizes one),
+ *  - test functions/files are excluded from producers (dramatiq's own `test_*` suite is not topology),
+ *  - `actor -> actor` self-edges (an actor re-enqueueing itself) are dropped.
+ */
+export function extractDramatiqQueueGraph(nodes: CeleryNodeInput[]): QueueGraph {
+  // actor name -> broker queue (first declaration wins).
+  const actorQueue = new Map<string, string>();
+  const workers: { queue: string; symbol: string; file: string; actor: string }[] = [];
+  const producers: { queue: string; symbol: string; file: string; actor: string }[] = [];
+
+  const FILE_NODE_RE = /\.(py|pyi|js|jsx|ts|tsx|mjs|cjs)$/i;
+
+  // Pass 1: collect actors and the broker queue each binds to.
+  for (const n of nodes) {
+    for (const m of n.content.matchAll(DRAMATIQ_ACTOR_RE)) {
+      const args = m[1] ?? '';
+      const actor = m[2];
+      if (!actor) continue;
+      const queue = args.match(DRAMATIQ_QUEUE_NAME_RE)?.[1] ?? 'default';
+      if (!actorQueue.has(actor)) actorQueue.set(actor, queue);
+      workers.push({ queue: actorQueue.get(actor)!, symbol: actor, file: n.filePath, actor });
+    }
+  }
+
+  // Pass 2: `.send()` producers that reference a real actor. Skip File nodes (so producers attribute
+  // to the enclosing function, not the file) and test functions/files (dramatiq's own test suite).
+  for (const n of nodes) {
+    if (FILE_NODE_RE.test(n.name)) continue;
+    if (isTestUnit(n.name, n.filePath)) continue;
+    for (const m of n.content.matchAll(DRAMATIQ_SEND_RE)) {
+      const actor = m[1];
+      if (!actor || !actorQueue.has(actor)) continue;
+      producers.push({
+        queue: actorQueue.get(actor)!,
+        symbol: n.name || baseName(n.filePath),
+        file: n.filePath,
+        actor,
+      });
+    }
+  }
+
+  const actors = [...actorQueue.keys()].sort();
+  const queues = [...new Set(actors.map((a) => actorQueue.get(a)!))].sort();
+  const edges: SynthEdge[] = [];
+  for (const actor of actors) {
+    const queue = actorQueue.get(actor)!;
+    const W = dedupeBySymbolFile(workers.filter((w) => w.actor === actor));
+    if (!W.length) continue;
+    // Drop self-edges: a producing node that is itself this actor's worker def (the actor
+    // re-enqueueing itself) is not a real cross-component producer.
+    const P = dedupeBySymbolFile(producers.filter((p) => p.actor === actor)).filter(
+      (p) => !W.some((w) => w.symbol === p.symbol && w.file === p.file),
+    );
+    if (P.length) {
+      for (const p of P) {
+        for (const w of W) {
+          edges.push({
+            queueName: queue,
+            producerSymbol: p.symbol,
+            producerFile: p.file,
+            workerSymbol: w.symbol,
+            workerFile: w.file,
+          });
+        }
+      }
+    } else {
+      for (const w of W) {
+        edges.push({
+          queueName: queue,
+          producerSymbol: null,
+          producerFile: null,
+          workerSymbol: w.symbol,
+          workerFile: w.file,
+        });
+      }
+    }
+  }
+
+  return {
+    queues,
+    producers: producers.map((p) => ({ queue: p.queue, symbol: p.symbol, file: p.file })),
+    workers: workers.map((w) => ({ queue: w.queue, symbol: w.symbol, file: w.file })),
     edges,
   };
 }

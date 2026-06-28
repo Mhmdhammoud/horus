@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractQueueGraph, extractCeleryQueueGraph } from './extract.js';
+import { extractQueueGraph, extractCeleryQueueGraph, extractDramatiqQueueGraph } from './extract.js';
 import type { ProducerClassInput, WorkerFileInput } from './extract.js';
 
 describe('extractCeleryQueueGraph (HOR-356)', () => {
@@ -85,7 +85,7 @@ describe('extractCeleryQueueGraph — huey support (HOR-380)', () => {
   });
 });
 
-describe('extractCeleryQueueGraph — procrastinate / dramatiq / arq / rq (HOR-380)', () => {
+describe('extractCeleryQueueGraph — procrastinate / arq / rq (HOR-380)', () => {
   it('links a procrastinate .defer() producer to its @app.task worker', () => {
     const g = extractCeleryQueueGraph([
       { name: 'sum_task', filePath: 'app/tasks.py', content: '@app.task\ndef sum_task(a, b):\n    return a + b' },
@@ -110,37 +110,6 @@ describe('extractCeleryQueueGraph — procrastinate / dramatiq / arq / rq (HOR-3
     ).toBe(true);
   });
 
-  it('links a dramatiq .send() producer to its @actor worker', () => {
-    const g = extractCeleryQueueGraph([
-      { name: 'count_words', filePath: 'app/tasks.py', content: '@actor\ndef count_words(url):\n    pass' },
-      { name: 'enqueue', filePath: 'app/views.py', content: 'def enqueue():\n    count_words.send("http://x")' },
-    ]);
-    expect(
-      g.edges.some(
-        (e) => e.queueName === 'count_words' && e.producerSymbol === 'enqueue' && e.workerSymbol === 'count_words',
-      ),
-    ).toBe(true);
-  });
-
-  it('recognizes @dramatiq.actor(...) with args as a worker', () => {
-    const g = extractCeleryQueueGraph([
-      {
-        name: 'resize',
-        filePath: 'app/tasks.py',
-        content: '@dramatiq.actor(max_retries=3)\ndef resize(path):\n    pass',
-      },
-    ]);
-    expect(g.queues).toContain('resize');
-  });
-
-  it('does not synthesize a queue for a .send() with no @actor definition', () => {
-    const g = extractCeleryQueueGraph([
-      { name: 'notify', filePath: 'app/io.py', content: 'def notify():\n    socket.send(payload)' },
-    ]);
-    expect(g.queues).not.toContain('socket');
-    expect(g.edges.some((e) => e.queueName === 'socket')).toBe(false);
-  });
-
   it('drops rq .enqueue() / arq .enqueue_job() producers that lack a worker decorator', () => {
     // rq/arq register workers by function reference, not a decorator on the def — so there is no
     // task def to anchor the queue, and these producers are correctly dropped (HOR-380 caveat).
@@ -154,6 +123,97 @@ describe('extractCeleryQueueGraph — procrastinate / dramatiq / arq / rq (HOR-3
     ]);
     expect(g.queues).not.toContain('plain');
     expect(g.edges.some((e) => e.queueName === 'plain')).toBe(false);
+  });
+});
+
+describe('extractDramatiqQueueGraph (HOR-411)', () => {
+  const has = (g: ReturnType<typeof extractDramatiqQueueGraph>, q: string, p: string | null, w: string | null): boolean =>
+    g.edges.some((e) => e.queueName === q && e.producerSymbol === p && e.workerSymbol === w);
+
+  it('links a .send() producer to its @actor worker on the default broker queue', () => {
+    const g = extractDramatiqQueueGraph([
+      { name: 'count_words', filePath: 'app/tasks.py', content: '@actor\ndef count_words(url):\n    pass' },
+      { name: 'enqueue', filePath: 'app/views.py', content: 'def enqueue():\n    count_words.send("http://x")' },
+    ]);
+    // Queue is the broker queue ("default"), NOT the actor/function name.
+    expect(g.queues).toEqual(['default']);
+    expect(g.queues).not.toContain('count_words');
+    expect(has(g, 'default', 'enqueue', 'count_words')).toBe(true);
+  });
+
+  it('maps an actor to its explicit queue_name= broker queue', () => {
+    const g = extractDramatiqQueueGraph([
+      {
+        name: 'resize',
+        filePath: 'app/tasks.py',
+        content: '@dramatiq.actor(queue_name="images", max_retries=3)\ndef resize(path):\n    pass',
+      },
+      { name: 'upload', filePath: 'app/views.py', content: 'def upload():\n    resize.send(p)' },
+    ]);
+    expect(g.queues).toEqual(['images']);
+    expect(has(g, 'images', 'upload', 'resize')).toBe(true);
+  });
+
+  it('recognizes @dramatiq.actor(...) with args as a worker (default queue)', () => {
+    const g = extractDramatiqQueueGraph([
+      { name: 'resize', filePath: 'app/tasks.py', content: '@dramatiq.actor(max_retries=3)\ndef resize(path):\n    pass' },
+    ]);
+    expect(g.queues).toEqual(['default']);
+    expect(g.edges).toHaveLength(1);
+    expect(g.edges[0]?.queueName).toBe('default');
+    expect(g.edges[0]?.producerSymbol).toBeNull();
+    expect(g.edges[0]?.workerSymbol).toBe('resize');
+  });
+
+  it('does not synthesize a queue for a .send() with no @actor definition', () => {
+    const g = extractDramatiqQueueGraph([
+      { name: 'notify', filePath: 'app/io.py', content: 'def notify():\n    socket.send(payload)' },
+    ]);
+    expect(g.queues).toHaveLength(0);
+    expect(g.edges).toHaveLength(0);
+  });
+
+  it('excludes test functions/files from producers', () => {
+    const g = extractDramatiqQueueGraph([
+      { name: 'add', filePath: 'app/tasks.py', content: '@actor\ndef add(x, y):\n    return x + y' },
+      // pytest test function (by name) — must not count as a producer.
+      {
+        name: 'test_actors_can_be_sent_messages',
+        filePath: 'app/tasks.py',
+        content: 'def test_actors_can_be_sent_messages():\n    add.send(1, 2)',
+      },
+      // a test file — must not count as a producer either.
+      { name: 'check', filePath: 'tests/test_actor.py', content: 'def check():\n    add.send(3, 4)' },
+    ]);
+    expect(g.edges.some((e) => e.producerSymbol === 'test_actors_can_be_sent_messages')).toBe(false);
+    expect(g.edges.some((e) => e.producerFile === 'tests/test_actor.py')).toBe(false);
+    // With no real producer left, `add` remains as a worker-only edge on the default queue.
+    expect(has(g, 'default', null, 'add')).toBe(true);
+  });
+
+  it('drops actor -> actor self-edges (an actor re-enqueueing itself)', () => {
+    const g = extractDramatiqQueueGraph([
+      {
+        name: 'foo',
+        filePath: 'app/tasks.py',
+        content: '@actor\ndef foo():\n    foo.send()',
+      },
+    ]);
+    // No `foo -> foo` self-edge; falls back to a worker-only edge.
+    expect(g.edges.every((e) => !(e.producerSymbol === 'foo' && e.workerSymbol === 'foo'))).toBe(true);
+    expect(has(g, 'default', null, 'foo')).toBe(true);
+  });
+
+  it('attributes producers to functions, not File nodes', () => {
+    const g = extractDramatiqQueueGraph([
+      { name: 'add', filePath: 'app/tasks.py', content: '@actor\ndef add(x, y):\n    return x + y' },
+      { name: 'enqueue', filePath: 'app/views.py', content: 'def enqueue():\n    add.send(1, 2)' },
+      // File node: name is the filename, content is the whole file (also contains `.send`).
+      { name: 'views.py', filePath: 'app/views.py', content: 'def enqueue():\n    add.send(1, 2)' },
+    ]);
+    const producers = g.edges.map((e) => e.producerSymbol);
+    expect(producers).toContain('enqueue');
+    expect(producers).not.toContain('views.py');
   });
 });
 
