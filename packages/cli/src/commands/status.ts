@@ -17,9 +17,11 @@ import {
   mongoForEnv,
   postgresForEnv,
   sentryForEnv,
+  axiomForEnv,
   redisServerStatus,
   type StateProvider,
   type SentryProvider,
+  type AxiomProvider,
   type RedisServerStatus,
 } from '@horus/connectors';
 import { checkDatabase } from '@horus/db';
@@ -44,6 +46,7 @@ async function checkEnv(
     mongoFactory?: (renv: ResolvedEnvironment) => StateProvider | null;
     postgresFactory?: (renv: ResolvedEnvironment) => StateProvider | null;
     sentryFactory?: (renv: ResolvedEnvironment) => SentryProvider | null;
+    axiomFactory?: (renv: ResolvedEnvironment) => AxiomProvider | null;
     redisStatus?: (renv: ResolvedEnvironment) => Promise<RedisServerStatus | null>;
   },
 ): Promise<boolean> {
@@ -252,6 +255,34 @@ async function checkEnv(
   } else {
     console.log(
       `    ${mark('pending')} ${pc.bold('Sentry')}          ${pc.dim('not configured')}`,
+    );
+  }
+
+  // Axiom (structured logs) — probe reachability against the configured dataset.
+  const axiomCfg = renv.connectors.axiom;
+  if (axiomCfg) {
+    const label = axiomCfg.dataset ?? '(no dataset)';
+    const axiom = (deps?.axiomFactory ?? axiomForEnv)(renv);
+    if (axiom) {
+      const h = await axiom.health();
+      if (!h.ok) {
+        console.log(
+          `    ${mark(false)} ${pc.bold('Axiom')}          ${pc.dim(`unreachable · ${label}`)}`,
+        );
+        allOk = false;
+      } else {
+        console.log(
+          `    ${mark(true)} ${pc.bold('Axiom')}           ${pc.dim(`reachable · ${label}`)}`,
+        );
+      }
+    } else {
+      console.log(
+        `    ${mark(false)} ${pc.bold('Axiom')}          ${pc.dim(`configured (${label}) but API token not set`)}`,
+      );
+    }
+  } else {
+    console.log(
+      `    ${mark('pending')} ${pc.bold('Axiom')}           ${pc.dim('not configured')}`,
     );
   }
 

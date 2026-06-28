@@ -23,6 +23,7 @@ import {
   mongoForEnv,
   postgresForEnv,
   sentryForEnv,
+  axiomForEnv,
   queueForEnv,
   redisStateForEnv,
   metricsForEnv,
@@ -31,6 +32,7 @@ import type {
   LogsProvider,
   StateProvider,
   SentryProvider,
+  AxiomProvider,
   QueueRuntimeProvider,
   RedisStateRuntimeProvider,
   MetricsProvider,
@@ -57,6 +59,7 @@ export interface InvestigationContext {
   mongo: StateProvider | null;
   postgres: StateProvider | null;
   sentry: SentryProvider | null;
+  axiom: AxiomProvider | null;
   queue: QueueRuntimeProvider | null;
   redisState: RedisStateRuntimeProvider | null;
   metrics: MetricsProvider | null;
@@ -129,6 +132,7 @@ export async function buildInvestigationContext(
   const mongo = mongoForEnv(renv);
   const postgres = postgresForEnv(renv);
   const sentry = sentryForEnv(renv);
+  const axiom = axiomForEnv(renv);
   const queue = queueForEnv(renv);
   const redisState = redisStateForEnv(renv);
   const metrics = metricsForEnv(renv);
@@ -149,6 +153,7 @@ export async function buildInvestigationContext(
     mongo,
     postgres,
     sentry,
+    axiom,
     queue,
     redisState,
     metrics,
@@ -204,6 +209,7 @@ export async function runOneInvestigation(
       mongo: ctx.mongo,
       postgres: ctx.postgres,
       sentry: ctx.sentry,
+      axiom: ctx.axiom,
       queue: ctx.queue,
       redisState: ctx.redisState,
       metrics: ctx.metrics,
@@ -214,6 +220,7 @@ export async function runOneInvestigation(
         mongodb: !!renv.connectors.mongodb?.url,
         postgres: !!renv.connectors.postgres?.url,
         sentry: !!renv.connectors.sentry,
+        axiom: !!renv.connectors.axiom,
         redis: !!renv.connectors.redis?.url,
         queue: !!ctx.queue,
       },

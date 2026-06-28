@@ -35,6 +35,7 @@ import type {
   RedisStateProvider,
   RedisStateAnalysis,
   SentryProvider,
+  AxiomProvider,
 } from '@horus/connectors';
 import { shortTs, selectStateSignals, tokenize, analyzeQueueRuntime } from '@horus/connectors';
 import { formatSymbolLocation } from './render.js';
@@ -101,6 +102,12 @@ export interface EngineDeps {
    * negative evidence, not a gap; one failing provider never aborts the investigation.
    */
   sentry?: SentryProvider | null;
+  /**
+   * Optional Axiom logs-evidence provider — folds structured log rows (APL query) into the
+   * same log-evidence path as Elasticsearch / Sentry. A configured-but-empty Axiom is
+   * negative evidence, not a gap; one failing provider never aborts the investigation.
+   */
+  axiom?: AxiomProvider | null;
   /** Optional BullMQ queue runtime provider — folds queue depth/failure evidence. */
   queue?: QueueRuntimeProvider | null;
   /** Optional Redis state provider — folds cache/state/locks/rate-limit evidence (HOR-201). */
@@ -347,6 +354,26 @@ export function classifyLogRelevance(
     relevanceClass: 'ambient',
     relevanceReason: 'no structural link to seed — ambient runtime noise',
   };
+}
+
+/** Axiom row field names that hold the log message body, in priority order (HOR-429). */
+const AXIOM_MESSAGE_FIELDS = ['message', 'msg', 'body', 'event', 'log', '_raw'];
+/** Axiom row field names that hold the log level/severity, in priority order (HOR-429). */
+const AXIOM_LEVEL_FIELDS = ['level', 'severity', 'lvl', 'loglevel', 'status'];
+/** Axiom row field names that hold the originating service/logger, in priority order. */
+const AXIOM_SERVICE_FIELDS = ['service', 'app', 'logger', 'source', 'namespace'];
+
+/** Pick the first present, non-empty string-ish value among `candidates` from a row. */
+function pickAxiomField(
+  fields: Record<string, unknown>,
+  candidates: string[],
+): string | undefined {
+  for (const key of candidates) {
+    const v = fields[key];
+    if (typeof v === 'string' && v !== '') return v;
+    if (typeof v === 'number') return String(v);
+  }
+  return undefined;
 }
 
 /**
@@ -1884,6 +1911,79 @@ export async function investigate(
     }
   }
 
+  // e0a3. AXIOM LOG EVIDENCE (HOR-429) — structured log rows from an APL query folded
+  // into the SAME log-evidence path as Elasticsearch + Sentry. Each row becomes one
+  // kind:'log' Evidence, relevance-classified against the seed via classifyLogRelevance
+  // (direct rows seed directSignatures; ambient rows are demoted noise). Optional; a
+  // configured-but-empty Axiom is negative evidence (not a gap). One failing provider
+  // must never abort the investigation.
+  let axiomCollected = false;
+  if (deps.axiom) {
+    try {
+      const from = logWindowFrom(input.logsSince ?? input.since);
+      const to = new Date().toISOString();
+      // Seed terms mirror the log/Sentry blocks: hint + seed symbol + seed file base, so a
+      // row that mentions the implicated code/domain is classified 'direct' (HOR-156).
+      const axiomSeedBase = top ? top.filePath.split('/').pop() ?? '' : '';
+      const axiomTerms = top
+        ? [...new Set([...tokenize(hint), ...tokenize(top.name), ...tokenize(axiomSeedBase)])]
+        : [...new Set(tokenize(hint))];
+
+      const records = await deps.axiom.collect({ from, to, hintTerms: axiomTerms });
+      axiomCollected = true;
+
+      for (const rec of records.slice(0, 15)) {
+        const msg = pickAxiomField(rec.fields, AXIOM_MESSAGE_FIELDS);
+        const level = pickAxiomField(rec.fields, AXIOM_LEVEL_FIELDS);
+        const svc = pickAxiomField(rec.fields, AXIOM_SERVICE_FIELDS) ?? '';
+        // sigKey the classifier can tokenize: message body + service so domain terms count.
+        const sigKey = [msg ?? '', svc].filter(Boolean).join(' ');
+
+        const { relevanceClass, relevanceReason } = classifyLogRelevance(
+          sigKey,
+          svc ? [svc] : [],
+          axiomTerms,
+          input.service,
+        );
+
+        const lvl = level ? `[${level}] ` : '';
+        const body = msg ?? '(log event)';
+        const tag = relevanceClass === 'ambient' ? ' [ambient]' : '';
+        const title = `Axiom log: ${lvl}${body}${tag}`.slice(0, 220);
+
+        const isError = ['error', 'fatal', 'critical'].includes((level ?? '').toLowerCase());
+        const ev = mkEv(
+          'log',
+          title,
+          {
+            source: 'axiom',
+            signature: msg ?? null,
+            level: level ?? null,
+            service: svc || null,
+            relevanceClass,
+            relevanceReason,
+            fields: rec.fields,
+          },
+          {},
+          rec.timestamp,
+          // Direct: weighted up for error-level rows. Ambient: demoted so unrelated
+          // high-volume log lines don't inflate confidence.
+          relevanceClass === 'direct' ? (isError ? 0.9 : 0.75) : 0.4,
+        );
+        logEvIds.push(ev.id);
+        if (relevanceClass === 'direct') {
+          directLogEvIds.push(ev.id);
+          directSignatures.push({ key: msg ?? '(log event)', count: 1, message: msg ?? '' });
+        } else {
+          ambientLogEvIds.push(ev.id);
+        }
+      }
+    } catch {
+      // Axiom failure must never break the investigation — continue without it.
+      axiomCollected = false;
+    }
+  }
+
   // e0b. MONGODB STATE (HOR-33) — application-state anomalies as evidence. Optional;
   // never breaks the investigation on failure. Counts/state only — no raw documents.
   let stateAnalysis: StateAnalysis | null = null;
@@ -3089,6 +3189,10 @@ export async function investigate(
         // its collection ran (distinguishes "no open issues" from "collection failed").
         sentry: deps.sentry != null,
         sentryCollected,
+        // Axiom is configured iff a provider was built; axiomCollected tracks whether its
+        // collection ran (distinguishes "no matching rows" from "collection failed").
+        axiom: deps.axiom != null,
+        axiomCollected,
         metricsCollected,
         metricsFailureReason,
         logsCollected,
@@ -3101,6 +3205,8 @@ export async function investigate(
         postgres: deps.postgres != null,
         sentry: deps.sentry != null,
         sentryCollected,
+        axiom: deps.axiom != null,
+        axiomCollected,
         grafana: deps.metrics != null,
         queue: deps.queue != null,
         metricsCollected,

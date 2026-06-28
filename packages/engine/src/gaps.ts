@@ -21,6 +21,13 @@ export interface ConnectorFlags {
    * negative evidence, not a gap.
    */
   sentry?: boolean;
+  /**
+   * True when an Axiom logs connector is configured for the env. Axiom is a runtime
+   * log source like Elasticsearch / Sentry (its evidence is `kind: 'log'`), so a
+   * configured Axiom that returns rows clears the logs gap. A configured-but-empty
+   * Axiom is negative evidence, not a gap.
+   */
+  axiom?: boolean;
   redis?: boolean;
   /**
    * True when a BullMQ/queues runtime connector is configured for the env — i.e. a
@@ -49,6 +56,12 @@ export interface ConnectorFlags {
    * detector distinguish "no open issues" (negative evidence) from "collection failed".
    */
   sentryCollected?: boolean;
+  /**
+   * True when Axiom log collection ran to completion (even with zero rows).
+   * False/absent + axiom:true means collection was attempted but failed. Lets the gap
+   * detector distinguish "no matching rows" (negative evidence) from "collection failed".
+   */
+  axiomCollected?: boolean;
   /**
    * True when metrics collection ran to completion (even with zero anomalies).
    * False/absent + grafana:true means collection was attempted but failed.
@@ -142,11 +155,12 @@ export function detectMissingEvidence(
   if (!hasLog && !sourceImpact) {
     let logWhy: string;
     let logNextSource: string;
-    // Sentry is a second ERROR source (its evidence is also `kind: 'log'`). Treat the
-    // "no runtime error evidence" gap as cleared/explained by EITHER source.
-    if (!connectors.elasticsearch && !connectors.sentry) {
-      logWhy = 'No Elasticsearch connector (nor Sentry) configured for this environment — no runtime error evidence.';
-      logNextSource = 'Add an `elasticsearch` and/or `sentry` connector to the project/environment';
+    // Sentry and Axiom are additional ERROR/LOG sources (their evidence is also
+    // `kind: 'log'`). Treat the "no runtime error evidence" gap as cleared/explained
+    // by ANY of Elasticsearch / Sentry / Axiom.
+    if (!connectors.elasticsearch && !connectors.sentry && !connectors.axiom) {
+      logWhy = 'No Elasticsearch connector (nor Sentry / Axiom) configured for this environment — no runtime error evidence.';
+      logNextSource = 'Add an `elasticsearch`, `sentry`, and/or `axiom` connector to the project/environment';
     } else if (!connectors.elasticsearch && connectors.sentry) {
       // ES absent but Sentry configured — the gap is purely about Sentry.
       logWhy = connectors.sentryCollected
@@ -155,6 +169,14 @@ export function detectMissingEvidence(
       logNextSource = connectors.sentryCollected
         ? 'Widen the window (--since) or check the Sentry project for open issues'
         : 'Check the Sentry auth token / project, then retry';
+    } else if (!connectors.elasticsearch && connectors.axiom) {
+      // ES (and Sentry) absent but Axiom configured — the gap is purely about Axiom.
+      logWhy = connectors.axiomCollected
+        ? 'No Axiom log rows matched in the window — cannot confirm the actual error signatures.'
+        : 'Axiom log collection failed or timed out — cannot confirm the actual error signatures.';
+      logNextSource = connectors.axiomCollected
+        ? 'Widen the window (--since) or check the Axiom dataset for matching rows'
+        : 'Check the Axiom API token / dataset, then retry';
     } else if (connectors.logsCompatibilityError) {
       logWhy =
         `Elasticsearch field mapping is incompatible with the index — log collection was blocked. ` +
@@ -173,7 +195,7 @@ export function detectMissingEvidence(
     // No error source configured at all → the real remedy is `connect`; otherwise the
     // source exists but returned nothing / failed → re-run `logs <service>`.
     const logRouteHint: RouteStep =
-      !connectors.elasticsearch && !connectors.sentry
+      !connectors.elasticsearch && !connectors.sentry && !connectors.axiom
         ? { nextTool: 'connect', args: 'elasticsearch', reason: logNextSource }
         : { nextTool: 'logs', args: service, reason: logNextSource };
     gaps.push({
