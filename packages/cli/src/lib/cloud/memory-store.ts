@@ -123,7 +123,10 @@ export function toAuditSyncInput(row: MemoryAudit): MemoryAuditSyncInput {
     ...(row.fromStatus ? { fromStatus: row.fromStatus } : {}),
     ...(row.toStatus ? { toStatus: row.toStatus } : {}),
     ...(row.note ? { note: row.note } : {}),
-    at: row.at instanceof Date ? row.at.toISOString() : String(row.at),
+    // Coerce to RFC3339 — the local Postgres hands `at` back as a timestamp string
+    // ("YYYY-MM-DD HH:MM:SS.ffffff+00"), which the cloud's strict z.string().datetime() rejects.
+    // new Date(...) parses both that string and a Date, then toISOString() yields a valid `...Z`.
+    at: new Date(row.at).toISOString(),
   };
 }
 

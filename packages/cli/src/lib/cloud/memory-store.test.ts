@@ -7,7 +7,7 @@ import type {
   MemoryAuditSyncInput,
   MemorySyncResult,
 } from "./api.js";
-import { createCloudMemoryStore, dualWriteMemoryStore } from "./memory-store.js";
+import { createCloudMemoryStore, dualWriteMemoryStore, toAuditSyncInput } from "./memory-store.js";
 import type { CloudConfig } from "./context-store.js";
 import type {
   AuditCtx,
@@ -243,6 +243,32 @@ describe("createCloudMemoryStore", () => {
   it("link/audit reads stay local-only (the cloud is a write mirror)", async () => {
     expect(await store.links("01JADD")).toEqual([]);
     expect(await store.history("01JADD")).toEqual([]);
+  });
+});
+
+describe("toAuditSyncInput — RFC3339 `at` coercion (cloud z.string().datetime)", () => {
+  const base = {
+    id: "aud_1",
+    memoryId: "01J",
+    action: "add",
+    actor: { kind: "user" },
+    fromStatus: null,
+    toStatus: "fresh",
+    note: null,
+  } as const;
+  it("coerces a Postgres timestamp string to RFC3339 `...Z` (the dogfood bug)", () => {
+    const out = toAuditSyncInput({ ...base, at: "2026-06-28 03:20:44.001949+00" } as unknown as MemoryAudit);
+    expect(out.at).toBe("2026-06-28T03:20:44.001Z");
+    expect(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/.test(out.at)).toBe(true);
+  });
+  it("passes a Date through as RFC3339", () => {
+    const out = toAuditSyncInput({ ...base, at: new Date("2026-06-01T00:00:00.000Z") } as MemoryAudit);
+    expect(out.at).toBe("2026-06-01T00:00:00.000Z");
+  });
+  it("omits empty optional fromStatus/note (matches the cloud `.optional()` which rejects null)", () => {
+    const out = toAuditSyncInput({ ...base, fromStatus: "", note: "", at: new Date() } as unknown as MemoryAudit);
+    expect(out).not.toHaveProperty("fromStatus");
+    expect(out).not.toHaveProperty("note");
   });
 });
 
