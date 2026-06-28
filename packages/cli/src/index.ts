@@ -1377,12 +1377,27 @@ Examples:
       '--manual-estimate-min <minutes>',
       'estimated minutes this would have taken manually (optional, pair with --resolved)',
     )
+    .option(
+      '--cause <text>',
+      'the human-confirmed root cause, recorded onto the outcome label (pair with --resolved)',
+    )
+    .option(
+      '--note <text>',
+      'free-text context recorded onto the outcome label (pair with --resolved)',
+    )
     .option('-c, --config <path>', 'path to horus.config.ts')
     .option('--repo <name>', 'project/repository to scope the persisted label to (default: inferred)')
     .action(
       async (
         investigationId: string | undefined,
-        opts: { resolved?: string; manualEstimateMin?: string; config?: string; repo?: string },
+        opts: {
+          resolved?: string;
+          manualEstimateMin?: string;
+          config?: string;
+          repo?: string;
+          note?: string;
+          cause?: string;
+        },
       ) => {
         process.exitCode = await runFeedback(investigationId, opts);
       },

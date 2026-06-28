@@ -82,6 +82,31 @@ describe('runFeedback — eval-store persistence (HOR-390)', () => {
     expect(sqlEnd).toHaveBeenCalledTimes(1);
   });
 
+  it('persists --note and --cause onto the outcome label (human-confirmed cause)', async () => {
+    const code = await runFeedback('inv-9', {
+      resolved: 'yes',
+      cause: 'consumer never acked the message',
+      note: 'verified by replaying the DLQ',
+    });
+    expect(code).toBe(0);
+    const [, label] = db.recordOutcomeLabel.mock.calls[0]!;
+    expect(label).toMatchObject({
+      investigationId: 'inv-9',
+      resolved: 'yes',
+      source: 'feedback',
+      confirmedCause: 'consumer never acked the message',
+      note: 'verified by replaying the DLQ',
+    });
+  });
+
+  it('stores null confirmedCause/note when --note/--cause are omitted or blank', async () => {
+    const code = await runFeedback('inv-9', { resolved: 'yes', note: '   ' });
+    expect(code).toBe(0);
+    const [, label] = db.recordOutcomeLabel.mock.calls[0]!;
+    expect(label.confirmedCause).toBeNull();
+    expect(label.note).toBeNull();
+  });
+
   it('threads --repo into project resolution for the label', async () => {
     core.resolveEnvironment.mockReturnValueOnce({ project: 'other-svc' });
     const code = await runFeedback('inv-9', { resolved: 'yes', repo: 'other-svc' });

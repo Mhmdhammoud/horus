@@ -17,7 +17,7 @@ async function persistOutcomeLabel(
   investigationId: string,
   resolved: string,
   manualEstimateMinutes: number | null,
-  opts: { config?: string; repo?: string },
+  opts: { config?: string; repo?: string; note?: string; cause?: string },
 ): Promise<void> {
   // Only a concrete verdict (yes|partly|no) is an eval data point — an 'unsure'/null answer is not.
   if (!isOutcomeResolved(resolved)) return;
@@ -31,11 +31,17 @@ async function persistOutcomeLabel(
     }
     const { db, sql } = await openDb(config.database.url);
     try {
+      // The human-confirmed cause/note ride onto the label (same columns `memory confirm` writes),
+      // so the flywheel corpus carries a real root cause — not just a yes/partly/no verdict.
+      const note = opts.note?.trim() || null;
+      const confirmedCause = opts.cause?.trim() || null;
       await recordOutcomeLabel(db, {
         investigationId,
         resolved,
         source: 'feedback',
         project,
+        confirmedCause,
+        note,
         payload: manualEstimateMinutes != null ? { manualEstimateMinutes } : null,
       });
     } finally {
@@ -62,7 +68,14 @@ async function persistOutcomeLabel(
  */
 export async function runFeedback(
   investigationId?: string,
-  opts: { resolved?: string; manualEstimateMin?: string; config?: string; repo?: string } = {},
+  opts: {
+    resolved?: string;
+    manualEstimateMin?: string;
+    config?: string;
+    repo?: string;
+    note?: string;
+    cause?: string;
+  } = {},
 ): Promise<number> {
   const id = investigationId?.trim();
   if (!id) {
