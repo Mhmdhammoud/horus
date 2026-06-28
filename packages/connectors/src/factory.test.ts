@@ -5,7 +5,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { logsForEnv } from './factory.js';
+import { logsForEnv, memoryIndexForEnv } from './factory.js';
+import { SourceMemoryVectorIndex } from './source/index.js';
+import type { MemoryVectorIndexLike } from './source/index.js';
 import type { ResolvedEnvironment } from '@horus/core';
 
 // ---------------------------------------------------------------------------
@@ -126,5 +128,48 @@ describe('logsForEnv — field overrides', () => {
     expect(() =>
       logsForEnv(makeEnv({ preset: 'meritt', fields: { timestamp: '' } })),
     ).toThrow(/timestampField/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// memoryIndexForEnv — Source-when-available, else fallback (M2)
+// ---------------------------------------------------------------------------
+
+describe('memoryIndexForEnv', () => {
+  function envWithHost(sourceHostUrl?: string): ResolvedEnvironment {
+    return {
+      project: 'test',
+      env: 'test',
+      readOnly: true,
+      repositories: [
+        sourceHostUrl !== undefined
+          ? { name: 'repo', path: '/repo', sourceHostUrl }
+          : { name: 'repo', path: '/repo' },
+      ],
+      path: '/repo',
+      connectors: {},
+    };
+  }
+
+  const noop: MemoryVectorIndexLike = {
+    async upsert() {},
+    async search() {
+      return [];
+    },
+    async remove() {},
+  };
+
+  it('returns a SourceMemoryVectorIndex when sourceHostUrl is set', () => {
+    const index = memoryIndexForEnv(envWithHost('http://localhost:7777'), noop);
+    expect(index).toBeInstanceOf(SourceMemoryVectorIndex);
+  });
+
+  it('falls back to the provided index when no sourceHostUrl is configured', () => {
+    const index = memoryIndexForEnv(envWithHost(undefined), noop);
+    expect(index).toBe(noop);
+  });
+
+  it('returns null when no host and no fallback (caller defaults)', () => {
+    expect(memoryIndexForEnv(envWithHost(undefined))).toBeNull();
   });
 });

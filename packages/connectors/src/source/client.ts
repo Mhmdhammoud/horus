@@ -4,6 +4,10 @@ import type {
   SourceHealth,
   SourceHostInfo,
   SourceImpactResult,
+  SourceMemorySearchHit,
+  SourceMemorySearchRequest,
+  SourceMemorySearchResult,
+  SourceMemoryUpsertRequest,
   SourceOverview,
   SourceSearchResult,
 } from './types.js';
@@ -176,5 +180,28 @@ export class SourceHttpClient {
   async nodeCount(): Promise<number> {
     const result = await this.cypher('MATCH (n) RETURN count(n)');
     return Number(result.rows[0]?.[0]) || 0;
+  }
+
+  // -------------------------------------------------------------------------
+  // Memory vector bridge (M2). These reuse `request<T>` (retry/timeout/4xx) so
+  // a host-down / 404 / 503 surfaces as a throw the caller treats as best-effort.
+  // The host is the sole RW owner of the isolated `.horus/source/memory` dir;
+  // upsert is accepted async (202) and never blocks memory add.
+  // -------------------------------------------------------------------------
+
+  /** Index (or re-index) a single claim. Host returns 202/{ok} when accepted. */
+  async memoryUpsert(body: SourceMemoryUpsertRequest): Promise<void> {
+    await this.request<{ ok?: boolean }>('POST', '/api/memory/upsert', body);
+  }
+
+  /** Vector-search claims in a repo. Returns the (possibly empty) hit list. */
+  async memorySearch(body: SourceMemorySearchRequest): Promise<SourceMemorySearchHit[]> {
+    const res = await this.request<SourceMemorySearchResult>('POST', '/api/memory/search', body);
+    return res.results ?? [];
+  }
+
+  /** Drop a claim's vectors. Host returns {ok} when removed. */
+  async memoryRemove(memoryId: string): Promise<void> {
+    await this.request<{ ok?: boolean }>('POST', '/api/memory/remove', { memoryId });
   }
 }

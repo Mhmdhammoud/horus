@@ -62,3 +62,35 @@ export interface SourceHealth {
   ok: boolean;
   status: number;
 }
+
+// ---------------------------------------------------------------------------
+// Memory vector bridge (M2) — wire shapes for the host's /api/memory/* routes.
+// Vectors are a DERIVED index; Postgres (M1) stays source-of-truth. These types
+// mirror the host bridge in the spec (contract C: memory_index_upsert/search/remove).
+// ---------------------------------------------------------------------------
+
+/** POST /api/memory/upsert body. `scope` carries the recall specificity (symbol:/module:/repo/global). */
+export interface SourceMemoryUpsertRequest {
+  memoryId: string;
+  claim: string;
+  repo: string;
+  scope: string;
+}
+
+/** POST /api/memory/search body. `repo` is required (fail-closed isolation, HOR-46). */
+export interface SourceMemorySearchRequest {
+  query: string;
+  repo: string;
+  limit: number;
+}
+
+/** A single scored candidate returned by the host vector search. `score` is cosine in 0..1. */
+export interface SourceMemorySearchHit {
+  memoryId: string;
+  score: number;
+}
+
+/** POST /api/memory/search response envelope. */
+export interface SourceMemorySearchResult {
+  results: SourceMemorySearchHit[];
+}

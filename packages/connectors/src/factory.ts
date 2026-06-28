@@ -17,7 +17,8 @@ import type {
   RedisRole,
 } from '@horus/core';
 import { resolveEnvironment, redisUrlForDb, REDIS_QUEUE_ROLES } from '@horus/core';
-import { SourceHttpClient, SourceCodeProvider } from './source/index.js';
+import { SourceHttpClient, SourceCodeProvider, SourceMemoryVectorIndex } from './source/index.js';
+import type { MemoryVectorIndexLike } from './source/index.js';
 import type { CodeProvider } from './contract.js';
 import { ElasticsearchClient } from './elasticsearch/client.js';
 import { ElasticsearchLogsProvider } from './elasticsearch/provider.js';
@@ -55,6 +56,33 @@ export function codeForEnv(renv: ResolvedEnvironment): CodeProvider | null {
   const hostUrl = repo?.sourceHostUrl;
   if (!hostUrl) return null;
   return new SourceCodeProvider(new SourceHttpClient({ baseUrl: hostUrl }));
+}
+
+/**
+ * Return a source-host-backed `MemoryVectorIndex` for the given resolved environment
+ * (M2). Mirrors `codeForEnv`: when the env's repo has a `sourceHostUrl`, returns a
+ * `SourceMemoryVectorIndex` pointed at that host (reusing the code provider's baseUrl).
+ *
+ * The optional `fallback` (typically the engine `NoopVectorIndex`) is composed in BOTH
+ * directions:
+ *   - host configured  -> Source index that degrades to `fallback` when the host is
+ *     unreachable or its index is empty (Jaccard);
+ *   - host NOT configured -> the `fallback` itself (so callers get "Source-when-available
+ *     else Noop"). When no fallback is supplied, returns `null` and the caller defaults.
+ *
+ * Memory vectors are LOCAL-ONLY; this never participates in any cloud-sync path.
+ */
+export function memoryIndexForEnv(
+  renv: ResolvedEnvironment,
+  fallback?: MemoryVectorIndexLike,
+): MemoryVectorIndexLike | null {
+  const repo = renv.repositories[0];
+  const hostUrl = repo?.sourceHostUrl;
+  if (!hostUrl) return fallback ?? null;
+  return new SourceMemoryVectorIndex(
+    new SourceHttpClient({ baseUrl: hostUrl }),
+    fallback ? { fallback } : {},
+  );
 }
 
 /**
