@@ -41,6 +41,7 @@ import {
   sourceAvailable,
   assertSourceVersionPinned,
   isAnalyzed,
+  indexNeedsReanalyze,
   analyzeRepo,
   isHostHealthy,
   readSourceHostUrl,
@@ -369,8 +370,19 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
         console.error(pc.red(`  ${(err as Error).message}`));
         return 1;
       }
-      if (!isAnalyzed(root)) {
-        console.log(pc.dim('  analyzing with source-intelligence backend (first time — this can take a while)…'));
+      // Re-analyze when there is no index OR the existing one is stale/legacy/incompatible
+      // (HOR-433): a bare `.horus/source/` dir check would reuse a kùzu-era index that the
+      // SQLite backend reads with 0 embeddings / symbols unsearchable and never self-heals.
+      // indexNeedsReanalyze() is conservative — a healthy index is never re-indexed.
+      const staleReason = isAnalyzed(root) ? indexNeedsReanalyze(root) : null;
+      if (!isAnalyzed(root) || staleReason) {
+        console.log(
+          pc.dim(
+            staleReason
+              ? `  existing index is stale (${staleReason}) — re-analyzing with source-intelligence backend…`
+              : '  analyzing with source-intelligence backend (first time — this can take a while)…',
+          ),
+        );
         try {
           await analyzeRepo(root);
         } catch (err) {

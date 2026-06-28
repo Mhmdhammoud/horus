@@ -96,6 +96,94 @@ export function isAnalyzed(root: string): boolean {
   return existsSync(join(root, '.horus', 'source'));
 }
 
+/**
+ * Active source-storage backend the CLI expects on disk. Mirrors horus-source's
+ * `factory.DEFAULT_BACKEND` (SQLite since HOR-392), overridable for parity with the backend
+ * env switch. Used to detect a legacy/mismatched store on the 2.0 upgrade path (HOR-433).
+ */
+const CURRENT_STORE_BACKEND = (process.env['HORUS_SOURCE_STORAGE_BACKEND'] ?? 'sqlite')
+  .trim()
+  .toLowerCase();
+
+interface SourceMeta {
+  storeBackend?: string;
+  embeddingsComplete?: boolean;
+  stats?: { symbols?: number; embeddings?: number };
+}
+
+/** Read `.horus/source/meta.json`, or null when absent/unreadable. */
+function readSourceMeta(root: string): SourceMeta | null {
+  try {
+    const raw = readFileSync(join(root, '.horus', 'source', 'meta.json'), 'utf8');
+    const j = JSON.parse(raw) as Record<string, unknown>;
+    const stats = (j['stats'] as Record<string, number> | undefined) ?? undefined;
+    return {
+      storeBackend:
+        typeof j['store_backend'] === 'string'
+          ? (j['store_backend'] as string).toLowerCase()
+          : undefined,
+      embeddingsComplete:
+        typeof j['embeddings_complete'] === 'boolean'
+          ? (j['embeddings_complete'] as boolean)
+          : undefined,
+      stats: stats ? { symbols: stats['symbols'], embeddings: stats['embeddings'] } : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Whether the index has usable semantic vectors (mirror of freshness.semanticSearchReady). */
+function metaHasEmbeddings(meta: SourceMeta): boolean {
+  if (meta.embeddingsComplete === false) return false;
+  const embeddings = meta.stats?.embeddings ?? 0;
+  const symbols = meta.stats?.symbols ?? 0;
+  return !(symbols > 0 && embeddings === 0);
+}
+
+/**
+ * Whether an existing on-disk index is stale/legacy/incompatible and must be RE-analyzed
+ * rather than reused (HOR-433). Returns a human-readable reason, or `null` when the index is
+ * healthy and reusable.
+ *
+ * The 2.0 upgrade trap: a pre-existing kùzu-era index opened by the SQLite backend reads with
+ * 0 embeddings / symbols unsearchable and never self-heals — `isAnalyzed()` (a bare dir check)
+ * would wrongly treat it as good and reuse it. This is intentionally CONSERVATIVE: a healthy
+ * index (matching backend, semantic search ready) returns `null` and is never re-indexed. Only
+ * a genuinely broken/legacy store triggers a re-analyze:
+ *   - a legacy `.horus/source/kuzu` store while the active backend is SQLite,
+ *   - a meta `store_backend` stamp that differs from the active backend,
+ *   - an index that serves no semantic vectors (symbols present but 0 embeddings, or an
+ *     explicit `embeddings_complete: false`).
+ *
+ * An absent `store_backend` stamp alone is NOT treated as stale (a healthy pre-stamp SQLite
+ * index is fine; horus-source backfills the stamp on host start) — avoiding a spurious
+ * re-index of healthy indexes.
+ */
+export function indexNeedsReanalyze(root: string): string | null {
+  if (!isAnalyzed(root)) return null; // "not analyzed" is handled by callers, not "stale"
+
+  // (a) Legacy KùzuDB store present while we expect SQLite: the active store is empty/wrong.
+  if (CURRENT_STORE_BACKEND !== 'kuzu' && existsSync(join(root, '.horus', 'source', 'kuzu'))) {
+    return 'legacy KùzuDB store present';
+  }
+
+  const meta = readSourceMeta(root);
+  if (meta === null) return null; // unreadable meta — don't blindly force a re-index
+
+  // (b) Store-backend stamp mismatch (a stamped index written by a different backend).
+  if (meta.storeBackend && meta.storeBackend !== CURRENT_STORE_BACKEND) {
+    return `store backend changed (${meta.storeBackend} -> ${CURRENT_STORE_BACKEND})`;
+  }
+
+  // (c) The index serves no semantic vectors — unsearchable until rebuilt.
+  if (!metaHasEmbeddings(meta)) {
+    return 'index has no semantic embeddings (symbols present but 0 vectors)';
+  }
+
+  return null;
+}
+
 /** Run `horus-source analyze .` in the repo. Throws on failure with the REAL cause (HOR-381). */
 export async function analyzeRepo(root: string): Promise<void> {
   const bin = await resolveSourceBin();

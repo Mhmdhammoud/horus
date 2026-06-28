@@ -23,6 +23,7 @@ import {
   readSpawnedHost,
   waitForOwnHost,
   analyzeRepo,
+  indexNeedsReanalyze,
 } from './lifecycle.js';
 
 describe('analyzeRepo — surfaces the real failure (HOR-381)', () => {
@@ -257,6 +258,99 @@ describe('waitForOwnHost — never grounds on a foreign repo (HOR-409)', () => {
       stubFetch({ [requested]: '/repos/healthchecks' });
       // Short timeout: one poll round rejects the foreign host, then times out.
       expect(await waitForOwnHost(root, requested, 50)).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('indexNeedsReanalyze — detect a stale/legacy/incompatible index (HOR-433)', () => {
+  function makeRepo(): string {
+    return mkdtempSync(join(tmpdir(), 'horus-stale-'));
+  }
+  function writeMeta(root: string, meta: Record<string, unknown>): void {
+    const dir = join(root, '.horus', 'source');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'meta.json'), JSON.stringify(meta), 'utf8');
+  }
+
+  it('returns null when there is no index (handled as "not analyzed", not "stale")', () => {
+    const root = makeRepo();
+    try {
+      expect(indexNeedsReanalyze(root)).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('flags a legacy KùzuDB store dir as needing re-analyze', () => {
+    const root = makeRepo();
+    try {
+      writeMeta(root, {
+        store_backend: 'sqlite',
+        stats: { symbols: 50, embeddings: 50 },
+      });
+      mkdirSync(join(root, '.horus', 'source', 'kuzu'), { recursive: true });
+      expect(indexNeedsReanalyze(root)).toMatch(/legacy KùzuDB/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('flags a mismatched store_backend stamp as needing re-analyze', () => {
+    const root = makeRepo();
+    try {
+      writeMeta(root, { store_backend: 'kuzu', stats: { symbols: 50, embeddings: 50 } });
+      expect(indexNeedsReanalyze(root)).toMatch(/store backend changed/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('flags a 0-embedding index (symbols present) as needing re-analyze', () => {
+    const root = makeRepo();
+    try {
+      writeMeta(root, { store_backend: 'sqlite', stats: { symbols: 50, embeddings: 0 } });
+      expect(indexNeedsReanalyze(root)).toMatch(/no semantic embeddings/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('flags an explicit embeddings_complete:false index as needing re-analyze', () => {
+    const root = makeRepo();
+    try {
+      writeMeta(root, {
+        store_backend: 'sqlite',
+        embeddings_complete: false,
+        stats: { symbols: 50, embeddings: 0 },
+      });
+      expect(indexNeedsReanalyze(root)).toMatch(/no semantic embeddings/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a healthy, matching, embedded index (no spurious re-index)', () => {
+    const root = makeRepo();
+    try {
+      writeMeta(root, {
+        store_backend: 'sqlite',
+        store_format_version: 1,
+        embeddings_complete: true,
+        stats: { symbols: 50, embeddings: 50 },
+      });
+      expect(indexNeedsReanalyze(root)).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a healthy pre-stamp index (absent store_backend is backfilled, not stale)', () => {
+    const root = makeRepo();
+    try {
+      writeMeta(root, { embeddings_complete: true, stats: { symbols: 50, embeddings: 50 } });
+      expect(indexNeedsReanalyze(root)).toBeNull();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
