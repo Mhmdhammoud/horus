@@ -464,6 +464,116 @@ describe('investigate() — irrelevant most-recent commit does not inflate the r
 });
 
 // ---------------------------------------------------------------------------
+// HOR-406 (round 2): the SAME relevance gate must also deflate the Hypotheses
+// engine and the Cause-chain builders — not just the suspected-causes ranker.
+// An irrelevant most-recent commit must NOT leave the report self-contradicting
+// ("[0.80] recent change to X introduced the fault" vs "[0.18] none touched X").
+// ---------------------------------------------------------------------------
+
+describe('investigate() — irrelevant recent commit deflates hypotheses + cause-chains, no contradiction (HOR-406 r2)', () => {
+  // A bot bump and a +0/-0 merge: both irrelevant most-recent changes that must not be framed as
+  // a regression anywhere in the report.
+  const irrelevantWindows: Array<[string, BoundedGitChange]> = [
+    [
+      'dependabot CI bump (does not touch the seed)',
+      {
+        commits: [makeCommit('deadbee1', 'Bump actions/checkout from 6 to 7', ['.github/workflows/ci.yml'])],
+        fileStats: [],
+        changedFiles: ['.github/workflows/ci.yml'],
+        totalInsertions: 2,
+        totalDeletions: 2,
+        window: { since: 'deadbee', until: undefined },
+        truncated: false,
+      } as BoundedGitChange,
+    ],
+    [
+      '+0/-0 no-op merge that lists the seed file',
+      {
+        commits: [makeCommit('merge001', 'Merge branch main into release', ['src/services/sale.service.ts'])],
+        fileStats: [],
+        changedFiles: ['src/services/sale.service.ts'],
+        totalInsertions: 0,
+        totalDeletions: 0,
+        window: { since: 'merge001', until: undefined },
+        truncated: false,
+      } as BoundedGitChange,
+    ],
+  ];
+
+  for (const [label, window] of irrelevantWindows) {
+    it(`${label}: deployment-regression hypothesis is NOT inflated and no cause-chain asserts a recent change`, async () => {
+      mockCollectGitChanges.mockResolvedValue(window);
+
+      const report = await investigate(
+        { hint: 'SaleService regression', since: window.window.since },
+        { code: baseCode, db: fakeDb, repoPath: '/repo' },
+      );
+
+      // Hypotheses engine: deflated to the un-boosted base, unconfirmed, honest statement.
+      const dr = report.hypotheses.find((h) => h.category === 'deployment-regression');
+      expect(dr).toBeDefined();
+      expect(dr!.confidence).toBe(0.15);
+      expect(dr!.verdict).toBe('unconfirmed');
+      expect(dr!.statement).toContain('none touched SaleService');
+      expect(dr!.statement).not.toContain('introduced the fault');
+
+      // Cause-chain builder (HOR-196): no deployment-regression chain is narrated off the noise.
+      const drChain = (report.causeChains ?? []).find((c) => c.category === 'deployment-regression');
+      expect(drChain).toBeUndefined();
+
+      // Correlation cause-chains: no "recent change may have introduced the regression" assertion.
+      for (const chain of report.correlation.chains) {
+        expect(chain.rationale.toLowerCase()).not.toContain('introduced the regression');
+        expect(chain.title).not.toContain('Recent change to the implicated code');
+      }
+
+      // No part of the report contradicts the ranked-causes section, which already deflates to the
+      // honest "none touched SaleService". Assert the consistency holds end-to-end.
+      const ranked = report.suspectedCauses.find((c) => c.id === 'cause:deployment-regression');
+      expect(ranked!.title).toContain('none touched SaleService');
+      const assertsRegression = (s: string): boolean =>
+        /recent change.*introduced the (fault|regression)/i.test(s);
+      expect(assertsRegression(dr!.statement)).toBe(false);
+      expect(report.correlation.chains.some((c) => assertsRegression(`${c.title} ${c.rationale}`))).toBe(false);
+      expect(assertsRegression(ranked!.title)).toBe(false);
+    });
+  }
+
+  it('a genuinely-relevant recent commit still boosts the hypothesis AND narrates the cause-chains', async () => {
+    mockCollectGitChanges.mockResolvedValue({
+      commits: [makeCommit('real0001', 'fix throttle on activateSale', ['src/services/sale.service.ts'])],
+      fileStats: [],
+      changedFiles: ['src/services/sale.service.ts'],
+      totalInsertions: 12,
+      totalDeletions: 4,
+      window: { since: 'real0001', until: undefined },
+      truncated: false,
+    } as BoundedGitChange);
+
+    const report = await investigate(
+      { hint: 'SaleService regression', since: 'real0001' },
+      { code: baseCode, db: fakeDb, repoPath: '/repo' },
+    );
+
+    // Hypotheses engine: boosted as before (0.5 base lifted by the present commit evidence).
+    const dr = report.hypotheses.find((h) => h.category === 'deployment-regression');
+    expect(dr).toBeDefined();
+    expect(dr!.confidence).toBeGreaterThanOrEqual(0.5);
+    expect(dr!.verdict).toBe('supported');
+    expect(dr!.statement).toContain('introduced the fault');
+
+    // Cause-chain builder: the regression chain is narrated when the change is relevant.
+    const drChain = (report.causeChains ?? []).find((c) => c.category === 'deployment-regression');
+    expect(drChain).toBeDefined();
+
+    // Correlation cause-chains: the fallback "recent change" chain is asserted (relevant change).
+    expect(
+      report.correlation.chains.some((c) => /introduced the regression/i.test(c.rationale)),
+    ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // HOR-336 (extended): confidence ceiling tracks the headline cause strength.
 // ---------------------------------------------------------------------------
 

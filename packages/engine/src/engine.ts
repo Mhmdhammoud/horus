@@ -2160,8 +2160,19 @@ export async function investigate(
   // e. TIMELINE (deterministic; built after all evidence is accumulated)
   const timeline = buildTimeline(evidence);
 
+  // HOR-406 (round 2): is the most-recent in-window change RELEVANT to the seed — a non-noise
+  // commit (not bot/merge/release/pre-commit-autoupdate) that actually touches the seed's file
+  // within a non-trivial diff? Computed ONCE and threaded into BOTH the correlation cause-chains
+  // and hypothesis generation so neither asserts "a recent change to <seed> introduced the fault"
+  // off noise. Round 1 gated only the suspected-causes ranker (which deflates to ~0.18 "none
+  // touched <seed>"); without this, the Hypotheses + Cause-chains sections still inflated the same
+  // regression to 0.80/0.88 off a bot/merge/release/no-op most-recent commit — the report then
+  // self-contradicted ("[0.80] recent change to X" vs "[0.18] none touched X"), a false-grounding
+  // honesty violation. The flag deflates those sections consistently with the ranker.
+  const recentChangeRelevant = seedTouchedByRelevantChange(recentChanges, top?.filePath);
+
   // e2. CORRELATION (deterministic grouping + cause chains + missing evidence)
-  const correlation = correlate(evidence);
+  const correlation = correlate(evidence, { recentChangeRelevant });
 
   // e3. HYPOTHESES (HOR-24) — deterministic competing set
   const queueNames = [...queueEvByName.keys()];
@@ -2174,6 +2185,7 @@ export async function investigate(
     queueMetricEvIdsByQueue,
     sinceProvided: input.since !== undefined,
     suppressRuntimeHypotheses: sourceImpactHint,
+    recentChangeRelevant,
     graph,
   });
 
@@ -2514,7 +2526,10 @@ export async function investigate(
     // non-trivial diff window. In degraded runtime-only mode there is no seed, so the cause is
     // offered generically off the git-history evidence alone (un-boosted).
     const seedFile = top?.filePath;
-    const seedInChanges = seedTouchedByRelevantChange(recentChanges, seedFile);
+    // HOR-406 round 2: reuse the single relevance verdict computed above so the ranker, the
+    // hypotheses engine, and the correlation cause-chains all agree on whether a recent change
+    // is causal — they can never contradict one another.
+    const seedInChanges = recentChangeRelevant;
     // HOR-333: cite the actual culprit — the most-recent commit(s) (short SHA + subject)
     // and the changed symbol name(s) — so the cause names what to look at, not just the
     // seed + range. Bounded to 1-2 commits and a few symbols to stay scannable.

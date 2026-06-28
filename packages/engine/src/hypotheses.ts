@@ -63,6 +63,20 @@ export interface HypothesisContext {
    */
   suppressRuntimeHypotheses?: boolean;
   /**
+   * HOR-406 (round 2): true only when the most-recent in-window change is RELEVANT to the seed —
+   * a non-noise commit (not bot/merge/release/pre-commit-autoupdate) that actually touches the
+   * seed's file within a non-trivial diff. The deployment-regression hypothesis earns its full
+   * 0.5 base AND the commit evidence as support (which the validator lifts toward ~0.8, and which
+   * promotes it to `supported` so a cause-chain is narrated) ONLY when this holds. An irrelevant
+   * most-recent change (a dependabot bump, a pure merge, a "Prepare release", a pre-commit
+   * autoupdate, or a +0/-0 no-op) deflates the hypothesis to the un-boosted 0.15 base with NO
+   * supporting commit evidence and an honest statement — so the Hypotheses + Cause-chains sections
+   * never contradict the relevance-gated suspected-causes ranking ("none touched <seed>"). Absent
+   * (undefined) ⇒ treated as relevant, preserving the legacy commit-present behaviour for callers
+   * that do not compute relevance.
+   */
+  recentChangeRelevant?: boolean;
+  /**
    * Typed evidence graph built from all collected evidence.
    * When provided, hypothesis generation consults graph-derived implicated node sets
    * in addition to (not instead of) raw evidence kind checks, so topology links can
@@ -138,20 +152,36 @@ export function generateHypotheses(
   // is byte-identical.
   if (ctx.suppressRuntimeHypotheses === true) return hyps;
 
-  // a. deployment-regression — always emitted
+  // a. deployment-regression — always emitted.
+  // HOR-406 (round 2): a present commit is NOT enough to inflate this cause. The 0.5 base + the
+  // commit evidence as support (which the validator lifts toward ~0.8 and which promotes the
+  // hypothesis to `supported`, narrating a "recent change introduced the fault" cause-chain) is
+  // earned ONLY when the recent change is RELEVANT to the seed. An irrelevant most-recent change
+  // (a dependabot bump, a pure merge, a "Prepare release", a pre-commit autoupdate, or a +0/-0
+  // no-op) deflates to the un-boosted 0.15 base with NO supporting commit evidence and an honest
+  // statement — so this section never contradicts the relevance-gated ranking. `undefined` ⇒
+  // legacy behaviour (treated as relevant) for callers that do not compute relevance.
+  const hasRelevantCommit = hasCommit && ctx.recentChangeRelevant !== false;
+  const regressionStatement =
+    hasCommit && !hasRelevantCommit
+      ? 'Changes shipped in the window but none touched ' +
+        ctx.seedLabel +
+        ' — a deployment regression of the seed is unlikely.'
+      : 'A recent change/deployment touching ' + ctx.seedLabel + ' introduced the fault.';
   hyps.push({
     id: globalThis.crypto.randomUUID(),
     category: 'deployment-regression',
-    statement:
-      'A recent change/deployment touching ' + ctx.seedLabel + ' introduced the fault.',
-    confidence: hasCommit ? 0.5 : 0.15,
-    supportingEvidenceIds: commitEvs.map((e) => e.id),
+    statement: regressionStatement,
+    confidence: hasRelevantCommit ? 0.5 : 0.15,
+    supportingEvidenceIds: hasRelevantCommit ? commitEvs.map((e) => e.id) : [],
     contradictingEvidenceIds: [],
-    missingEvidence: hasCommit
+    missingEvidence: hasRelevantCommit
       ? []
-      : ctx.sinceProvided
-        ? ['No git changes found in the specified range — verify the ref is accessible or use HEAD~N for exact commit ranges']
-        : ['A change/deployment range — re-run with --since <ref> to diff what shipped'],
+      : hasCommit
+        ? ['No in-window commit touched ' + ctx.seedLabel + ' — diff the actual change range or check upstream deps/data/config']
+        : ctx.sinceProvided
+          ? ['No git changes found in the specified range — verify the ref is accessible or use HEAD~N for exact commit ranges']
+          : ['A change/deployment range — re-run with --since <ref> to diff what shipped'],
   });
 
   // b+c. Per-queue hypotheses — one pair (queue-backlog + worker-slowdown) per queue.

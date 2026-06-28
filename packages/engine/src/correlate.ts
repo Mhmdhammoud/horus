@@ -41,6 +41,19 @@ export interface CorrelationResult {
   missing: MissingEvidence[];
 }
 
+export interface CorrelateOptions {
+  /**
+   * HOR-406 (round 2): whether the most-recent in-window change is RELEVANT to the implicated seed
+   * — a non-noise commit (not bot/merge/release/pre-commit-autoupdate) that actually touches the
+   * seed's file within a non-trivial diff. When `false`, the "recent change to the implicated code"
+   * cause-chain is NOT asserted (and the queue-boundary chain drops its "a recent change is present"
+   * clause), so the correlation section never claims a change introduced the regression off
+   * bot/merge/release/no-op noise — matching the relevance-gated suspected-causes ranking and the
+   * deployment-regression hypothesis. Absent/undefined ⇒ treated as relevant (legacy behaviour).
+   */
+  recentChangeRelevant?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -167,7 +180,7 @@ function buildGroups(evidence: Evidence[]): EvidenceGroup[] {
 // Cause chains
 // ---------------------------------------------------------------------------
 
-function buildChains(evidence: Evidence[]): CorrelationChain[] {
+function buildChains(evidence: Evidence[], recentChangeRelevant: boolean): CorrelationChain[] {
   const queueEdges = evidence.filter((e) => e.kind === 'queue-edge');
   const commitEvs = evidence.filter((e) => e.kind === 'commit');
   const symbolEvs = evidence.filter((e) => e.kind === 'symbol');
@@ -230,8 +243,11 @@ function buildChains(evidence: Evidence[]): CorrelationChain[] {
         memberIds.push(seedEv.id);
       }
 
-      const hasCommit = commitEvs.length > 0;
-      const rationale = hasCommit
+      // HOR-406 (round 2): only claim "a recent change is present" as a causal factor when that
+      // change is actually RELEVANT to the seed — a bot/merge/release/no-op most-recent commit must
+      // not frame the queue-boundary chain as change-driven (it would contradict the ranked causes).
+      const hasRelevantCommit = commitEvs.length > 0 && recentChangeRelevant;
+      const rationale = hasRelevantCommit
         ? 'A recent change is present and the implicated symbol sits on this queue boundary'
         : 'The implicated symbol sits on this queue boundary';
 
@@ -249,10 +265,14 @@ function buildChains(evidence: Evidence[]): CorrelationChain[] {
     }
   } else {
     // No queue-edge: if there is at least one commit + one symbol, emit a single chain.
+    // HOR-406 (round 2): suppress this "a recent change may have introduced the regression" chain
+    // when the recent change is NOT relevant to the seed (bot/merge/release/pre-commit-autoupdate/
+    // +0/-0 no-op). Emitting it off irrelevant noise asserts a change that never touched the seed —
+    // a false grounding that contradicts the relevance-gated ranking ("none touched <seed>").
     const firstCommit = commitEvs[0];
     const firstSymbol = symbolEvs[0];
 
-    if (firstCommit && firstSymbol) {
+    if (firstCommit && firstSymbol && recentChangeRelevant) {
       const memberIds: string[] = [firstCommit.id, firstSymbol.id];
       const base = avgRelevance(memberIds);
       const strength = clamp01(base + 0.1 * Math.max(0, memberIds.length - 1));
@@ -305,10 +325,13 @@ function buildMissing(evidence: Evidence[]): MissingEvidence[] {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-export function correlate(evidence: Evidence[]): CorrelationResult {
+export function correlate(evidence: Evidence[], opts?: CorrelateOptions): CorrelationResult {
+  // HOR-406 (round 2): default to relevant when the caller does not supply a verdict, preserving
+  // the legacy "commit present ⇒ recent-change chain" behaviour for callers that don't gate.
+  const recentChangeRelevant = opts?.recentChangeRelevant !== false;
   return {
     groups: buildGroups(evidence),
-    chains: buildChains(evidence),
+    chains: buildChains(evidence, recentChangeRelevant),
     missing: buildMissing(evidence),
   };
 }

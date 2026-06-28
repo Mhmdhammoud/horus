@@ -173,6 +173,26 @@ describe('correlate()', () => {
       const fallback = chains.find((c) => c.title.includes('Recent change'));
       expect(fallback).toBeDefined();
     });
+
+    it('HOR-406: recentChangeRelevant=false suppresses the fallback "Recent change" chain', () => {
+      const evidence = makeEvidence().filter((e) => e.kind !== 'queue-edge');
+      const { chains } = correlate(evidence, { recentChangeRelevant: false });
+
+      // No "may have introduced the regression" chain is asserted off an irrelevant change.
+      const fallback = chains.find((c) => c.title.includes('Recent change'));
+      expect(fallback).toBeUndefined();
+      expect(chains.some((c) => /introduced the regression/i.test(c.rationale))).toBe(false);
+    });
+
+    it('HOR-406: recentChangeRelevant=false drops the "a recent change is present" clause from the queue chain', () => {
+      const evidence = makeEvidence();
+      const { chains } = correlate(evidence, { recentChangeRelevant: false });
+
+      const ordersChain = chains.find((c) => c.title.includes('orders'));
+      expect(ordersChain).toBeDefined();
+      expect(ordersChain!.rationale.toLowerCase()).not.toMatch(/recent change/);
+      expect(ordersChain!.rationale).toBe('The implicated symbol sits on this queue boundary');
+    });
   });
 
   describe('missing evidence', () => {

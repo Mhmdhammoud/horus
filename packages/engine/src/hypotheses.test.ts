@@ -139,6 +139,51 @@ describe('generateHypotheses', () => {
     expect(dr!.missingEvidence[0]).toContain('--since');
   });
 
+  it('HOR-406: an IRRELEVANT recent commit deflates deployment-regression (0.15, no support, unconfirmed, honest statement)', () => {
+    const commitId = globalThis.crypto.randomUUID();
+    const evidence: Evidence[] = [makeEvidence('commit', commitId), makeEvidence('queue-edge')];
+
+    const hyps = generateHypotheses(evidence, emptyCorrelation, {
+      seedLabel: 'X',
+      queues: ['orders'],
+      recentChangeRelevant: false,
+    });
+
+    const dr = hyps.find((h) => h.category === 'deployment-regression');
+    expect(dr).toBeDefined();
+    // Even though commit evidence is present, an irrelevant change must NOT inflate the cause.
+    expect(dr!.confidence).toBe(0.15);
+    expect(dr!.supportingEvidenceIds).not.toContain(commitId);
+    expect(dr!.supportingEvidenceIds).toHaveLength(0);
+    // Honest statement — never "introduced the fault" off an irrelevant change.
+    expect(dr!.statement).toContain('none touched X');
+    expect(dr!.statement).not.toContain('introduced the fault');
+    // The validator must leave it unconfirmed (no supporting evidence to boost / promote).
+    const [validatedDr] = validateHypotheses([dr!], evidence);
+    expect(validatedDr!.confidence).toBe(0.15);
+    expect(validatedDr!.verdict).toBe('unconfirmed');
+  });
+
+  it('HOR-406: a RELEVANT recent commit still earns the boost (confidence 0.5, commit support)', () => {
+    const commitId = globalThis.crypto.randomUUID();
+    const evidence: Evidence[] = [makeEvidence('commit', commitId), makeEvidence('queue-edge')];
+
+    const hyps = generateHypotheses(evidence, emptyCorrelation, {
+      seedLabel: 'X',
+      queues: ['orders'],
+      recentChangeRelevant: true,
+    });
+
+    const dr = hyps.find((h) => h.category === 'deployment-regression');
+    expect(dr).toBeDefined();
+    expect(dr!.confidence).toBe(0.5);
+    expect(dr!.supportingEvidenceIds).toContain(commitId);
+    expect(dr!.statement).toContain('introduced the fault');
+    const [validatedDr] = validateHypotheses([dr!], evidence);
+    expect(validatedDr!.confidence).toBeGreaterThan(0.5);
+    expect(validatedDr!.verdict).toBe('supported');
+  });
+
   it('sinceProvided suppresses "re-run with --since" message in favour of a ref guidance message', () => {
     const evidence: Evidence[] = [makeEvidence('queue-edge')];
 

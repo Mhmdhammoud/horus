@@ -25,11 +25,11 @@ exports[`incident path is unchanged by source-impact mode (HOR-385 invariant) > 
   ],
   "hypotheses": [
     {
-      "category": "deployment-regression",
-      "verdict": "supported",
+      "category": "external-api-latency",
+      "verdict": "unconfirmed",
     },
     {
-      "category": "external-api-latency",
+      "category": "deployment-regression",
       "verdict": "unconfirmed",
     },
     {
