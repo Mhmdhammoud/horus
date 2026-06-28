@@ -15,7 +15,7 @@ const connectors = vi.hoisted(() => ({
   startHost: vi.fn(),
   waitForHost: vi.fn(),
   removeSpawnedHostRecord: vi.fn(),
-  reconcileSpawnedHostPid: vi.fn(),
+  reconcileSpawnedHost: vi.fn(),
   fetchHostRepoPath: vi.fn(),
   readSourceHostUrl: vi.fn(),
   findFreePort: vi.fn(),
@@ -118,8 +118,8 @@ describe('ensureSourceHost', () => {
     expect(res).toEqual({ ok: true, hostUrl: URL_8420 });
     expect(connectors.startHost).toHaveBeenCalledWith('/repo', 8420);
     expect(connectors.removeSpawnedHostRecord).not.toHaveBeenCalled();
-    // Ownership record is reconciled to the backend's real server pid on success.
-    expect(connectors.reconcileSpawnedHostPid).toHaveBeenCalledWith('/repo', 8420);
+    // Ownership record is reconciled to the backend's real server pid + actual port on success.
+    expect(connectors.reconcileSpawnedHost).toHaveBeenCalledWith('/repo', 8420);
   });
 
   it('cleans up the ownership record when the restart never goes healthy', async () => {
@@ -129,7 +129,7 @@ describe('ensureSourceHost', () => {
     expect(res).toEqual({ ok: false, reason: 'unhealthy' });
     expect(connectors.startHost).toHaveBeenCalledWith('/repo', 8420);
     expect(connectors.removeSpawnedHostRecord).toHaveBeenCalledWith('/repo');
-    expect(connectors.reconcileSpawnedHostPid).not.toHaveBeenCalled();
+    expect(connectors.reconcileSpawnedHost).not.toHaveBeenCalled();
   });
 });
 
@@ -170,7 +170,7 @@ describe('ensureOwnSourceHost', () => {
     const res = await ensureOwnSourceHost('/repos/aiokafka');
     expect(res).toEqual({ ok: true, hostUrl: 'http://127.0.0.1:8423' });
     expect(connectors.startHost).toHaveBeenCalledWith('/repos/aiokafka', 8423);
-    expect(connectors.reconcileSpawnedHostPid).toHaveBeenCalledWith('/repos/aiokafka', 8423);
+    expect(connectors.reconcileSpawnedHost).toHaveBeenCalledWith('/repos/aiokafka', 8423);
   });
 
   it('does not spawn a second host on the recorded foreign URL — it falls through to a fresh port', async () => {

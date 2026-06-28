@@ -46,9 +46,9 @@ import {
   readSourceHostUrl,
   findFreePort,
   startHost,
-  waitForHost,
+  waitForOwnHost,
   killSpawnedHost,
-  reconcileSpawnedHostPid,
+  reconcileSpawnedHost,
 } from '@horus/connectors';
 import { openDb } from '@horus/db';
 import { stitch } from '@horus/stitcher';
@@ -416,15 +416,25 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
           ),
         );
         startHost(root, port);
-        if (await waitForHost(hostUrl)) {
-          // Point the ownership record at the backend's real server pid (host.json), so
-          // `horus stop` later signals the process that actually holds the port + Kùzu lock.
-          reconcileSpawnedHostPid(root, port);
+        // Defense-in-depth (HOR-409): do NOT trust a plain health check on the REQUESTED
+        // port. Under concurrent contention the spawned host can fall back to a different
+        // bound port, leaving the requested port serving a FOREIGN repo whose /api/health
+        // answers 200 — grounding the index on it would investigate the wrong codebase.
+        // waitForOwnHost resolves to the port the backend ACTUALLY bound and only returns a
+        // host that VERIFIES it serves THIS repo.
+        const ownUrl = await waitForOwnHost(root, hostUrl);
+        if (ownUrl) {
+          hostUrl = ownUrl; // the actual serving URL (requested port OR a safe fallback)
+          // Point the ownership record at the backend's real server pid + actual bound port
+          // (host.json), so a scoped `horus stop` can stop the host it really spawned even
+          // when it fell back to a different port (no "port does not match" refusal).
+          reconcileSpawnedHost(root, parseHostPort(ownUrl) ?? port);
           started = true;
         } else {
-          // Didn't come up. KILL the spawn before retrying — a slow-loading host that missed
-          // the health window would otherwise be orphaned still holding the kùzu lock, and the
-          // next attempt (same kùzu) could never acquire it (HOR-372). Killing releases the lock.
+          // Didn't come up (or only a foreign host answered). KILL the spawn before retrying —
+          // a slow-loading host that missed the health window would otherwise be orphaned still
+          // holding the kùzu lock, and the next attempt (same kùzu) could never acquire it
+          // (HOR-372). Killing releases the lock.
           await killSpawnedHost(root);
         }
       }
@@ -438,6 +448,22 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
 
     // hostUrl is guaranteed set here (a host was reused or freshly started) — narrow for TS.
     if (!hostUrl) return 1;
+
+    // Final contamination guard (HOR-409 / HOR-421): never read a host's graph until we have
+    // confirmed /api/host reports it serves THIS repo. Both resolution paths already verify
+    // (reuse via hostServesRepo, spawn via waitForOwnHost), but this is the last line of
+    // defense before grounding — a wrong-port config must never feed another repo's data into
+    // this repo's queue map or knowledge index. hostServesRepo only returns false for a
+    // KNOWN-foreign host, so an older backend that can't report identity still proceeds.
+    if (!(await hostServesRepo(hostUrl, root))) {
+      console.error(
+        pc.red(
+          `  Source-intelligence host at ${hostUrl} is serving a DIFFERENT repository — ` +
+            `refusing to index foreign code. Retry, or stop the stale host: horus stop`,
+        ),
+      );
+      return 1;
+    }
 
     // Build the queue map.
     await stitchQueueMap(hostUrl, dbUrl, label);

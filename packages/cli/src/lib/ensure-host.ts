@@ -19,7 +19,7 @@ import {
   startHost,
   waitForHost,
   removeSpawnedHostRecord,
-  reconcileSpawnedHostPid,
+  reconcileSpawnedHost,
   fetchHostRepoPath,
   readSourceHostUrl,
   findFreePort,
@@ -150,7 +150,7 @@ export async function ensureOwnSourceHost(
       removeSpawnedHostRecord(root);
       return { ok: false, reason: 'unhealthy' };
     }
-    reconcileSpawnedHostPid(root, port);
+    reconcileSpawnedHost(root, port);
     return { ok: true, hostUrl };
   }
   removeSpawnedHostRecord(root);
@@ -247,9 +247,10 @@ export async function ensureSourceHost(
 
   startHost(root, port);
   if (await waitForHost(hostUrl, opts.timeoutMs ?? 20_000)) {
-    // Make the ownership record point at the backend's real server pid (host.json) so a
-    // later `horus stop` signals the process that actually holds the port + Kùzu lock.
-    reconcileSpawnedHostPid(root, port);
+    // Make the ownership record point at the backend's real server pid + actual bound port
+    // (host.json) so a later `horus stop` signals the process that truly holds the port +
+    // Kùzu lock — even if the host fell back to a different port than requested (HOR-409).
+    reconcileSpawnedHost(root, port);
     return { ok: true, hostUrl };
   }
 

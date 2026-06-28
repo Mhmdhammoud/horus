@@ -11,7 +11,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, openSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
 import { PINNED_SOURCE_VERSION } from '@horus/core';
 
@@ -329,24 +329,33 @@ export async function killSpawnedHost(root: string): Promise<void> {
 }
 
 /**
- * Point the ownership record (`spawned-host.json`) at the backend's ACTUAL server pid once
- * the host is healthy. `startHost` can only record the pid of the `horus-source host`
- * process it spawned, but the backend may run its real HTTP server under a different,
- * longer-lived pid which it writes to `source/host.json`. Reconciling here makes the
- * ownership record authoritative so `horus stop` signals the process that truly holds the
- * port + Kùzu lock — instead of a wrapper pid that can exit while the server lives on.
+ * Reconcile the ownership record (`spawned-host.json`) with the host the backend ACTUALLY
+ * brought up: its real server pid AND the port it really bound.
  *
- * Only refines an existing record, and only when the backend's record is for THIS port
- * (so a stale host.json from another launch is never adopted). Best-effort: never throws.
+ * `startHost` can only record the pid + REQUESTED port of the `horus-source host` process it
+ * spawned. But under concurrent contention the backend can fall back to a DIFFERENT free port
+ * (recording the actual pid + port in `source/host.json`). If the ownership record keeps the
+ * requested port, a scoped `horus stop` rejects the host ("ownership record port does not
+ * match host URL port") and refuses to stop a host it really did spawn (HOR-409). Adopting the
+ * backend's actual pid + port keeps the ownership record authoritative so `horus stop` signals
+ * the process that truly holds the port + Kùzu lock.
+ *
+ * Safe to adopt a different-port backend record here because callers only reconcile AFTER
+ * verifying the resolved host serves THIS repo (so the record can't be a foreign/stale one).
+ * `actualPort` is the fallback used when the backend record omits a usable port. Only refines
+ * an existing record. Best-effort: never throws.
  */
-export function reconcileSpawnedHostPid(root: string, port: number): void {
+export function reconcileSpawnedHost(root: string, actualPort: number): void {
   try {
-    const backend = readSourceHostPid(root);
-    if (!backend || !Number.isInteger(backend.pid) || backend.pid <= 0) return;
-    if (Number.isFinite(backend.port) && backend.port !== port) return;
     const spawned = readSpawnedHost(root);
-    if (!spawned || spawned.pid === backend.pid) return;
-    const updated: SpawnedHostRecord = { ...spawned, pid: backend.pid };
+    if (!spawned) return;
+    const backend = readSourceHostPid(root);
+    const pid =
+      backend && Number.isInteger(backend.pid) && backend.pid > 0 ? backend.pid : spawned.pid;
+    const port =
+      backend && Number.isFinite(backend.port) && backend.port > 0 ? backend.port : actualPort;
+    if (spawned.pid === pid && spawned.port === port) return;
+    const updated: SpawnedHostRecord = { ...spawned, pid, port };
     writeFileSync(
       join(root, '.horus', SPAWNED_HOST_FILE),
       JSON.stringify(updated, null, 2) + '\n',
@@ -354,6 +363,46 @@ export function reconcileSpawnedHostPid(root: string, port: number): void {
   } catch {
     // Reconciliation is an optimisation; teardown still has the host.json fallback.
   }
+}
+
+/**
+ * Wait until a source-intelligence host that VERIFIABLY serves `root` is healthy, and return
+ * its URL — or null on timeout.
+ *
+ * HOR-409 defense-in-depth: a freshly-spawned host can fall back to a DIFFERENT port than the
+ * one requested (the requested port may, right now, be a FOREIGN repo's host). A plain health
+ * check on the requested URL would happily pass against that foreign host and ground the index
+ * on the wrong codebase. So we resolve to the port the backend ACTUALLY bound (recorded in
+ * `source/host.json`) and NEVER return a host that reports a different repo. The requested URL
+ * is also probed so the normal no-contention case resolves immediately; a host that cannot
+ * report its identity (older backend → `null`) is accepted, but a KNOWN-foreign one never is.
+ */
+export async function waitForOwnHost(
+  root: string,
+  requestedUrl: string,
+  timeoutMs = 45_000,
+): Promise<string | null> {
+  const deadline = Date.now() + timeoutMs;
+  const servesThisRepo = async (url: string): Promise<boolean> => {
+    const served = await fetchHostRepoPath(url);
+    // null = host can't report its repo (older backend / transient) → accept conservatively;
+    // a healthy FOREIGN host reports a different path → reject.
+    return served === null || resolve(served) === resolve(root);
+  };
+  while (Date.now() < deadline) {
+    // Prefer the port the backend actually bound (host.json); fall back to the requested URL.
+    const candidates: string[] = [];
+    const recorded = readSourceHostUrl(root);
+    if (recorded) candidates.push(recorded);
+    if (!candidates.includes(requestedUrl)) candidates.push(requestedUrl);
+    for (const url of candidates) {
+      if (await isHostHealthy(url)) {
+        if (await servesThisRepo(url)) return url;
+      }
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return null;
 }
 
 /** Poll a host's health until it responds or the timeout elapses. */

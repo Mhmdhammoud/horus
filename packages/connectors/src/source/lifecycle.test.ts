@@ -3,7 +3,7 @@
  * analyzing or hosting a repo. A mismatch re-corrupts the Kùzu graph identically on every
  * rebuild, so we must refuse to launch it rather than fail silently.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -19,8 +19,9 @@ import {
   assertSourceVersionPinned,
   SourceVersionMismatchError,
   getSourceVersion,
-  reconcileSpawnedHostPid,
+  reconcileSpawnedHost,
   readSpawnedHost,
+  waitForOwnHost,
   analyzeRepo,
 } from './lifecycle.js';
 
@@ -112,7 +113,7 @@ describe('assertSourceVersionPinned', () => {
   });
 });
 
-describe('reconcileSpawnedHostPid', () => {
+describe('reconcileSpawnedHost', () => {
   function makeRoot(): string {
     const root = mkdtempSync(join(tmpdir(), 'horus-recon-'));
     mkdirSync(join(root, '.horus', 'source'), { recursive: true });
@@ -136,7 +137,7 @@ describe('reconcileSpawnedHostPid', () => {
     try {
       writeSpawned(root, 1111);
       writeHostJson(root, 2222);
-      reconcileSpawnedHostPid(root, 8420);
+      reconcileSpawnedHost(root, 8420);
       const rec = readSpawnedHost(root)!;
       expect(rec.pid).toBe(2222);
       expect(rec.port).toBe(8420);
@@ -146,13 +147,31 @@ describe('reconcileSpawnedHostPid', () => {
     }
   });
 
-  it('does not adopt a backend record for a different port', () => {
+  it('adopts the backend ACTUAL port when the host fell back from the requested one (HOR-409)', () => {
+    const root = makeRoot();
+    try {
+      // Requested 8420, but the host fell back to 8421 (recorded by the backend in host.json).
+      writeSpawned(root, 1111, 8420);
+      writeHostJson(root, 2222, 8421);
+      reconcileSpawnedHost(root, 8420);
+      const rec = readSpawnedHost(root)!;
+      // The ownership record must now reflect the ACTUAL pid + port, so a scoped `horus stop`
+      // recognizes the host it really spawned instead of refusing on a port mismatch.
+      expect(rec.pid).toBe(2222);
+      expect(rec.port).toBe(8421);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to the passed actualPort when the backend record is absent', () => {
     const root = makeRoot();
     try {
       writeSpawned(root, 1111, 8420);
-      writeHostJson(root, 2222, 9999); // stale: different port
-      reconcileSpawnedHostPid(root, 8420);
-      expect(readSpawnedHost(root)?.pid).toBe(1111); // unchanged
+      reconcileSpawnedHost(root, 8421); // no host.json — keep pid, record the resolved port
+      const rec = readSpawnedHost(root)!;
+      expect(rec.pid).toBe(1111);
+      expect(rec.port).toBe(8421);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -162,8 +181,82 @@ describe('reconcileSpawnedHostPid', () => {
     const root = makeRoot();
     try {
       writeHostJson(root, 2222);
-      reconcileSpawnedHostPid(root, 8420); // must not throw, must not create a record
+      reconcileSpawnedHost(root, 8420); // must not throw, must not create a record
       expect(readSpawnedHost(root)).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('waitForOwnHost — never grounds on a foreign repo (HOR-409)', () => {
+  function makeRoot(): string {
+    const root = mkdtempSync(join(tmpdir(), 'horus-own-'));
+    mkdirSync(join(root, '.horus', 'source'), { recursive: true });
+    return root;
+  }
+  function writeHostUrl(root: string, hostUrl: string): void {
+    writeFileSync(
+      join(root, '.horus', 'source', 'host.json'),
+      JSON.stringify({ pid: 4242, port: 0, repo_path: root, host_url: hostUrl }),
+    );
+  }
+  /** Route fetch by URL: `serves[hostBase]` is the repoPath that base reports, or null. */
+  function stubFetch(serves: Record<string, string | null>): void {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        const base = url.replace(/\/api\/(health|host)$/, '');
+        const known = base in serves;
+        if (url.endsWith('/api/health')) {
+          return { ok: known } as unknown as Response;
+        }
+        const repoPath = serves[base];
+        return {
+          ok: known,
+          json: async () => (repoPath ? { repoPath } : {}),
+        } as unknown as Response;
+      }),
+    );
+  }
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('returns the requested URL when it is healthy and serves THIS repo', async () => {
+    const root = makeRoot();
+    try {
+      const requested = 'http://127.0.0.1:8420';
+      stubFetch({ [requested]: root });
+      expect(await waitForOwnHost(root, requested, 2000)).toBe(requested);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves to the ACTUAL fallback port, never the requested foreign one', async () => {
+    const root = makeRoot();
+    try {
+      const requested = 'http://127.0.0.1:8420'; // a DIFFERENT repo now occupies this
+      const fallback = 'http://127.0.0.1:8421'; // our host actually bound here
+      writeHostUrl(root, fallback); // backend recorded the actual bound URL
+      stubFetch({ [requested]: '/some/other/repo', [fallback]: root });
+      const resolved = await waitForOwnHost(root, requested, 2000);
+      expect(resolved).toBe(fallback);
+      expect(resolved).not.toBe(requested);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null (never the foreign URL) when only a foreign host answers', async () => {
+    const root = makeRoot();
+    try {
+      const requested = 'http://127.0.0.1:8420';
+      // No host.json recorded; the requested port is a foreign repo's host.
+      stubFetch({ [requested]: '/repos/healthchecks' });
+      // Short timeout: one poll round rejects the foreign host, then times out.
+      expect(await waitForOwnHost(root, requested, 50)).toBeNull();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
