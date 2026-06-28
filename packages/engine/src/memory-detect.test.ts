@@ -322,6 +322,66 @@ describe('detectMemoryEdges — contradiction (contradicts)', () => {
     expect(new Set([e.fromMemoryId, e.toMemoryId])).toEqual(new Set([a.id, b.id]));
   });
 
+  it('is idempotent: re-running detect after applying the contradicts edge proposes nothing new (HOR-417)', async () => {
+    // Ids + timestamps are chosen so the store's query order (newest-first) is the REVERSE of the
+    // canonical lo→hi order the detector stores the edge as. That is exactly the ordering that made
+    // the pre-fix directional dedup key miss the stored edge, so a second `detect` re-inserted a
+    // duplicate contradicts edge. With edgeKey canonicalized this pass must propose nothing new.
+    const older = await store.add(
+      {
+        id: 'mem_aaaa',
+        kind: 'confirmed-outcome',
+        claim: 'cause was redis timeout',
+        scope: 'repo',
+        source: 'confirmed-outcome',
+        confidence: 0.9,
+        repo: 'r',
+        visibility: 'private',
+        signature: 'src/auth|x|',
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      },
+      { actor },
+    );
+    await store.addLink({ id: '', fromMemoryId: older.id, rel: 'about-incident', toKind: 'incident', toRef: 'inv_a' });
+    const newer = await store.add(
+      {
+        id: 'mem_zzzz',
+        kind: 'confirmed-outcome',
+        claim: 'cause was bad migration',
+        scope: 'repo',
+        source: 'confirmed-outcome',
+        confidence: 0.9,
+        repo: 'r',
+        visibility: 'private',
+        signature: 'src/auth|x|',
+        createdAt: new Date('2026-02-01T00:00:00.000Z'),
+      },
+      { actor },
+    );
+    await store.addLink({ id: '', fromMemoryId: newer.id, rel: 'about-incident', toKind: 'incident', toRef: 'inv_b' });
+
+    const deps = depsFor({
+      inv_a: { investigationId: 'inv_a', resolved: 'yes', confirmedCause: 'redis timeout' },
+      inv_b: { investigationId: 'inv_b', resolved: 'yes', confirmedCause: 'bad migration' },
+    });
+
+    // First pass proposes exactly one contradicts edge.
+    const first = await detectMemoryEdges(store, { repo: 'r' }, deps);
+    const firstContra = first.filter((e) => e.rel === 'contradicts');
+    expect(firstContra).toHaveLength(1);
+
+    // Apply it (store mints the directional id), exactly as `memory detect` persists a proposal.
+    const p = firstContra[0]!;
+    await store.addLink(
+      { id: p.id, fromMemoryId: p.fromMemoryId, rel: p.rel, toKind: 'memory', toRef: p.toMemoryId },
+      { detection: p.detection, audit: { actor }, detail: p.detail },
+    );
+
+    // Re-running detect must propose NO new contradicts edge — idempotent (HOR-417).
+    const second = await detectMemoryEdges(store, { repo: 'r' }, deps);
+    expect(second.filter((e) => e.rel === 'contradicts')).toEqual([]);
+  });
+
   it('NEVER groups by scope: same scope but DIFFERENT signatures ⇒ no contradiction', async () => {
     await addConfirmed('src/auth|x|', 'inv_a', 'redis timeout'); // scope repo
     await addConfirmed('src/billing|y|', 'inv_b', 'bad migration'); // scope repo, different family
