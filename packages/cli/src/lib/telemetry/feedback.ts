@@ -51,31 +51,42 @@ export function submitFeedback(input: {
   track({ type: 'feedback.submitted', ...input });
 }
 
-/** Run the interactive prompt and emit. Returns false if the user skipped. */
+/** The verdict a completed prompt yields — fed to both the telemetry emit and the eval store. */
+export interface FeedbackAnswer {
+  resolved: Resolved;
+  manualEstimateMinutes: number | null;
+}
+
+/**
+ * Run the interactive prompt and emit the telemetry event. Returns the parsed answer (so callers
+ * can ALSO persist it to the eval store, HOR-390), or `null` if the user skipped.
+ */
 export async function runFeedbackPrompt(
   investigationId: string,
   horusSeconds: number | null,
-): Promise<boolean> {
+): Promise<FeedbackAnswer | null> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     console.log(pc.dim('\nQuick feedback to improve Horus (press Enter to skip):'));
     const a1 = await rl.question(
       pc.bold('  Did this point you at the cause? ') + pc.dim('[y / partly / n] '),
     );
-    if (a1.trim() === '') return false;
+    if (a1.trim() === '') return null;
     const a2 = await rl.question(
       pc.bold('  Manually, finding this would have taken? ') +
         pc.dim('[1:<5m  2:~30m  3:~2h  4:half-day+  5:unsure] '),
     );
+    const resolved = parseResolved(a1);
+    const manualEstimateMinutes = parseManualEstimate(a2);
     submitFeedback({
       investigationId,
-      resolved: parseResolved(a1),
-      manualEstimateMinutes: parseManualEstimate(a2),
+      resolved,
+      manualEstimateMinutes,
       horusSeconds,
       source: 'prompt',
     });
     console.log(pc.dim('  Thanks — recorded.'));
-    return true;
+    return { resolved, manualEstimateMinutes };
   } finally {
     rl.close();
   }

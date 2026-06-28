@@ -24,8 +24,14 @@ import { createConnectors, memoryIndexForEnv } from '@horus/connectors';
 import {
   openDb,
   getInvestigation,
+  recordOutcomeLabel,
+  listOutcomeLabels,
+  summarizeOutcomeLabels,
+  isOutcomeSource,
   type NewMemoryItem,
   type NewMemoryLink,
+  type OutcomeLabel,
+  type OutcomeSource,
 } from '@horus/db';
 import {
   buildMemoryView,
@@ -482,6 +488,19 @@ export async function runMemoryConfirm(
       };
       await store.addLink(link);
 
+      // Converge into the eval store (HOR-390): confirming an investigation is the strongest
+      // possible outcome signal — Horus pointed at the cause and a human verified it. Record it
+      // as a durable label (resolved=yes + the confirmed cause) so it joins `horus feedback` in
+      // the one queryable accuracy dataset. `project` is denormalized for accuracy-by-project.
+      await recordOutcomeLabel(db, {
+        investigationId: id,
+        resolved: 'yes',
+        source: 'confirm',
+        confirmedCause: outcome,
+        project,
+        note: opts.note ?? null,
+      });
+
       if (opts.json) {
         console.log(
           JSON.stringify(
@@ -891,4 +910,125 @@ export async function runMemorySync(opts: {
     );
   }
   return failed > 0 ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------
+// memory accuracy — read the eval set (the flywheel's labeled outcome dataset)
+// ---------------------------------------------------------------------------
+
+/** Project an outcome-label row into a clean, machine-stable JSON object. */
+function outcomeLabelToJSON(l: OutcomeLabel): Record<string, unknown> {
+  return {
+    id: l.id,
+    investigationId: l.investigationId,
+    resolved: l.resolved,
+    source: l.source,
+    confirmedCause: l.confirmedCause,
+    note: l.note,
+    project: l.project,
+    at: l.at instanceof Date ? l.at.toISOString() : l.at,
+  };
+}
+
+/**
+ * `horus memory accuracy` — the read path over the converged eval store (HOR-390). Reports
+ * Horus's own measured hit-rate ("did it point at the cause?") over the outcome labels written by
+ * `horus memory confirm` (source=confirm) and `horus feedback` (source=feedback).
+ *
+ * HOR-46 (project isolation): scoped to the resolved project, fail-closed — an unresolved project
+ * is a hard error, never a silent cross-project read. Optional `--source` and `--days` slice the
+ * dataset. `--json` stays a single parseable document.
+ */
+export async function runMemoryAccuracy(opts: {
+  config?: string;
+  repo?: string;
+  source?: string;
+  days?: number;
+  limit?: number;
+  json?: boolean;
+}): Promise<number> {
+  try {
+    let source: OutcomeSource | undefined;
+    if (opts.source !== undefined) {
+      if (!isOutcomeSource(opts.source)) {
+        console.error(pc.red(`Unknown --source "${opts.source}" (one of: feedback, confirm).`));
+        return 1;
+      }
+      source = opts.source;
+    }
+
+    let since: Date | undefined;
+    if (opts.days !== undefined) {
+      if (!Number.isFinite(opts.days) || opts.days <= 0) {
+        console.error(pc.red('--days must be a positive number.'));
+        return 1;
+      }
+      since = new Date(Date.now() - opts.days * 24 * 60 * 60 * 1000);
+    }
+
+    const config = await loadConfig(opts.config);
+    const project = resolveProject(config, opts.repo);
+    if (!project) return 1;
+
+    const { db, sql } = await openDb(config.database.url);
+    try {
+      // HOR-46: every query is project-scoped. Newest-first; `summarize` is order-independent and
+      // dedupes to the current verdict per investigation.
+      const labels = await listOutcomeLabels(db, {
+        project,
+        source,
+        since,
+        limit: opts.limit,
+      });
+      const summary = summarizeOutcomeLabels(labels);
+
+      if (opts.json) {
+        console.log(
+          JSON.stringify(
+            {
+              project,
+              source: source ?? null,
+              since: since ? since.toISOString() : null,
+              summary,
+              labels: labels.map(outcomeLabelToJSON),
+            },
+            null,
+            2,
+          ),
+        );
+      } else {
+        const pct = (n: number): string => `${(n * 100).toFixed(0)}%`;
+        console.log(pc.bold(`Investigation accuracy — ${project}`));
+        if (summary.evaluated === 0) {
+          console.log(
+            pc.dim(
+              'No outcome labels yet. Confirm an investigation (`horus memory confirm <id>`) or ' +
+                'leave feedback (`horus feedback <id> --resolved yes|partly|no`) to start the eval set.',
+            ),
+          );
+        } else {
+          console.log(
+            `  Pointed at the cause: ${pc.green(pct(summary.accuracy))} ` +
+              pc.dim(`(weighted ${pct(summary.weightedScore)}) over ${summary.evaluated} investigation(s)`),
+          );
+          console.log(
+            `  Verdicts: ${pc.green(`${summary.counts.yes} yes`)}, ` +
+              `${pc.yellow(`${summary.counts.partly} partly`)}, ${pc.red(`${summary.counts.no} no`)}`,
+          );
+          console.log(
+            pc.dim(
+              `  Source: ${summary.bySource.confirm} confirm, ${summary.bySource.feedback} feedback · ` +
+                `${summary.attestations} total attestation(s)`,
+            ),
+          );
+        }
+      }
+      return 0;
+    } finally {
+      await sql.end();
+    }
+  } catch (err) {
+    console.error(pc.red((err as Error).message));
+    return 1;
+  }
 }

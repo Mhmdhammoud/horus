@@ -59,6 +59,7 @@ export {
   recordOutcomeLabel,
   listOutcomeLabels,
   getLatestOutcomeLabel,
+  summarizeOutcomeLabels,
   isOutcomeResolved,
   isOutcomeSource,
   OUTCOME_RESOLVED,
@@ -67,6 +68,7 @@ export {
   type OutcomeSource,
   type OutcomeLabelInput,
   type OutcomeLabelQuery,
+  type OutcomeAccuracy,
 } from './outcome.js';
 export {
   getInvestigation,

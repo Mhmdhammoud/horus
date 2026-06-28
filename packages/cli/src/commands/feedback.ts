@@ -1,5 +1,50 @@
 import pc from 'picocolors';
+import { loadConfig, resolveEnvironment } from '@horus/core';
+import { openDb, recordOutcomeLabel, isOutcomeResolved } from '@horus/db';
 import { runFeedbackPrompt, submitFeedback, parseResolved } from '../lib/telemetry/feedback.js';
+
+/**
+ * Persist a feedback verdict into the converged outcome-label / eval store (HOR-390) — the same
+ * sink `horus memory confirm` writes to (source=confirm). This is what turns `horus feedback` from
+ * telemetry-only into a durable, queryable signal (`horus memory accuracy`).
+ *
+ * BEST-EFFORT (never throws): feedback must never break or block on local persistence — the
+ * telemetry emit is the floor, this is additive. A missing config, an unresolvable project, or a
+ * DB error just means no local label this time. `project` is denormalized (best-effort) so accuracy
+ * can be sliced per project; an unresolvable project is stored as null rather than failing.
+ */
+async function persistOutcomeLabel(
+  investigationId: string,
+  resolved: string,
+  manualEstimateMinutes: number | null,
+  opts: { config?: string; repo?: string },
+): Promise<void> {
+  // Only a concrete verdict (yes|partly|no) is an eval data point — an 'unsure'/null answer is not.
+  if (!isOutcomeResolved(resolved)) return;
+  try {
+    const config = await loadConfig(opts.config);
+    let project: string | null = null;
+    try {
+      project = resolveEnvironment(config, { project: opts.repo }).project ?? null;
+    } catch {
+      project = null;
+    }
+    const { db, sql } = await openDb(config.database.url);
+    try {
+      await recordOutcomeLabel(db, {
+        investigationId,
+        resolved,
+        source: 'feedback',
+        project,
+        payload: manualEstimateMinutes != null ? { manualEstimateMinutes } : null,
+      });
+    } finally {
+      await sql.end();
+    }
+  } catch {
+    // best-effort — persistence never breaks the telemetry-only feedback contract.
+  }
+}
 
 /**
  * `horus feedback <investigationId>` — leave impact feedback on a past investigation.
@@ -11,10 +56,13 @@ import { runFeedbackPrompt, submitFeedback, parseResolved } from '../lib/telemet
  *     — closing the loop where most usage (agent-driven, non-interactive) otherwise
  *     produces no impact signal.
  *   • Interactive (no flags, TTY): the sampled post-result prompt (HOR-326).
+ *
+ * Both modes emit the Tier-A telemetry event (unchanged) AND persist a durable outcome label into
+ * the local eval store (source=feedback, HOR-390) so the signal converges with `memory confirm`.
  */
 export async function runFeedback(
   investigationId?: string,
-  opts: { resolved?: string; manualEstimateMin?: string } = {},
+  opts: { resolved?: string; manualEstimateMin?: string; config?: string; repo?: string } = {},
 ): Promise<number> {
   const id = investigationId?.trim();
   if (!id) {
@@ -39,6 +87,7 @@ export async function runFeedback(
       manualEstimateMinutes = n;
     }
     submitFeedback({ investigationId: id, resolved, manualEstimateMinutes, horusSeconds: null, source: 'flag' });
+    await persistOutcomeLabel(id, resolved, manualEstimateMinutes, opts);
     console.log(pc.dim(`Feedback recorded (${resolved}) — thanks, this helps improve Horus.`));
     return 0;
   }
@@ -52,6 +101,9 @@ export async function runFeedback(
     );
     return 1;
   }
-  await runFeedbackPrompt(id, null);
+  const answer = await runFeedbackPrompt(id, null);
+  if (answer !== null) {
+    await persistOutcomeLabel(id, answer.resolved ?? '', answer.manualEstimateMinutes, opts);
+  }
   return 0;
 }

@@ -15,11 +15,13 @@ import {
   recordOutcomeLabel,
   listOutcomeLabels,
   getLatestOutcomeLabel,
+  summarizeOutcomeLabels,
   isOutcomeResolved,
   isOutcomeSource,
   OUTCOME_RESOLVED,
   OUTCOME_SOURCE,
 } from './outcome.js';
+import type { OutcomeLabel } from './schema.js';
 
 describe('outcome label validation (pure)', () => {
   it('isOutcomeResolved accepts only yes|partly|no', () => {
@@ -184,4 +186,71 @@ describe('outcome store (embedded pglite)', () => {
     await handle.db.delete(investigations).where(eq(investigations.id, id));
     expect(await listOutcomeLabels(handle.db, { investigationId: id })).toHaveLength(0);
   }, 30_000);
+});
+
+describe('summarizeOutcomeLabels (pure)', () => {
+  /** Minimal OutcomeLabel fixture — only the fields summarize reads matter. */
+  function lbl(over: Partial<OutcomeLabel>): OutcomeLabel {
+    return {
+      id: 'ol',
+      investigationId: 'inv-1',
+      project: 'proj-a',
+      resolved: 'yes',
+      confirmedCause: null,
+      note: null,
+      source: 'confirm',
+      payload: null,
+      at: new Date('2026-06-20T00:00:00Z'),
+      ...over,
+    } as OutcomeLabel;
+  }
+
+  it('returns a zeroed summary for an empty set', () => {
+    expect(summarizeOutcomeLabels([])).toEqual({
+      evaluated: 0,
+      attestations: 0,
+      counts: { yes: 0, partly: 0, no: 0 },
+      accuracy: 0,
+      weightedScore: 0,
+      bySource: { feedback: 0, confirm: 0 },
+    });
+  });
+
+  it('counts the current verdict per investigation and computes strict + weighted rates', () => {
+    const s = summarizeOutcomeLabels([
+      lbl({ id: 'a', investigationId: 'i1', resolved: 'yes', source: 'confirm' }),
+      lbl({ id: 'b', investigationId: 'i2', resolved: 'partly', source: 'feedback' }),
+      lbl({ id: 'c', investigationId: 'i3', resolved: 'no', source: 'feedback' }),
+      lbl({ id: 'd', investigationId: 'i4', resolved: 'yes', source: 'feedback' }),
+    ]);
+    expect(s.evaluated).toBe(4);
+    expect(s.attestations).toBe(4);
+    expect(s.counts).toEqual({ yes: 2, partly: 1, no: 1 });
+    expect(s.accuracy).toBeCloseTo(2 / 4, 5);
+    expect(s.weightedScore).toBeCloseTo(2.5 / 4, 5);
+    expect(s.bySource).toEqual({ feedback: 3, confirm: 1 });
+  });
+
+  it('dedupes append-only history to the latest label (by `at`), order-independent', () => {
+    // Same investigation: an older 'no' (feedback) superseded by a newer 'yes' (confirm). Passed
+    // oldest-first to prove order independence.
+    const s = summarizeOutcomeLabels([
+      lbl({ id: 'old', investigationId: 'i1', resolved: 'no', source: 'feedback', at: new Date('2026-06-01T00:00:00Z') }),
+      lbl({ id: 'new', investigationId: 'i1', resolved: 'yes', source: 'confirm', at: new Date('2026-06-10T00:00:00Z') }),
+    ]);
+    expect(s.evaluated).toBe(1);
+    expect(s.attestations).toBe(2);
+    expect(s.counts).toEqual({ yes: 1, partly: 0, no: 0 });
+    expect(s.bySource).toEqual({ feedback: 0, confirm: 1 });
+    expect(s.accuracy).toBe(1);
+  });
+
+  it('keeps null-investigationId rows as distinct buckets', () => {
+    const s = summarizeOutcomeLabels([
+      lbl({ id: 'x', investigationId: null, resolved: 'yes' }),
+      lbl({ id: 'y', investigationId: null, resolved: 'no' }),
+    ]);
+    expect(s.evaluated).toBe(2);
+    expect(s.counts).toEqual({ yes: 1, partly: 0, no: 1 });
+  });
 });

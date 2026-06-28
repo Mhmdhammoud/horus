@@ -135,3 +135,67 @@ export async function getLatestOutcomeLabel(
     .limit(1);
   return rows[0] ?? null;
 }
+
+/**
+ * The accuracy summary of a set of outcome labels — Horus's own measured hit-rate over the eval
+ * set. Pure (no DB), so it is trivially testable and reusable by the CLI/cloud/web read paths.
+ */
+export interface OutcomeAccuracy {
+  /** Distinct investigations that carry at least one verdict. */
+  evaluated: number;
+  /** Total label rows considered (the append-only history can exceed `evaluated`). */
+  attestations: number;
+  /** Counts over the CURRENT verdict (latest label) per investigation. */
+  counts: { yes: number; partly: number; no: number };
+  /** Strict hit-rate: `yes / evaluated` (0 when nothing is evaluated). */
+  accuracy: number;
+  /** Partial-credit score: `(yes + 0.5·partly) / evaluated` (0 when nothing is evaluated). */
+  weightedScore: number;
+  /** Which entry point attested the CURRENT verdict, across investigations. */
+  bySource: { feedback: number; confirm: number };
+}
+
+/**
+ * Collapse a set of outcome labels into an accuracy summary. The store is append-only, so an
+ * investigation may carry several labels (re-confirmations / corrections); this dedupes to the
+ * CURRENT verdict per investigation (the latest `at`, tie-broken by `id`) before counting — so
+ * re-attesting the same investigation never double-counts. `attestations` keeps the raw total.
+ *
+ * Order-independent: callers can pass labels in any order (the list path returns newest-first).
+ */
+export function summarizeOutcomeLabels(labels: readonly OutcomeLabel[]): OutcomeAccuracy {
+  // Pick the current verdict per investigation: max `at`, tie-broken by `id` for determinism.
+  const latest = new Map<string, OutcomeLabel>();
+  for (const l of labels) {
+    // Null investigationId (legacy/unlinked) is its own bucket so it never collapses with others.
+    const key = l.investigationId ?? `__row_${l.id}`;
+    const cur = latest.get(key);
+    if (
+      cur === undefined ||
+      l.at.getTime() > cur.at.getTime() ||
+      (l.at.getTime() === cur.at.getTime() && l.id > cur.id)
+    ) {
+      latest.set(key, l);
+    }
+  }
+
+  const counts = { yes: 0, partly: 0, no: 0 };
+  const bySource = { feedback: 0, confirm: 0 };
+  for (const l of latest.values()) {
+    if (l.resolved === 'yes') counts.yes++;
+    else if (l.resolved === 'partly') counts.partly++;
+    else if (l.resolved === 'no') counts.no++;
+    if (l.source === 'feedback') bySource.feedback++;
+    else if (l.source === 'confirm') bySource.confirm++;
+  }
+
+  const evaluated = latest.size;
+  return {
+    evaluated,
+    attestations: labels.length,
+    counts,
+    accuracy: evaluated === 0 ? 0 : counts.yes / evaluated,
+    weightedScore: evaluated === 0 ? 0 : (counts.yes + 0.5 * counts.partly) / evaluated,
+    bySource,
+  };
+}

@@ -45,6 +45,7 @@ import {
   runMemoryPin,
   runMemoryList,
   runMemorySync,
+  runMemoryAccuracy,
 } from './commands/memory.js';
 import { runSimulate } from './commands/simulate.js';
 import { runLogs } from './commands/logs.js';
@@ -504,6 +505,28 @@ Examples:
     .action(async (opts: { config?: string; repo?: string; all?: boolean; json?: boolean }) => {
       process.exitCode = await runMemoryList(opts);
     });
+
+  memory
+    .command('accuracy')
+    .description("Report Horus's measured hit-rate from the converged outcome-label eval set")
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'project/repository to scope to (default: inferred from cwd)')
+    .option('--source <source>', 'filter to one signal source: feedback | confirm')
+    .option('--days <n>', 'only count labels from the last N days', (v) => Number(v))
+    .option('--limit <n>', 'max labels to scan', (v) => Number(v))
+    .option('--json', 'output JSON')
+    .action(
+      async (opts: {
+        config?: string;
+        repo?: string;
+        source?: string;
+        days?: number;
+        limit?: number;
+        json?: boolean;
+      }) => {
+        process.exitCode = await runMemoryAccuracy(opts);
+      },
+    );
 
   memory
     .command('sync')
@@ -1299,10 +1322,12 @@ Examples:
       '--manual-estimate-min <minutes>',
       'estimated minutes this would have taken manually (optional, pair with --resolved)',
     )
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--repo <name>', 'project/repository to scope the persisted label to (default: inferred)')
     .action(
       async (
         investigationId: string | undefined,
-        opts: { resolved?: string; manualEstimateMin?: string },
+        opts: { resolved?: string; manualEstimateMin?: string; config?: string; repo?: string },
       ) => {
         process.exitCode = await runFeedback(investigationId, opts);
       },

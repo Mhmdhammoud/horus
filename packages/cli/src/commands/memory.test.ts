@@ -21,6 +21,8 @@ const sqlEnd = vi.fn(async () => {});
 const db = vi.hoisted(() => ({
   openDb: vi.fn(),
   getInvestigation: vi.fn(),
+  recordOutcomeLabel: vi.fn(),
+  listOutcomeLabels: vi.fn(),
 }));
 /** The Source-when-available memory vector index (M2). Mocked so we can assert best-effort wiring. */
 const vectorIndex = vi.hoisted(() => ({
@@ -45,7 +47,15 @@ const engine = vi.hoisted(() => ({
 
 vi.mock('@horus/db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@horus/db')>();
-  return { ...actual, openDb: db.openDb, getInvestigation: db.getInvestigation };
+  // Keep summarizeOutcomeLabels + isOutcomeSource REAL so the read path is exercised end-to-end;
+  // only the DB-touching calls are mocked.
+  return {
+    ...actual,
+    openDb: db.openDb,
+    getInvestigation: db.getInvestigation,
+    recordOutcomeLabel: db.recordOutcomeLabel,
+    listOutcomeLabels: db.listOutcomeLabels,
+  };
 });
 vi.mock('@horus/connectors', () => connectors);
 vi.mock('@horus/engine', async (importOriginal) => {
@@ -65,6 +75,7 @@ import {
   runMemoryForget,
   runMemoryPin,
   runMemoryList,
+  runMemoryAccuracy,
 } from './memory.js';
 
 /** Build a fixture RecalledMemory (what recallMemory returns) for show/list assertions. */
@@ -217,6 +228,8 @@ beforeEach(() => {
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   db.openDb.mockResolvedValue({ db: { fake: true }, sql: { end: sqlEnd } });
+  db.recordOutcomeLabel.mockResolvedValue({ id: 'ol_1' });
+  db.listOutcomeLabels.mockResolvedValue([]);
   engine.buildMemoryView.mockResolvedValue(FIXTURE);
   engine.recallMemory.mockResolvedValue([]);
   engine.createLocalMemoryStore.mockReturnValue(store);
@@ -459,6 +472,29 @@ describe('runMemoryConfirm — confirmed-outcome flywheel', () => {
     expect(sqlEnd).toHaveBeenCalledTimes(1);
   });
 
+  it('ALSO records a converged outcome label (resolved=yes, source=confirm, project-scoped)', async () => {
+    db.getInvestigation.mockResolvedValueOnce({
+      id: 'inv-1',
+      title: 'Payment retries piling up',
+      summary: null,
+      report: { summary: 'Stripe timeout filled the retry queue', confidence: 0.74 },
+    });
+    store.add.mockResolvedValueOnce({ id: 'mem_co', visibility: 'private' });
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryConfirm('inv-1', { config, note: 'verified in prod' });
+    expect(code).toBe(0);
+    expect(db.recordOutcomeLabel).toHaveBeenCalledTimes(1);
+    const [, label] = db.recordOutcomeLabel.mock.calls[0]!;
+    expect(label).toMatchObject({
+      investigationId: 'inv-1',
+      resolved: 'yes',
+      source: 'confirm',
+      project: 'my-api',
+      confirmedCause: 'Stripe timeout filled the retry queue',
+      note: 'verified in prod',
+    });
+  });
+
   it('emits clean JSON under --json', async () => {
     db.getInvestigation.mockResolvedValueOnce({ id: 'inv-1', title: 'X', summary: 'done', report: null });
     store.add.mockResolvedValueOnce({ id: 'mem_co', visibility: 'private' });
@@ -525,6 +561,107 @@ describe('runMemoryList', () => {
     expect(query.status).toEqual(
       expect.arrayContaining(['fresh', 'forgotten', 'deprecated', 'contradicted', 'pinned', 'possibly-stale']),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// memory accuracy — read the converged outcome-label eval set (HOR-390)
+// ---------------------------------------------------------------------------
+
+/** Build a fixture outcome-label row (what listOutcomeLabels returns). */
+function labelRow(over: {
+  id?: string;
+  investigationId?: string | null;
+  resolved?: 'yes' | 'partly' | 'no';
+  source?: 'feedback' | 'confirm';
+  at?: string;
+  project?: string | null;
+} = {}): Record<string, unknown> {
+  return {
+    id: over.id ?? 'ol_1',
+    investigationId: over.investigationId ?? 'inv-1',
+    project: over.project ?? 'my-api',
+    resolved: over.resolved ?? 'yes',
+    confirmedCause: null,
+    note: null,
+    source: over.source ?? 'confirm',
+    payload: null,
+    at: new Date(over.at ?? '2026-06-20T00:00:00.000Z'),
+  };
+}
+
+describe('runMemoryAccuracy — eval-set read path', () => {
+  it('scopes the query to the resolved project (HOR-46) and summarizes the dataset (clean JSON)', async () => {
+    db.listOutcomeLabels.mockResolvedValueOnce([
+      labelRow({ id: 'a', investigationId: 'inv-1', resolved: 'yes', source: 'confirm' }),
+      labelRow({ id: 'b', investigationId: 'inv-2', resolved: 'partly', source: 'feedback' }),
+      labelRow({ id: 'c', investigationId: 'inv-3', resolved: 'no', source: 'feedback' }),
+    ]);
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryAccuracy({ config, json: true });
+    expect(code).toBe(0);
+    // Project-scoped read (fail-closed isolation).
+    expect(db.listOutcomeLabels).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ project: 'my-api' }),
+    );
+    const parsed = JSON.parse(stdout());
+    expect(parsed.project).toBe('my-api');
+    expect(parsed.summary.evaluated).toBe(3);
+    expect(parsed.summary.counts).toEqual({ yes: 1, partly: 1, no: 1 });
+    expect(parsed.summary.accuracy).toBeCloseTo(1 / 3, 5);
+    expect(parsed.summary.weightedScore).toBeCloseTo(1.5 / 3, 5);
+    expect(parsed.summary.bySource).toEqual({ feedback: 2, confirm: 1 });
+    expect(sqlEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('dedupes append-only history to the latest verdict per investigation', async () => {
+    db.listOutcomeLabels.mockResolvedValueOnce([
+      // Newest-first: inv-1 was corrected from 'no' → 'yes'; only the latest counts.
+      labelRow({ id: 'new', investigationId: 'inv-1', resolved: 'yes', at: '2026-06-25T00:00:00.000Z' }),
+      labelRow({ id: 'old', investigationId: 'inv-1', resolved: 'no', at: '2026-06-20T00:00:00.000Z' }),
+    ]);
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryAccuracy({ config, json: true });
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout());
+    expect(parsed.summary.evaluated).toBe(1);
+    expect(parsed.summary.attestations).toBe(2);
+    expect(parsed.summary.counts).toEqual({ yes: 1, partly: 0, no: 0 });
+  });
+
+  it('passes --source and --days through to the query', async () => {
+    db.listOutcomeLabels.mockResolvedValueOnce([]);
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryAccuracy({ config, source: 'feedback', days: 7, json: true });
+    expect(code).toBe(0);
+    const [, query] = db.listOutcomeLabels.mock.calls[0]!;
+    expect(query.source).toBe('feedback');
+    expect(query.since).toBeInstanceOf(Date);
+  });
+
+  it('rejects an invalid --source without opening the DB', async () => {
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryAccuracy({ config, source: 'bogus' });
+    expect(code).toBe(1);
+    expect(db.openDb).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.flat().join(' ')).toContain('Unknown --source');
+  });
+
+  it('fails closed when the project cannot be resolved (HOR-46), without touching the DB', async () => {
+    const config = writeMultiProjectConfig();
+    const code = await runMemoryAccuracy({ config });
+    expect(code).toBe(1);
+    expect(db.openDb).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.flat().join(' ')).toContain('Could not resolve a project');
+  });
+
+  it('handles an empty eval set without crashing', async () => {
+    db.listOutcomeLabels.mockResolvedValueOnce([]);
+    const config = writeSingleProjectConfig();
+    const code = await runMemoryAccuracy({ config });
+    expect(code).toBe(0);
+    expect(stdout()).toContain('No outcome labels yet');
   });
 });
 
