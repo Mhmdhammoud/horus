@@ -32,6 +32,7 @@ import {
   MongoStateClient,
   PostgresStateClient,
   SentryClient,
+  AxiomClient,
   GrafanaClient,
   RedisScanClient,
   probeRedisDatabases,
@@ -87,6 +88,10 @@ export interface ConnectOpts {
   org?: string;
   /** Sentry project slug. */
   project?: string;
+  /** Axiom API token (sent as Bearer). */
+  token?: string;
+  /** Axiom dataset to query. */
+  dataset?: string;
   dashboard?: string;
   /** Multiple dashboard UIDs selected during interactive discovery. */
   dashboardUids?: string[];
@@ -107,7 +112,7 @@ export interface ConnectOpts {
   redisDatabases?: RedisDatabaseSpec[];
 }
 
-const SUPPORTED = ['elasticsearch', 'mongodb', 'postgres', 'sentry', 'grafana', 'redis'] as const;
+const SUPPORTED = ['elasticsearch', 'mongodb', 'postgres', 'sentry', 'axiom', 'grafana', 'redis'] as const;
 type ConnectorType = (typeof SUPPORTED)[number];
 
 export async function runConnect(type: string, opts: ConnectOpts): Promise<number> {
@@ -152,6 +157,9 @@ export async function runConnect(type: string, opts: ConnectOpts): Promise<numbe
       case 'sentry':
         patch = buildSentryPatch(filled);
         break;
+      case 'axiom':
+        patch = buildAxiomPatch(filled);
+        break;
       case 'grafana':
         patch = buildGrafanaPatch(filled);
         break;
@@ -180,7 +188,8 @@ export async function runConnect(type: string, opts: ConnectOpts): Promise<numbe
       filled.url !== undefined ||
       filled.password !== undefined ||
       filled.username !== undefined ||
-      filled.authToken !== undefined;
+      filled.authToken !== undefined ||
+      filled.token !== undefined;
     if (hasLiteralCredentials) {
       if (isGitTracked(configPath, root)) {
         console.error(
@@ -296,6 +305,15 @@ async function fillInteractive(
         filled.url ?? ((await ask('Base URL (self-hosted)', 'https://sentry.io', false)) || undefined);
       break;
 
+    case 'axiom':
+      filled.dataset = filled.dataset ?? (await ask('Dataset', 'logs'));
+      filled.token = filled.token ?? ((await askPassword('API token')) || undefined);
+      filled.url =
+        filled.url ??
+        ((await ask('Base URL (US: https://api.axiom.co · EU: https://api.eu.axiom.co)', 'https://api.axiom.co', false)) ||
+          undefined);
+      break;
+
     case 'grafana':
       filled.url = filled.url ?? (await ask('URL', 'https://grafana.example.com'));
       filled.username =
@@ -364,6 +382,8 @@ function missingRequired(type: ConnectorType, opts: ConnectOpts): boolean {
       return !opts.url;
     case 'sentry':
       return !opts.org || !opts.project || !opts.authToken;
+    case 'axiom':
+      return !opts.dataset || !opts.token;
     case 'grafana':
       return !opts.url;
     case 'redis':
@@ -486,6 +506,15 @@ function buildSentryPatch(opts: ConnectOpts): Record<string, unknown> {
   if (opts.authToken) patch['authToken'] = opts.authToken;
   // Only persist a non-default base URL (self-hosted Sentry).
   if (opts.url && opts.url.replace(/\/$/, '') !== 'https://sentry.io') patch['url'] = opts.url;
+  return patch;
+}
+
+function buildAxiomPatch(opts: ConnectOpts): Record<string, unknown> {
+  if (!opts.dataset) throw new Error('Dataset is required for axiom');
+  const patch: Record<string, unknown> = { dataset: opts.dataset };
+  if (opts.token) patch['token'] = opts.token;
+  // Only persist a non-default base URL (EU region / self-hosted).
+  if (opts.url && opts.url.replace(/\/$/, '') !== 'https://api.axiom.co') patch['url'] = opts.url;
   return patch;
 }
 
@@ -657,6 +686,17 @@ async function probe(type: ConnectorType, opts: ConnectOpts): Promise<ProbeResul
         });
         return client.health();
       }
+      case 'axiom': {
+        if (!opts.token || !opts.dataset) {
+          return { ok: true, detail: 'skipped (missing dataset/token)' };
+        }
+        const client = new AxiomClient({
+          token: opts.token,
+          dataset: opts.dataset,
+          ...(opts.url ? { baseUrl: opts.url } : {}),
+        });
+        return client.health();
+      }
       case 'grafana': {
         if (!opts.url) return { ok: true, detail: 'skipped (no URL)' };
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -736,8 +776,11 @@ function printSummary(type: ConnectorType, opts: ConnectOpts): void {
   if (opts.collections) lines.push(`  collections:    ${opts.collections}`);
   if (opts.org) lines.push(`  org:            ${opts.org}`);
   if (opts.project) lines.push(`  project:        ${opts.project}`);
+  if (opts.dataset) lines.push(`  dataset:        ${opts.dataset}`);
   if (opts.authToken)
     lines.push(`  auth-token:     ${'•'.repeat(Math.min(opts.authToken.length, 8))}`);
+  if (opts.token)
+    lines.push(`  token:          ${'•'.repeat(Math.min(opts.token.length, 8))}`);
   if (opts.dashboardUids && opts.dashboardUids.length > 0) {
     lines.push(`  dashboards:     ${opts.dashboardUids.join(', ')}`);
   } else if (opts.dashboard) {

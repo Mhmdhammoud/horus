@@ -193,7 +193,7 @@ Examples:
   program
     .command('connect <type>')
     .description(
-      'Add or update a connector (elasticsearch / mongodb / postgres / sentry / grafana / redis / ai) in .horus/config.json',
+      'Add or update a connector (elasticsearch / mongodb / postgres / sentry / axiom / grafana / redis / ai) in .horus/config.json',
     )
     .option('--env <name>', 'target environment (default: first environment in config)')
     .option('--provider <name>', 'AI provider for `connect ai` (anthropic / claude / codex / gemini)')
@@ -211,6 +211,8 @@ Examples:
     .option('--auth-token <token>', 'Sentry API auth token (required for sentry)')
     .option('--org <slug>', 'Sentry org slug (required for sentry)')
     .option('--project <slug>', 'Sentry project slug (required for sentry)')
+    .option('--token <token>', 'Axiom API token (required for axiom)')
+    .option('--dataset <name>', 'Axiom dataset to query (required for axiom)')
     .option('--dashboard <uid>', 'default dashboard uid (grafana)')
     .option(
       '--db <spec>',
@@ -241,6 +243,8 @@ Examples:
           authToken?: string;
           org?: string;
           project?: string;
+          token?: string;
+          dataset?: string;
           dashboard?: string;
           db?: string[];
           bullmqPrefix?: string;
@@ -265,6 +269,8 @@ Examples:
           authToken: opts.authToken,
           org: opts.org,
           project: opts.project,
+          token: opts.token,
+          dataset: opts.dataset,
           dashboard: opts.dashboard,
           db: opts.db,
           bullmqPrefix: opts.bullmqPrefix,

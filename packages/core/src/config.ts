@@ -184,6 +184,24 @@ const connectorsSchema = z
         urlEnv: z.string().optional(),
       })
       .optional(),
+    /**
+     * Axiom logs connector (HOR-429). Structured log rows queried with APL become
+     * `kind: 'log'` evidence (message + level + fields), alongside Elasticsearch.
+     */
+    axiom: z
+      .object({
+        /** Dataset to query (the Axiom analogue of an ES index). */
+        dataset: z.string(),
+        /** Direct API token (takes priority over tokenEnv). */
+        token: z.string().optional(),
+        /** Env var holding the API token. Defaults to "AXIOM_TOKEN". */
+        tokenEnv: z.string().optional(),
+        /** Direct base URL (US default https://api.axiom.co; EU https://api.eu.axiom.co). Takes priority over urlEnv. */
+        url: z.string().optional(),
+        /** Env var holding the base URL. Defaults to "AXIOM_URL". */
+        urlEnv: z.string().optional(),
+      })
+      .optional(),
     grafana: z
       .object({
         dashboard: z.string().optional(),
@@ -370,6 +388,7 @@ export interface ResolvedConnectors {
   mongodb?: { url?: string; database: string; collections: string[] };
   postgres?: { url?: string; schema?: string; database?: string; tables: string[] };
   sentry?: { authToken?: string; org: string; project: string; url?: string };
+  axiom?: { token?: string; dataset: string; url?: string };
   grafana?: {
     url?: string;
     username?: string;
@@ -560,6 +579,17 @@ export function resolveEnvironment(
       org: s.org,
       project: s.project,
       ...(authToken !== undefined ? { authToken } : {}),
+      ...(url !== undefined ? { url } : {}),
+    };
+  }
+
+  if (c.axiom !== undefined) {
+    const a = c.axiom;
+    const token = a.token ?? process.env[a.tokenEnv ?? 'AXIOM_TOKEN'];
+    const url = a.url ?? process.env[a.urlEnv ?? 'AXIOM_URL'];
+    resolved.axiom = {
+      dataset: a.dataset,
+      ...(token !== undefined ? { token } : {}),
       ...(url !== undefined ? { url } : {}),
     };
   }

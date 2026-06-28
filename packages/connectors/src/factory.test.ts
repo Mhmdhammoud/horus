@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { logsForEnv, memoryIndexForEnv } from './factory.js';
+import { logsForEnv, memoryIndexForEnv, axiomForEnv } from './factory.js';
 import { SourceMemoryVectorIndex } from './source/index.js';
 import type { MemoryVectorIndexLike } from './source/index.js';
 import type { ResolvedEnvironment } from '@horus/core';
@@ -128,6 +128,44 @@ describe('logsForEnv — field overrides', () => {
     expect(() =>
       logsForEnv(makeEnv({ preset: 'meritt', fields: { timestamp: '' } })),
     ).toThrow(/timestampField/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// axiomForEnv — null unless token + dataset are present
+// ---------------------------------------------------------------------------
+
+describe('axiomForEnv', () => {
+  function envWithAxiom(
+    axiom?: NonNullable<ResolvedEnvironment['connectors']['axiom']>,
+  ): ResolvedEnvironment {
+    return {
+      project: 'test',
+      env: 'test',
+      readOnly: true,
+      repositories: [{ name: 'repo', path: '/repo' }],
+      path: '/repo',
+      connectors: axiom !== undefined ? { axiom } : {},
+    };
+  }
+
+  it('returns null when axiom is not configured', () => {
+    expect(axiomForEnv(envWithAxiom())).toBeNull();
+  });
+
+  it('returns null when the token is missing', () => {
+    expect(axiomForEnv(envWithAxiom({ dataset: 'logs' }))).toBeNull();
+  });
+
+  it('returns null when the dataset is missing', () => {
+    expect(axiomForEnv(envWithAxiom({ token: 't', dataset: '' }))).toBeNull();
+  });
+
+  it('returns a provider when token + dataset are present', () => {
+    const provider = axiomForEnv(envWithAxiom({ token: 't', dataset: 'logs' }));
+    expect(provider).not.toBeNull();
+    expect(provider?.id).toBe('axiom');
+    expect(provider?.kind).toBe('logs');
   });
 });
 

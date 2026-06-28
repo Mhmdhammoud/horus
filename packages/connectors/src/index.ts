@@ -19,5 +19,22 @@ export * from './state/index.js';
 export * from './mongodb/index.js';
 export * from './postgres/index.js';
 export * from './sentry/index.js';
+// Axiom: explicit re-export of the public surface — the pure helpers `buildTitle`
+// and `computeRelevance` are intentionally NOT re-exported here to avoid a barrel
+// name-clash with Sentry's same-named helpers (both are tested via their local
+// `./axiom/index.js` / `./sentry/index.js` barrels).
+export {
+  AxiomClient,
+  AxiomProvider,
+  buildApl,
+  parseTabular,
+  parseDataset,
+} from './axiom/index.js';
+export type {
+  AxiomClientOpts,
+  AxiomDataset,
+  AxiomLogRecord,
+  AxiomProviderOpts,
+} from './axiom/index.js';
 export * from './bullmq/index.js';
 export * from './redis/index.js';

@@ -38,6 +38,8 @@ import { PostgresStateClient } from './postgres/client.js';
 import { PostgresStateProvider } from './postgres/provider.js';
 import { SentryClient } from './sentry/client.js';
 import { SentryProvider } from './sentry/provider.js';
+import { AxiomClient } from './axiom/client.js';
+import { AxiomProvider } from './axiom/provider.js';
 import { BullMQRedisClient } from './bullmq/client.js';
 import { BullMQRuntimeProvider } from './bullmq/provider.js';
 import type { QueueRuntimeProvider } from './bullmq/provider.js';
@@ -259,6 +261,25 @@ export function sentryForEnv(renv: ResolvedEnvironment): SentryProvider | null {
       ...(s.url !== undefined ? { baseUrl: s.url } : {}),
     }),
     { org: s.org, project: s.project },
+  );
+}
+
+/**
+ * Return an Axiom logs-evidence `AxiomProvider` for the given resolved environment,
+ * or `null` when no Axiom connector is configured (missing token / dataset — e.g. its
+ * token env var is unset). Read-only; surfaces structured log rows as `kind: 'log'`
+ * evidence via APL queries.
+ */
+export function axiomForEnv(renv: ResolvedEnvironment): AxiomProvider | null {
+  const a = renv.connectors.axiom;
+  if (!a || !a.token || !a.dataset) return null;
+  return new AxiomProvider(
+    new AxiomClient({
+      token: a.token,
+      dataset: a.dataset,
+      ...(a.url !== undefined ? { baseUrl: a.url } : {}),
+    }),
+    { dataset: a.dataset },
   );
 }
 
