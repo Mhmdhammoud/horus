@@ -6,7 +6,7 @@
  * impact. The resulting `GapAnalysis` caps `report.confidence` in engine.ts.
  */
 
-import type { InvestigationReport } from './types.js';
+import type { InvestigationReport, RouteStep } from './types.js';
 
 /** Which connectors are configured for the active project/environment. */
 export interface ConnectorFlags {
@@ -78,6 +78,16 @@ export interface EvidenceGap {
   nextSource: string;
   /** How much this gap shaves off the confidence ceiling (0–1). */
   confidenceImpact: number;
+  /**
+   * HOR-386 — the REAL command that closes this gap, colocated with `nextSource` so the
+   * router never has to maintain a separate dimension→tool table that can drift from the
+   * gap text. `nextTool` is always a shipped `horus` command (`connect`, `logs`, `metrics`,
+   * `queues`, `what-changed`, `owner`); `reason` mirrors `nextSource`. Omitted when no real
+   * command exists for the gap (e.g. the `traces` gap — there is no `tracing` connector),
+   * in which case the router simply skips routing for it. The router sorts gaps by
+   * `confidenceImpact` and takes the top gap's `routeHint`.
+   */
+  routeHint?: RouteStep;
 }
 
 /** Structured output of the missing-evidence analysis. */
@@ -119,6 +129,11 @@ export function detectMissingEvidence(
   const hasQueueTopology = r.timeline.boundaryCrossings.length > 0;
   const ownershipKnown = r.ownership != null && r.ownership.likelyMaintainer != null;
 
+  // HOR-386 — args for the colocated `routeHint` commands. The service scopes the
+  // log/metric/what-changed remedies; the seed name targets the ownership remedy.
+  const service = r.input.service ?? '';
+  const seedName = r.seeds[0]?.name ?? '';
+
   const gaps: EvidenceGap[] = [];
   const blindSpots: string[] = [];
 
@@ -155,11 +170,18 @@ export function detectMissingEvidence(
       logWhy = 'No error logs matched in the window — cannot confirm the actual error signatures.';
       logNextSource = 'Widen the window (--since) or inspect `horus logs <service>`';
     }
+    // No error source configured at all → the real remedy is `connect`; otherwise the
+    // source exists but returned nothing / failed → re-run `logs <service>`.
+    const logRouteHint: RouteStep =
+      !connectors.elasticsearch && !connectors.sentry
+        ? { nextTool: 'connect', args: 'elasticsearch', reason: logNextSource }
+        : { nextTool: 'logs', args: service, reason: logNextSource };
     gaps.push({
       dimension: 'logs',
       why: logWhy,
       nextSource: logNextSource,
       confidenceImpact: 0.1,
+      routeHint: logRouteHint,
     });
     blindSpots.push('Cannot see the real error.');
   }
@@ -176,11 +198,16 @@ export function detectMissingEvidence(
     const metricsNextSource = !connectors.grafana
       ? 'Add a `grafana` connector to the environment'
       : 'Check Grafana connectivity, then run `horus metrics "<hint>"` manually';
+    // No Grafana → `connect grafana`; configured but failed → re-run `metrics "<hint>"`.
+    const metricsRouteHint: RouteStep = !connectors.grafana
+      ? { nextTool: 'connect', args: 'grafana', reason: metricsNextSource }
+      : { nextTool: 'metrics', args: service, reason: metricsNextSource };
     gaps.push({
       dimension: 'metrics',
       why: metricsWhy,
       nextSource: metricsNextSource,
       confidenceImpact: 0.1,
+      routeHint: metricsRouteHint,
     });
     blindSpots.push('Cannot validate latency-based hypotheses.');
   }
@@ -195,6 +222,18 @@ export function detectMissingEvidence(
         ? 'Run `horus queues --live` to see real-time queue depths and failed-job counts'
         : 'Add a `redis` connector to read live BullMQ state',
       confidenceImpact: 0.1,
+      // Redis wired → read live state with `queues --live`; otherwise `connect redis` first.
+      routeHint: connectors.redis
+        ? {
+            nextTool: 'queues',
+            args: '--live',
+            reason: 'Run `horus queues --live` to see real-time queue depths and failed-job counts',
+          }
+        : {
+            nextTool: 'connect',
+            args: 'redis',
+            reason: 'Add a `redis` connector to read live BullMQ state',
+          },
     });
     blindSpots.push('Cannot determine if the queue is actually backed up.');
   }
@@ -209,6 +248,14 @@ export function detectMissingEvidence(
         ? 'Use HEAD~N or a specific SHA/branch for git diff ranges (e.g. --since HEAD~5)'
         : 'Re-run with --since <ref>, or `horus what-changed <service>`',
       confidenceImpact: 0.08,
+      // The real next command for "what shipped" is `what-changed <service>`.
+      routeHint: {
+        nextTool: 'what-changed',
+        args: service,
+        reason: connectors.sinceProvided
+          ? 'Use HEAD~N or a specific SHA/branch for git diff ranges (e.g. --since HEAD~5)'
+          : 'Re-run with --since <ref>, or `horus what-changed <service>`',
+      },
     });
     blindSpots.push('Cannot correlate with a recent change.');
   }
@@ -219,6 +266,12 @@ export function detectMissingEvidence(
       why: 'The owning team/maintainer of the implicated component is unknown.',
       nextSource: '`horus owner <symbol>` (git history)',
       confidenceImpact: 0.05,
+      // Ownership maps to the REAL `owner` command (NOT `readiness`) so tool and reason agree.
+      routeHint: {
+        nextTool: 'owner',
+        args: seedName,
+        reason: '`horus owner <symbol>` (git history)',
+      },
     });
     blindSpots.push('Cannot route to an owner.');
   }
@@ -229,6 +282,9 @@ export function detectMissingEvidence(
       why: 'No distributed traces — cannot follow a single request across the async queue boundary.',
       nextSource: 'Tracing instrumentation',
       confidenceImpact: 0.07,
+      // No `routeHint`: there is no `tracing` connector in `connect.ts` (SUPPORTED is
+      // elasticsearch/mongodb/postgres/sentry/grafana/redis), so the router must NOT emit a
+      // runnable-looking `connect tracing`. The router skips gaps without a routeHint.
     });
     blindSpots.push('Cannot trace the request end-to-end.');
   }
@@ -254,4 +310,18 @@ export function gapNextActions(gaps: EvidenceGap[]): string[] {
   return [...gaps]
     .sort((a, b) => b.confidenceImpact - a.confidenceImpact)
     .map((g) => g.nextSource);
+}
+
+/**
+ * HOR-386 — structured sibling of `gapNextActions`. Sorts the gaps by `confidenceImpact`
+ * (highest first — `detectMissingEvidence` pushes in fixed insertion order, NOT impact
+ * order, so the router MUST sort here itself) and returns each gap's colocated `routeHint`.
+ * Gaps without a real remedy (e.g. `traces`) are dropped — the router never fabricates a
+ * command. The first element is the top gap's RouteStep the router routes low-confidence to.
+ */
+export function gapNextSteps(gaps: EvidenceGap[]): RouteStep[] {
+  return [...gaps]
+    .sort((a, b) => b.confidenceImpact - a.confidenceImpact)
+    .map((g) => g.routeHint)
+    .filter((s): s is RouteStep => s != null);
 }

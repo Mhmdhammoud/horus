@@ -55,6 +55,7 @@ import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
 import { recallSimilar, storeIncidentMemory, deriveTags } from './memory.js';
 import { detectMissingEvidence, gapNextActions, type ConnectorFlags } from './gaps.js';
+import { route } from './router.js';
 import { buildRuntimeSourceStatus } from './source-status.js';
 import type {
   InvestigationInput,
@@ -1024,6 +1025,8 @@ export async function investigate(
           ? `No symbols matched "${hint}", and no recent error log matched it either. Try a more specific hint — an exact function, class, or file name — or widen --since.`
           : `No symbols matched "${hint}". Try a more specific hint — an exact function, class, or file name.`,
       ],
+      // HOR-386 — empty-return: route to `search` for the right name (deterministic).
+      nextSteps: route({ command: 'investigate', empty: true, query: hint }),
     };
     const persistedId = await persist(db, input, report);
     if (persistedId) report.id = persistedId;
@@ -3023,6 +3026,34 @@ export async function investigate(
     report.confidence = Math.min(report.confidence, confidenceCeilingForCause(topCauseScore));
   }
   report.nextActions.push(...gapNextActions(gapAnalysis.gaps));
+  // HOR-386 — deterministic next-step routing. The router is the SINGLE source of truth:
+  // it decides here once and every surface (human/--json/MCP) renders this same
+  // RouteStep[]. Computed AFTER the final confidence so `lowConfidence` reflects the capped
+  // value. `topRoutableGap` is the highest-impact gap that has a real remedy (the `traces`
+  // gap has none), since `gapAnalysis.gaps` is in insertion order, not impact order.
+  const topRoutableGap = [...gapAnalysis.gaps]
+    .sort((a, b) => b.confidenceImpact - a.confidenceImpact)
+    .find((g) => g.routeHint != null);
+  const anyRuntimeConnector = Boolean(
+    connectorFlags.elasticsearch ||
+      connectorFlags.sentry ||
+      connectorFlags.grafana ||
+      connectorFlags.redis ||
+      connectorFlags.postgres ||
+      connectorFlags.mongodb,
+  );
+  report.nextSteps = route({
+    command: 'investigate',
+    intent,
+    empty: false,
+    lowConfidence: report.confidence < 0.5,
+    topGap: topRoutableGap,
+    noConnectors: intent === 'incident' && !anyRuntimeConnector,
+    metricsNull: looksPerformance(hint) && deps.metrics == null,
+    degradedSourceIntelligence: report.degraded != null,
+    seedName: top?.name,
+    query: hint,
+  });
   report.sourceStatus = buildRuntimeSourceStatus(evidence, connectorFlags);
 
   // j. PERSIST — may overwrite report.id with the DB-assigned id.

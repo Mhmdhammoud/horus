@@ -42,6 +42,20 @@ export interface InvestigationInput {
   scope?: string;
 }
 
+/**
+ * HOR-386 — a single deterministic next-step suggestion produced by the shared router.
+ * Advisory DATA only: the surfaces print it, nothing shells out or auto-invokes. Every
+ * `nextTool` is a REAL `horus` command (or MCP tool) — the router never fabricates one.
+ */
+export interface RouteStep {
+  /** The next command/tool to run, e.g. `blast-radius`, `connect`, `index`, `search`. */
+  nextTool: string;
+  /** Arguments to pass (a seed name, connector type, `--live`, …); may be empty. */
+  args: string;
+  /** Why this step is suggested — templated, often verbatim `gap.nextSource`; never LLM prose. */
+  reason: string;
+}
+
 /** A deterministic, evidence-backed finding asserted by the engine. */
 export interface ReportFinding {
   /** Coarse classification, e.g. 'observation' | 'anomaly' | 'correlation'. */
@@ -100,6 +114,13 @@ export interface InvestigationReport {
    */
   degraded?: { sourceIntelligence: boolean; reason: string };
   nextActions: string[];
+  /**
+   * HOR-386 — structured, deterministic next-step suggestions from the shared router
+   * (`router.ts`). Each `RouteStep` names a REAL command to run, with args and a reason.
+   * The single source the human/--json/MCP surfaces render. Absent on reports that
+   * predate the router; `nextActions` remains the legacy human-string form.
+   */
+  nextSteps?: RouteStep[];
   /** Ownership estimate for the implicated component (HOR-40). Null when repoPath is not supplied. */
   ownership?: OwnershipEstimate | null;
   /** Per-source runtime contribution summary (HOR-70). */
