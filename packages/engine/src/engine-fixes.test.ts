@@ -32,7 +32,7 @@ vi.mock('./git-collector.js', async (importOriginal) => {
   return { ...actual, collectGitChanges: vi.fn(), defaultChangeWindowSince: vi.fn() };
 });
 
-import { investigate, confidenceCeilingForCause, looksExplanatory, looksPerformance, formatRegressionCitation, buildBehavioralWalkthrough, seedEmittedSeverityTier } from './engine.js';
+import { investigate, confidenceCeilingForCause, looksExplanatory, looksPerformance, classifyIntent, looksSourceImpact, looksVerifyIsolation, INCIDENT_SYMPTOM_RE, formatRegressionCitation, buildBehavioralWalkthrough, seedEmittedSeverityTier } from './engine.js';
 import { collectGitChanges, defaultChangeWindowSince } from './git-collector.js';
 
 const mockCollectGitChanges = vi.mocked(collectGitChanges);
@@ -500,6 +500,137 @@ describe('looksPerformance — detects latency/performance hints (gap 4)', () =>
     expect(looksPerformance('throughput dropped')).toBe(true);
     expect(looksPerformance('order creation throwing 500s')).toBe(false);
     expect(looksPerformance('zoho oauth callback')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-385 — deterministic intent classifier (incident wins every tie)
+// ---------------------------------------------------------------------------
+describe('INCIDENT_SYMPTOM_RE — the single shared symptom guard', () => {
+  it('matches every legacy explanatory-demotion cue (no drift from looksExplanatory)', () => {
+    for (const cue of [
+      'failure',
+      'breaks',
+      'crashes',
+      'crashing',
+      'hangs',
+      'wrong',
+      'stopped',
+      'throwing',
+      'throws',
+      'reject',
+      'rejected',
+      'denied',
+      "can't",
+      'cannot',
+      'causes',
+      'causing',
+      'leaking',
+      "doesn't work",
+    ]) {
+      expect(INCIDENT_SYMPTOM_RE.test(cue)).toBe(true);
+    }
+  });
+
+  it('matches the new infra cues folded into the one constant', () => {
+    for (const cue of [
+      'returning 500',
+      '5xx errors',
+      'oom killed',
+      'process panic',
+      'p95 jumped',
+      'p99 jumped',
+      'requests throttled',
+      'latency spike',
+      'out of memory',
+      'stack trace',
+    ]) {
+      expect(INCIDENT_SYMPTOM_RE.test(cue)).toBe(true);
+    }
+  });
+
+  it('is shared by looksExplanatory — a symptom-bearing interrogative is demoted', () => {
+    expect(looksExplanatory('what is throttling the workers')).toBe(false);
+    expect(looksExplanatory('why is the service oom-ing')).toBe(false);
+  });
+});
+
+describe('classifyIntent — conservative: any symptom forces incident first', () => {
+  it('returns incident for plain incident hints', () => {
+    expect(classifyIntent('orders are failing to publish', undefined)).toBe('incident');
+    expect(classifyIntent('checkout is throwing 500s', undefined)).toBe('incident');
+    expect(classifyIntent('the worker keeps crashing', undefined)).toBe('incident');
+  });
+
+  it('returns incident when --since is set (a diff is always a regression framing)', () => {
+    // structural phrasing, but a diffable --since wins
+    expect(classifyIntent('what depends on SlideEditorProvider', 'HEAD~5..HEAD')).toBe('incident');
+    expect(classifyIntent('is SlideEditorProvider isolated', 'v1.2.0')).toBe('incident');
+  });
+
+  it('incident-wins-ties: a symptom cue + structural phrasing stays incident', () => {
+    // these are the exact misfires the critique flagged — the shared guard fixes them
+    expect(
+      classifyIntent('users denied access — does the new middleware affect the session store', undefined),
+    ).toBe('incident');
+    expect(classifyIntent('checkout stopped working, is the payment module isolated', undefined)).toBe(
+      'incident',
+    );
+    expect(classifyIntent("can't load slides — what depends on SlideEditorProvider", undefined)).toBe(
+      'incident',
+    );
+    expect(classifyIntent('did my refactor break Y — what depends on Y', undefined)).toBe('incident');
+    expect(classifyIntent('the regression in blast radius of OrderService', undefined)).toBe('incident');
+    expect(classifyIntent('this is causing problems, who calls getUser', undefined)).toBe('incident');
+    expect(classifyIntent('the cache is leaking, what depends on CacheManager', undefined)).toBe(
+      'incident',
+    );
+  });
+
+  it('returns source-impact for clean structural questions (no symptom)', () => {
+    expect(classifyIntent('what depends on SlideEditorProvider', undefined)).toBe('source-impact');
+    expect(classifyIntent('blast radius of OrderService', undefined)).toBe('source-impact');
+    expect(classifyIntent('who calls getUser', undefined)).toBe('source-impact');
+    expect(classifyIntent('impact of removing the legacy adapter', undefined)).toBe('source-impact');
+    expect(classifyIntent('if i change the OrderResolver what breaks downstream', undefined)).toBe(
+      'incident',
+    );
+    expect(classifyIntent('if i rename the OrderResolver what is the ripple', undefined)).toBe(
+      'source-impact',
+    );
+    expect(classifyIntent('safe to delete the old migration helper', undefined)).toBe('source-impact');
+  });
+
+  it('returns source-impact for verify-isolation questions (no symptom)', () => {
+    expect(classifyIntent('verify SlideEditorProvider does not affect field', undefined)).toBe(
+      'source-impact',
+    );
+    expect(classifyIntent('is the billing module isolated', undefined)).toBe('source-impact');
+    expect(classifyIntent('does OrderService affect the InventoryService', undefined)).toBe(
+      'source-impact',
+    );
+    expect(classifyIntent('any impact on the checkout flow', undefined)).toBe('source-impact');
+    expect(classifyIntent('is OrderService coupled to InventoryService', undefined)).toBe(
+      'source-impact',
+    );
+  });
+
+  it('returns explain for behavioral questions (no symptom, no structural cue)', () => {
+    expect(classifyIntent('how does SaleService work', undefined)).toBe('explain');
+    expect(classifyIntent('explain the checkout flow', undefined)).toBe('explain');
+    expect(classifyIntent('what is the order pipeline', undefined)).toBe('explain');
+  });
+
+  it('defaults to incident for an unclassifiable hint', () => {
+    expect(classifyIntent('SlideEditorProvider', undefined)).toBe('incident');
+    expect(classifyIntent('order pipeline', undefined)).toBe('incident');
+  });
+
+  it('looksSourceImpact / looksVerifyIsolation building blocks', () => {
+    expect(looksVerifyIsolation('is X isolated')).toBe(true);
+    expect(looksVerifyIsolation('what depends on X')).toBe(false);
+    expect(looksSourceImpact('what depends on X')).toBe(true);
+    expect(looksSourceImpact('how does X work')).toBe(false);
   });
 });
 

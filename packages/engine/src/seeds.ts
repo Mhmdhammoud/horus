@@ -95,6 +95,85 @@ export function parseSeedQualifier(hint: string): SeedQualifier | null {
   return null;
 }
 
+// HOR-385: named-symbol extraction tiers (most-specific first). Sources are kept as
+// strings and re-instantiated with the `g` flag inside parseNamedSymbols so they
+// carry no shared `lastIndex` state between calls.
+const QUOTED_SYMBOL = /[`'"]([A-Za-z_$][\w$.]*)[`'"]/; // tier 2: `field`, 'Foo', "getX"
+const PASCAL_SYMBOL = /\b([A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+)\b/; // tier 3: SlideEditorProvider (≥2 humps; rejects "Does"/"Verify"/"Is")
+const CAMEL_SYMBOL = /\b([a-z][a-z0-9]*(?:[A-Z][a-z0-9]+)+)\b/; // tier 4: getUser, slideEditor
+const SNAKE_SYMBOL = /\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b/; // tier 5: get_user
+
+/**
+ * HOR-385: extract the symbol name(s) a structural hint refers to, so a source-impact
+ * investigation can pin its seed onto the PROMPT-named symbol instead of the central
+ * node. Tiered extraction (qualified → quoted → PascalCase → camelCase → snake_case);
+ * a higher tier masks the text it claims so a lower (less-specific) tier cannot
+ * re-extract it (e.g. the container of a `Class.method`, or a backticked PascalCase
+ * name).
+ *
+ * The returned array is ordered by SOURCE-STRING POSITION, not extraction tier. This
+ * is load-bearing for verify-isolation, where the array is read positionally
+ * (`[0] = X` seed, `[1] = Y` isolation target): "verify SlideEditorProvider does not
+ * affect `field`" must yield `[SlideEditorProvider, field]` even though the backticked
+ * `field` is extracted in an earlier tier than the unquoted PascalCase `X`.
+ */
+export function parseNamedSymbols(hint: string): string[] {
+  if (hint.length === 0) return [];
+  const found: { name: string; index: number }[] = [];
+  const seen = new Set<string>();
+  // Mutable mask: a claimed span is blanked (same length, so indices stay aligned with
+  // `hint`) before a lower tier runs.
+  let masked = hint;
+  const consume = (start: number, end: number): void => {
+    masked = masked.slice(0, start) + ' '.repeat(end - start) + masked.slice(end);
+  };
+  const push = (name: string, index: number): void => {
+    if (name.length < 2) return; // single chars are never a symbol pin
+    const key = name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    found.push({ name, index });
+  };
+
+  // Tier 1: qualified (Class.method / path:symbol) — pin the symbol part, claim the
+  // whole qualified span so the container is not re-extracted as a bare PascalCase name.
+  for (const src of [PATH_QUALIFIER, CLASS_QUALIFIER]) {
+    const re = new RegExp(src.source, 'g');
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(masked)) !== null) {
+      const container = m[1];
+      const symbol = m[2];
+      if (
+        container !== undefined &&
+        symbol !== undefined &&
+        container.length >= 2 &&
+        symbol.length >= 2
+      ) {
+        push(symbol, m.index + m[0].lastIndexOf(symbol));
+        consume(m.index, m.index + m[0].length);
+      }
+      if (m.index === re.lastIndex) re.lastIndex++;
+    }
+  }
+
+  // Tiers 2-5: quoted, PascalCase, camelCase, snake_case.
+  for (const src of [QUOTED_SYMBOL, PASCAL_SYMBOL, CAMEL_SYMBOL, SNAKE_SYMBOL]) {
+    const re = new RegExp(src.source, 'g');
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(masked)) !== null) {
+      const name = m[1];
+      if (name !== undefined) {
+        push(name, m.index + m[0].indexOf(name));
+        consume(m.index, m.index + m[0].length);
+      }
+      if (m.index === re.lastIndex) re.lastIndex++;
+    }
+  }
+
+  found.sort((a, b) => a.index - b.index);
+  return found.map((f) => f.name);
+}
+
 /** Split a camel/Pascal/snake/kebab identifier into lowercase word tokens. */
 function identTokens(s: string): string[] {
   return s

@@ -478,6 +478,18 @@ export function looksDiffable(since: string): boolean {
 }
 
 /**
+ * HOR-385: the SINGLE source of truth for "this hint describes a live symptom /
+ * incident". BOTH `looksExplanatory` (to demote a symptom-bearing interrogative out
+ * of the explanatory walkthrough) and `classifyIntent` (to force the incident path
+ * before any structural intent) consume this one constant, so the safety guard can
+ * never drift into being narrower than the explanatory demotion list. Infra cues
+ * (500/5xx/oom/panic/p95/p99/throttl/spike) are folded in here too. Word-boundary,
+ * case-insensitive, NOT global (safe to reuse with `.test`).
+ */
+export const INCIDENT_SYMPTOM_RE =
+  /\b(fail|fails|failed|failing|failure|break|breaks|breaking|broke|broken|crash|crashes|crashing|down|outage|incident|regress(?:ion|ed)?|degrad(?:e|ed|ing)?|slow|stuck|hang|hangs|hung|timeout|timing\s*out|latency|wrong|exception|error|errors|leak|leaking|stopped|throwing|throws|reject|rejected|denied|not\s+work|doesn'?t\s+work|isn'?t\s+work|can'?t|cannot|caus(?:e|es|ing)|misbehav|500|5xx|oom|out\s+of\s+memory|panic|p9[59]|throttl|spike|stack\s*trace|flap)/i;
+
+/**
  * HOR-334: does the hint read as a behavioral "how does X work" question rather
  * than an incident report? Such hints want an explanation of a code path, not a
  * fault hunt — when there is no real incident signal, the investigation should
@@ -507,11 +519,7 @@ export function looksExplanatory(hint: string): boolean {
   // dogfood GAP E: a bare leading interrogative carrying SYMPTOM terms is an incident hunt,
   // not an explanation ("what is breaking", "why are products failing", "what's causing the
   // errors") — so it must NOT route to a behavioral walkthrough.
-  if (
-    /\b(fail|fails|failed|failing|failure|break|breaks|breaking|broke|broken|crash|crashes|crashing|down|slow|stuck|hang|hangs|hung|timeout|timing\s*out|wrong|exception|error|errors|leak|leaking|stopped|throwing|throws|reject|rejected|denied|not\s+work|doesn'?t\s+work|isn'?t\s+work|can'?t|cannot|caus(?:e|es|ing)|misbehav)/i.test(
-      h,
-    )
-  ) {
+  if (INCIDENT_SYMPTOM_RE.test(h)) {
     return false;
   }
   // Bare leading interrogative with no fault terms: "what is the order pipeline".
@@ -531,6 +539,75 @@ export function looksPerformance(hint: string): boolean {
   return /\b(slow|slowness|sluggish|laggy|\blag\b|latency|perf|performance|throughput|degraded|degradation|response\s*time|p9[59])\b/i.test(
     hint,
   );
+}
+
+/**
+ * HOR-385: the deterministic structural-intent surface.
+ *   - `incident`      → the default; full runtime evidence, regression hypotheses
+ *                       and confidence ceilings all apply.
+ *   - `source-impact` → a blast-radius / "what depends on X" / verify-isolation
+ *                       question; the answer is structural, runtime evidence is
+ *                       irrelevant, so source-impact mode suppresses it (downstream).
+ *   - `explain`       → a behavioral "how does it work" walkthrough.
+ *
+ * NOTE: there is deliberately NO `architecture` mode — architecture is only ever a
+ * ROUTE target, never an intent that disables ceilings (a "how is X structured"
+ * question over a degraded system must keep its incident honesty).
+ */
+export type Intent = 'incident' | 'source-impact' | 'explain';
+
+/** Blast-radius / refactor-impact cues (HOR-385). */
+const SOURCE_IMPACT_RE: RegExp[] = [
+  /\bwhat depends on\b/i,
+  /\bblast[- ]?radius\b/i,
+  /\bimpact of (?:adding|serving|removing|changing|renaming|moving|deleting)\b/i,
+  /\baffected by\b/i,
+  /\bwho (?:calls|uses|imports|consumes)\b/i,
+  /\bdownstream of\b/i,
+  /\bupstream of\b/i,
+  /\bripple\b/i,
+  /\bif i (?:change|remove|rename|move|delete)\b/i,
+  /\bsafe to (?:remove|delete|rename|change)\b/i,
+];
+
+/** Verify-isolation sub-flavour cues — these name two symbols X and Y (HOR-385). */
+const VERIFY_ISOLATION_RE: RegExp[] = [
+  /\bverify\b.*\b(?:does ?n[o']?t|not) affect\b/i,
+  /\bis\b.+\bisolated\b/i,
+  /\bisolated\??$/i,
+  /\bdoes\b.+\baffect\b/i,
+  /\bany (?:impact|effect) on\b/i,
+  /\bcontained to\b/i,
+  /\bbleed (?:in)?to\b/i,
+  /\bcoupled to\b/i,
+];
+
+/** Does the hint read as a "is X isolated from Y / does X affect Y" question? */
+export function looksVerifyIsolation(hint: string): boolean {
+  return VERIFY_ISOLATION_RE.some((re) => re.test(hint));
+}
+
+/** Does the hint read as a structural blast-radius / refactor-impact question? */
+export function looksSourceImpact(hint: string): boolean {
+  return SOURCE_IMPACT_RE.some((re) => re.test(hint)) || looksVerifyIsolation(hint);
+}
+
+/**
+ * HOR-385: deterministic intent classifier. Precedence is conservative — a live
+ * symptom ALWAYS wins so a real incident never loses its runtime evidence:
+ *   1. `--since` set & diffable → incident (a diff is always a regression framing).
+ *   2. any SYMPTOM cue (shared `INCIDENT_SYMPTOM_RE`) → incident.
+ *   3. structural blast-radius / verify-isolation cue → source-impact.
+ *   4. behavioral how/what/why → explain.
+ *   5. default → incident.
+ * Pure: same inputs ⇒ same output (byte-stable for snapshot tests).
+ */
+export function classifyIntent(hint: string, since: string | undefined): Intent {
+  if (since !== undefined && looksDiffable(since)) return 'incident';
+  if (INCIDENT_SYMPTOM_RE.test(hint)) return 'incident';
+  if (looksSourceImpact(hint)) return 'source-impact';
+  if (looksExplanatory(hint)) return 'explain';
+  return 'incident';
 }
 
 /**

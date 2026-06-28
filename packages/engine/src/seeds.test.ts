@@ -6,6 +6,7 @@ import {
   scoreSeed,
   executableBaseName,
   parseSeedQualifier,
+  parseNamedSymbols,
   qualifierBoost,
 } from './seeds.js';
 
@@ -327,5 +328,65 @@ describe('rankSeeds', () => {
     };
     const ranked = rankSeeds([formatter, predicate], ['duplicate', 'leads', 'detected']);
     expect(ranked[0]?.symbol.name).toBe('isDuplicateLeadSet');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-385 — parseNamedSymbols (tiered extraction, source-string X/Y ordering)
+// ---------------------------------------------------------------------------
+describe('parseNamedSymbols — tiered extraction', () => {
+  it('extracts a PascalCase name (≥2 humps)', () => {
+    expect(parseNamedSymbols('what depends on SlideEditorProvider')).toEqual(['SlideEditorProvider']);
+  });
+
+  it('extracts a backticked / quoted symbol', () => {
+    expect(parseNamedSymbols('what depends on `field`')).toEqual(['field']);
+    expect(parseNamedSymbols("who calls 'getUser'")).toEqual(['getUser']);
+    expect(parseNamedSymbols('impact of removing "OrderService"')).toEqual(['OrderService']);
+  });
+
+  it('extracts a Class.method qualifier as the method, not the container twice', () => {
+    expect(parseNamedSymbols('what depends on ProductService.syncProduct')).toEqual(['syncProduct']);
+  });
+
+  it('extracts a path:symbol qualifier as the symbol', () => {
+    expect(parseNamedSymbols('what depends on src/orders/order.service.ts:createOrder')).toEqual([
+      'createOrder',
+    ]);
+  });
+
+  it('extracts camelCase and snake_case names', () => {
+    expect(parseNamedSymbols('who calls getUser')).toEqual(['getUser']);
+    expect(parseNamedSymbols('who calls get_user_by_id')).toEqual(['get_user_by_id']);
+  });
+
+  it('rejects sentence words (Does / Verify / Is) — only ≥2-hump Pascal counts', () => {
+    expect(parseNamedSymbols('Verify Does Is It Work')).toEqual([]);
+  });
+
+  it('dedupes while preserving source order', () => {
+    expect(parseNamedSymbols('SlideEditorProvider then SlideEditorProvider again')).toEqual([
+      'SlideEditorProvider',
+    ]);
+  });
+});
+
+describe('parseNamedSymbols — verify-isolation X/Y by SOURCE-STRING index, not tier', () => {
+  it('both quoted: sentence order preserved (X = first)', () => {
+    const got = parseNamedSymbols('verify `SlideEditorProvider` does not affect `field`');
+    expect(got).toEqual(['SlideEditorProvider', 'field']);
+  });
+
+  it('mixed tiers: an earlier unquoted PascalCase X beats a later backticked Y', () => {
+    // The critique inversion case: backticked `field` is extracted in an EARLIER tier
+    // than the unquoted PascalCase X, but source-string ordering keeps X first.
+    const got = parseNamedSymbols('verify SlideEditorProvider does not affect `field`');
+    expect(got[0]).toBe('SlideEditorProvider');
+    expect(got[1]).toBe('field');
+  });
+
+  it('isolation target Y after X for a plain "does X affect Y" question', () => {
+    const got = parseNamedSymbols('does OrderService affect InventoryService');
+    expect(got).toEqual(['OrderService', 'InventoryService']);
   });
 });
