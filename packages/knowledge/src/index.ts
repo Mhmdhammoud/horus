@@ -11,3 +11,4 @@ export * from './store.js';
 export * from './query.js';
 export * from './import/index.js';
 export * from './build/project-landscape.js';
+export * from './build/source-graph.js';

@@ -32,6 +32,9 @@ import {
   createJsonKnowledgeStore,
   importKnowledgeBaseFile,
   type RepoInput,
+  type SourceGraphExtract,
+  type SourceSymbolInput,
+  type SourceProcessInput,
 } from '@horus/knowledge';
 import {
   SourceHttpClient,
@@ -113,18 +116,114 @@ export interface IndexOptions {
 }
 
 /**
+ * Cap per-category Cypher pulls so a huge monorepo can't bloat the knowledge base
+ * or stall `horus index`. Matches the knowledge bridge's own defensive cap.
+ */
+const SOURCE_GRAPH_PULL_LIMIT = 5000;
+
+/**
+ * Read the analysed source graph back from the running host over read-only Cypher
+ * and shape it into a `SourceGraphExtract` (HOR-408). This is the bridge the
+ * knowledge pass was missing: the rich analyse output (functions, classes,
+ * interfaces, type aliases, enums, semantic communities, execution-flow
+ * processes) is pulled here and mapped into the KB categories that were empty.
+ *
+ * Best-effort and fully guarded — any query the backend rejects (older graph
+ * shape, transient error) degrades to "no rows" for that slice so the rest of
+ * the extract still lands. Returns `null` only if nothing at all could be read.
+ */
+async function extractSourceGraph(
+  hostUrl: string,
+  repo: string,
+): Promise<SourceGraphExtract | null> {
+  const client = new SourceHttpClient({ baseUrl: hostUrl });
+  const N = SOURCE_GRAPH_PULL_LIMIT;
+
+  const rows = async (query: string): Promise<unknown[][]> => {
+    try {
+      return (await client.cypher(query)).rows;
+    } catch {
+      return [];
+    }
+  };
+
+  // Symbols: types (Class/Interface/TypeAlias), callables (Function/Method), enums.
+  const symbolRows = await rows(
+    'MATCH (n) WHERE label(n) IN ["Class","Interface","TypeAlias","Function","Method","Enum"] ' +
+      'RETURN label(n), n.name, n.file_path, n.start_line, n.end_line, n.class_name, ' +
+      `n.is_entry_point, n.is_exported, n.signature LIMIT ${N * 2}`,
+  );
+  const symbols: SourceSymbolInput[] = symbolRows.map((r) => ({
+    label: String(r[0] ?? ''),
+    name: String(r[1] ?? ''),
+    filePath: r[2] != null ? String(r[2]) : undefined,
+    startLine: r[3] != null ? Number(r[3]) : undefined,
+    endLine: r[4] != null ? Number(r[4]) : undefined,
+    className: r[5] != null ? String(r[5]) : undefined,
+    isEntryPoint: Boolean(r[6]),
+    isExported: Boolean(r[7]),
+    signature: r[8] != null ? String(r[8]) : undefined,
+  }));
+
+  // Communities (semantic clusters → domain concepts).
+  const communityRows = await rows(
+    `MATCH (n:Community) RETURN n.id, n.name LIMIT ${N}`,
+  );
+  const communities = communityRows.map((r) => ({
+    id: r[0] != null ? String(r[0]) : undefined,
+    name: String(r[1] ?? ''),
+  }));
+
+  // Processes (execution flows → data flows) + their ordered steps in one pull.
+  const processRows = await rows(`MATCH (n:Process) RETURN n.id, n.name LIMIT ${N}`);
+  const stepRows = await rows(
+    'MATCH (s)-[r:CodeRelation]->(p:Process) WHERE r.rel_type = "step_in_process" ' +
+      `RETURN p.id, s.name, s.file_path, r.step_number ORDER BY p.id, r.step_number LIMIT ${N * 4}`,
+  );
+  const stepsByProcess = new Map<string, { component: string; detail?: string }[]>();
+  for (const r of stepRows) {
+    const pid = String(r[0] ?? '');
+    if (!pid) continue;
+    const component = String(r[1] ?? '');
+    if (!component) continue;
+    const file = r[2] != null ? String(r[2]) : undefined;
+    const list = stepsByProcess.get(pid) ?? [];
+    list.push({ component, ...(file ? { detail: file } : {}) });
+    stepsByProcess.set(pid, list);
+  }
+  const processes: SourceProcessInput[] = processRows.map((r) => {
+    const id = r[0] != null ? String(r[0]) : undefined;
+    return {
+      id,
+      name: String(r[1] ?? ''),
+      steps: id ? (stepsByProcess.get(id) ?? []) : [],
+    };
+  });
+
+  if (
+    symbols.length === 0 &&
+    communities.length === 0 &&
+    processes.length === 0
+  ) {
+    return null;
+  }
+  return { repo, symbols, communities, processes };
+}
+
+/**
  * Additive project-knowledge pass (HOR-293). Best-effort: never fails `horus index`.
  * `--changed --fast` is the pre-push-safe path (cheap landscape refresh + changed-file
  * awareness); `--full` rebuilds the landscape. Deeper per-file extraction (contracts,
  * types, data flows) layers on top later using the changed-file set.
  */
-function buildKnowledgeIndex(
+async function buildKnowledgeIndex(
   root: string,
   config: HorusConfig | null,
   label: string,
   configuredProject: string | null,
   opts: IndexOptions,
-): void {
+  hostUrl?: string,
+): Promise<void> {
   try {
     const gitSha = getHeadSha(root) ?? undefined;
     const branch = getCurrentBranch(root) ?? undefined;
@@ -155,15 +254,38 @@ function buildKnowledgeIndex(
     }
     if (repos.length === 0) repos.push({ name: label, path: root });
 
-    const snapshot = buildProjectKnowledge(repos, { project: label, gitSha });
+    // Bridge the analysed source graph into the KB (HOR-408). The host serves THIS
+    // repo, so the graph is attributed to the repo whose root we indexed (the lone
+    // repo when unconfigured, else the configured repo matching `root`). Best-effort:
+    // a failed pull just leaves the symbol-derived categories empty (manifest-only).
+    let sourceGraph: SourceGraphExtract | undefined;
+    if (hostUrl) {
+      const graphRepo =
+        repos.find((r) => resolve(r.path) === resolve(root))?.name ?? label;
+      try {
+        const extract = await extractSourceGraph(hostUrl, graphRepo);
+        if (extract) sourceGraph = extract;
+      } catch {
+        /* best-effort: fall back to the manifest-only landscape */
+      }
+    }
+
+    const snapshot = buildProjectKnowledge(repos, { project: label, gitSha, sourceGraph });
     createJsonKnowledgeStore(root).write(snapshot, {
       generator: { tool: 'horus-cli' },
       git: { sha: gitSha, branch },
       repositories: repos.map((r) => ({ name: r.name, path: r.path, headSha: gitSha })),
       sourceIntelligence: config ? { tool: 'source', version: PINNED_SOURCE_VERSION } : undefined,
     });
+    const counts = [
+      snapshot.repositories.length ? `${snapshot.repositories.length} repo(s)` : null,
+      snapshot.operations.length ? `${snapshot.operations.length} operation(s)` : null,
+      snapshot.types.length ? `${snapshot.types.length} type(s)` : null,
+      snapshot.domainConcepts.length ? `${snapshot.domainConcepts.length} concept(s)` : null,
+      snapshot.dataFlows.length ? `${snapshot.dataFlows.length} flow(s)` : null,
+    ].filter(Boolean);
     console.log(
-      pc.dim(`  project knowledge: ${snapshot.repositories.length} repo profile(s) → .horus/index/`),
+      pc.dim(`  project knowledge: ${counts.join(', ')} → .horus/index/`),
     );
   } catch (err) {
     // Knowledge building is best-effort and must never break `horus index`.
@@ -321,7 +443,8 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
     await stitchQueueMap(hostUrl, dbUrl, label);
 
     // Build/refresh the local project-knowledge snapshot (HOR-293). Best-effort.
-    buildKnowledgeIndex(root, config, label, configuredProject, opts);
+    // Passes the live host so the analysed source graph is bridged into the KB (HOR-408).
+    await buildKnowledgeIndex(root, config, label, configuredProject, opts, hostUrl);
 
     // A repo is "set up" once it has a discoverable local config. Compute this from the repo
     // itself, NOT from `spawned`: a repo whose host was REUSED (not freshly spawned) used to

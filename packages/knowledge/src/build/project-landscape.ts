@@ -22,6 +22,11 @@ import {
   type KnowledgeSnapshot,
   type Provenance,
 } from '../schema.js';
+import {
+  buildKnowledgeFromSourceGraph,
+  deriveExternalIntegrations,
+  type SourceGraphExtract,
+} from './source-graph.js';
 
 interface PackageJson {
   name?: string;
@@ -434,6 +439,14 @@ export interface BuildOptions {
   gitSha?: string;
   /** ISO timestamp for the snapshot (defaults to now). */
   now?: string;
+  /**
+   * Source-intelligence graph pulled from the analysed repo (HOR-408). When
+   * present, its symbols/communities/processes populate the operations, types,
+   * enums, domainConcepts, dataFlows, and runtimeComponents categories — the
+   * rich analyse output the manifest-only pass used to drop. The host serves a
+   * single repo, so `repo` should name it (else the lone repo is assumed).
+   */
+  sourceGraph?: SourceGraphExtract;
 }
 
 /** Derive a single repository profile from its dependency manifest(s). */
@@ -505,10 +518,40 @@ export function buildProjectKnowledge(
 ): KnowledgeSnapshot {
   const now = opts.now ?? new Date().toISOString();
   const repositories = repos.map((r) => deriveRepositoryProfile(r, { ...opts, now }));
+
+  // Bridge the analysed source graph into the symbol-derived categories (HOR-408).
+  // The host serves a single repo; if the caller didn't name it, fall back to the
+  // lone configured repo so items carry a repository scope.
+  const graphRepo = opts.sourceGraph?.repo ?? (repos.length === 1 ? repos[0]?.name : undefined);
+  const fromGraph = opts.sourceGraph
+    ? buildKnowledgeFromSourceGraph(opts.sourceGraph, {
+        project: opts.project,
+        repo: graphRepo,
+        gitSha: opts.gitSha,
+        now,
+      })
+    : {
+        operations: [],
+        types: [],
+        enums: [],
+        domainConcepts: [],
+        dataFlows: [],
+        runtimeComponents: [],
+      };
+
   return KnowledgeSnapshotSchema.parse({
     schemaVersion: KNOWLEDGE_SCHEMA_VERSION,
     generatedAt: now,
     project: opts.project,
     repositories,
+    operations: fromGraph.operations,
+    types: fromGraph.types,
+    enums: fromGraph.enums,
+    domainConcepts: fromGraph.domainConcepts,
+    dataFlows: fromGraph.dataFlows,
+    runtimeComponents: fromGraph.runtimeComponents,
+    // External integrations come from the manifest-derived repo profiles — the
+    // data sources / third-party SDKs already detected for the landscape.
+    externalIntegrations: deriveExternalIntegrations(repositories),
   });
 }
