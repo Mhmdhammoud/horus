@@ -324,6 +324,82 @@ describe('collectGitChanges', () => {
   });
 });
 
+// ── HOR-423: correct base + degenerate-diff detection ──────────────────────────
+
+describe('collectGitChanges — HOR-423 base + degenerate detection', () => {
+  it('diffs a date window against the oldest commit FIRST PARENT (<sha>^1)', async () => {
+    mockGitLog.mockResolvedValue([makeCommit('abc1234def5678', ['src/foo.ts'])]);
+    stubExec(' src/foo.ts | 3 +++\n 1 file changed');
+
+    await collectGitChanges({ repoPath: '/repo', since: '24 hours ago' });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const diffCall = (mockExecFile as any).mock.calls.find(
+      (c: unknown[]) => Array.isArray(c[1]) && (c[1] as string[]).includes('diff'),
+    );
+    expect(diffCall).toBeDefined();
+    const args = diffCall[1] as string[];
+    expect(args).toContain('abc1234def5678^1..HEAD');
+  });
+
+  it('a healthy diff is NOT degenerate', async () => {
+    mockGitLog.mockResolvedValue([makeCommit('abc1234', ['src/foo.ts'])]);
+    stubExec(' src/foo.ts | 3 +++\n 1 file changed');
+
+    const result = await collectGitChanges({ repoPath: '/repo', since: '24 hours ago' });
+    expect(result.degenerate).toBe(false);
+    expect(result.degenerateReason).toBeUndefined();
+  });
+
+  it('flags degenerate when the diff fails but in-window commits touched files (root/shallow)', async () => {
+    mockGitLog.mockResolvedValue([makeCommit('abc1234', ['src/foo.ts'])]);
+    stubExecError("fatal: ambiguous argument 'abc1234^1': unknown revision");
+
+    const result = await collectGitChanges({ repoPath: '/repo', since: '24 hours ago' });
+    expect(result.fileStats).toHaveLength(0);
+    expect(result.degenerate).toBe(true);
+    expect(result.degenerateReason).toMatch(/no usable diff base/);
+  });
+
+  it('flags degenerate for a +0/-0 no-op diff (pure merge / rename / mode-only)', async () => {
+    mockGitLog.mockResolvedValue([makeCommit('abc1234', ['a.ts', 'b.ts'])]);
+    stubExec(' a.ts | 0\n b.ts | 0\n 2 files changed');
+
+    const result = await collectGitChanges({ repoPath: '/repo', since: '24 hours ago' });
+    expect(result.totalInsertions + result.totalDeletions).toBe(0);
+    expect(result.degenerate).toBe(true);
+    expect(result.degenerateReason).toMatch(/no-op/);
+  });
+
+  it('flags degenerate when the diff over-reaches its base (far more files than commits touched)', async () => {
+    // One in-window commit touches one file, but the endpoint diff reports 25 files —
+    // a merge dragged a whole branch into the diff, or the base reached too far back.
+    mockGitLog.mockResolvedValue([makeCommit('abc1234', ['src/foo.ts'])]);
+    const manyFiles = Array.from({ length: 25 }, (_, i) => ` pkg/file${i}.ts | 1 +`).join('\n');
+    stubExec(manyFiles);
+
+    const result = await collectGitChanges({ repoPath: '/repo', since: '24 hours ago' });
+    expect(result.degenerate).toBe(true);
+    expect(result.degenerateReason).toMatch(/over-reach/);
+  });
+
+  it('does NOT flag over-reach for a legitimately broad single commit (files match the diff)', async () => {
+    const touched = Array.from({ length: 25 }, (_, i) => `pkg/file${i}.ts`);
+    mockGitLog.mockResolvedValue([makeCommit('abc1234', touched)]);
+    const manyFiles = touched.map((f) => ` ${f} | 1 +`).join('\n');
+    stubExec(manyFiles);
+
+    const result = await collectGitChanges({ repoPath: '/repo', since: '24 hours ago' });
+    expect(result.degenerate).toBe(false);
+  });
+
+  it('empty result is not degenerate', async () => {
+    mockGitLog.mockResolvedValue([]);
+    const result = await collectGitChanges({ repoPath: '/repo', since: '24 hours ago' });
+    expect(result.degenerate).toBe(false);
+  });
+});
+
 // ── HOR-333: auto change window ─────────────────────────────────────────────────
 
 describe('changeWindowSinceFrom', () => {

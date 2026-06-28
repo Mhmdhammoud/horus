@@ -57,7 +57,29 @@ export interface BoundedGitChange {
   window: { since: string; until: string | undefined };
   truncated: boolean;
   truncatedReason?: string;
+  /**
+   * HOR-423: the diff against the base carries NO usable change signal and must never drive a
+   * deployment-regression conclusion. True when the base was wrong/absent (a root or shallow-clone
+   * boundary where the first parent cannot be resolved), the diff is a +0/-0 no-op across the
+   * files it reports (pure merge / rename / mode-only), or it "over-reaches" — reporting far more
+   * files than the in-window commits actually touched (e.g. a merge dragging an entire long-lived
+   * branch into the endpoint diff, or a checkout/vendor bump). Consumers treat a degenerate change
+   * window as if no change evidence existed. Absent ⇒ false (a usable change window).
+   */
+  degenerate?: boolean;
+  /** Human-readable reason a window was flagged {@link degenerate}. Absent when not degenerate. */
+  degenerateReason?: string;
 }
+
+// ── Degenerate-diff thresholds (HOR-423) ────────────────────────────────────────
+
+/**
+ * A diff "over-reaches" — signalling a wrong/too-far base — when it reports at least this many
+ * files AND that file count dwarfs (by {@link OVERREACH_FACTOR}×) what the in-window commits
+ * actually touched. The floor avoids flagging small, legitimately-broad commits.
+ */
+const OVERREACH_MIN_FILES = 20;
+const OVERREACH_FACTOR = 4;
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
@@ -256,6 +278,7 @@ export async function collectGitChanges(query: GitChangeQuery): Promise<BoundedG
     window: { since: query.since, until: query.until },
     truncated: reason !== undefined,
     truncatedReason: reason,
+    degenerate: false,
   });
 
   // ── Input validation (security: prevent argv flag smuggling) ─────────────────
@@ -302,12 +325,19 @@ export async function collectGitChanges(query: GitChangeQuery): Promise<BoundedG
   const truncatedCommits = commits.length >= maxCommits;
 
   // ── 2. Fetch diff stats ────────────────────────────────────────────────────
-
+  //
+  // HOR-423: diff against the CORRECT base. For a ref-based window the base is the supplied
+  // ref. For a date/duration window the base is the FIRST PARENT of the oldest in-window commit
+  // (`<sha>^1`, explicit so a merge commit resolves to its mainline parent rather than the
+  // branch it merged). A root commit or a shallow-clone boundary has no first parent, so the
+  // diff exec fails — caught below and surfaced as a degenerate window rather than silently
+  // reporting the commit file list with +0/-0.
   let rawStats: FileStat[] = [];
+  let diffOk = false;
   try {
     const oldest = commits[commits.length - 1];
     if (oldest !== undefined) {
-      const rangeBase = isRefLike(query.since) ? query.since : `${oldest.sha}^`;
+      const rangeBase = isRefLike(query.since) ? query.since : `${oldest.sha}^1`;
       // query.until already validated above when isRefLike(query.since) is true.
       const rangeHead = query.until ?? 'HEAD';
       const { stdout } = await exec(
@@ -316,9 +346,11 @@ export async function collectGitChanges(query: GitChangeQuery): Promise<BoundedG
         { maxBuffer: 10 * 1024 * 1024 },
       );
       rawStats = parseDiffStat(stdout);
+      diffOk = true;
     }
   } catch {
-    // Diff stats are best-effort; proceed without them
+    // Diff stats are best-effort; proceed without them. A failure here (e.g. a root commit's
+    // missing first parent, or a shallow-clone boundary) leaves diffOk=false → degenerate.
   }
 
   // ── 3. Apply file and byte limits ─────────────────────────────────────────
@@ -372,6 +404,42 @@ export async function collectGitChanges(query: GitChangeQuery): Promise<BoundedG
   if (truncatedFiles) reasons.push(`files capped at ${maxFiles}`);
   if (truncatedBytes) reasons.push(`output capped at ${maxBytes} bytes`);
 
+  // ── 5. Degenerate-diff detection (HOR-423) ─────────────────────────────────
+  // A degenerate window carries no usable change signal and must never drive a
+  // deployment-regression conclusion. Three independent triggers:
+  //   (a) no base — the diff could not be computed (root commit's missing first parent,
+  //       shallow-clone boundary, or any git failure) yet the in-window commits touched files;
+  //   (b) no-op — the diff reports files but +0/-0 across them (pure merge / rename / mode-only);
+  //   (c) over-reach — the diff reports far more files than the in-window commits actually
+  //       touched (a wrong/too-far base, e.g. a merge dragging a whole branch into the endpoint
+  //       diff, or a checkout/vendor bump).
+  let degenerate = false;
+  let degenerateReason: string | undefined;
+
+  // Files the in-window commits actually touched (uncapped — ground truth for this window).
+  const commitFileUnion = new Set<string>();
+  for (const c of commits) {
+    for (const f of c.files) commitFileUnion.add(f);
+  }
+  const diffFileCount = rawStats.length;
+
+  if (!diffOk) {
+    if (changedFiles.length > 0) {
+      degenerate = true;
+      degenerateReason = 'no usable diff base (root commit, shallow clone, or diff failed)';
+    }
+  } else if (diffFileCount > 0 && totalInsertions + totalDeletions === 0) {
+    degenerate = true;
+    degenerateReason = '+0/-0 no-op diff (pure merge, rename, or mode-only change)';
+  } else if (
+    diffFileCount >= OVERREACH_MIN_FILES &&
+    commitFileUnion.size > 0 &&
+    diffFileCount >= commitFileUnion.size * OVERREACH_FACTOR
+  ) {
+    degenerate = true;
+    degenerateReason = `diff over-reaches base (${diffFileCount} files vs ${commitFileUnion.size} touched by in-window commits)`;
+  }
+
   return {
     commits,
     fileStats,
@@ -381,6 +449,8 @@ export async function collectGitChanges(query: GitChangeQuery): Promise<BoundedG
     window: { since: query.since, until: query.until },
     truncated,
     truncatedReason: reasons.length > 0 ? reasons.join('; ') : undefined,
+    degenerate,
+    ...(degenerateReason !== undefined ? { degenerateReason } : {}),
   };
 }
 

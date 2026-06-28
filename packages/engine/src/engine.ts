@@ -778,6 +778,9 @@ export function seedTouchedByRelevantChange(
   seedFile: string | undefined,
 ): boolean {
   if (recentChanges === undefined || seedFile === undefined) return false;
+  // HOR-423: a degenerate window (wrong/absent base, +0/-0 no-op, or an over-reaching diff)
+  // carries no usable change signal — it can never be a regression driver.
+  if (recentChanges.degenerate) return false;
   // No-op window: nothing actually changed (e.g. a pure merge: +0/-0 across many files).
   if (recentChanges.totalInsertions + recentChanges.totalDeletions === 0) return false;
   const matchesSeed = (f: string): boolean =>
@@ -1251,7 +1254,15 @@ export async function investigate(
   // HOR-193: when the source-backend ChangeSet is unavailable but git history was
   // collected (e.g. --since HEAD~5, source backend down, or degraded runtime-only mode),
   // synthesize a commit evidence entry so hypotheses + gaps receive the change signal.
-  if (changes === null && recentChanges !== undefined && recentChanges.commits.length > 0) {
+  if (
+    changes === null &&
+    recentChanges !== undefined &&
+    recentChanges.commits.length > 0 &&
+    // HOR-423: a degenerate diff (wrong/absent base, +0/-0 no-op, or over-reach) carries no
+    // usable change signal — don't synthesize change evidence off it, which would otherwise
+    // cascade into a bogus "N file(s) changed (+0 -0)" finding and deployment-regression cause.
+    !recentChanges.degenerate
+  ) {
     const { commits, changedFiles, totalInsertions, totalDeletions } = recentChanges;
     const ev = mkEv(
       'commit',
@@ -1269,7 +1280,14 @@ export async function investigate(
   // and surfaces only. Runtime-config / feature-flag ingestion remains out of scope.
   let configChangeEvId: string | undefined;
   let configChanges: ConfigChangeFile[] = [];
-  if (recentChanges !== undefined && recentChanges.changedFiles.length > 0) {
+  // HOR-423: skip config/migration attribution when the change window is degenerate — a
+  // wrong/too-far base ("9 migrations + 6 configs from a checkout bump") must not be framed
+  // as a non-code change source.
+  if (
+    recentChanges !== undefined &&
+    !recentChanges.degenerate &&
+    recentChanges.changedFiles.length > 0
+  ) {
     configChanges = classifyConfigChangeFiles(recentChanges.changedFiles);
     if (configChanges.length > 0) {
       const migrationN = configChanges.filter((c) => c.category === 'migration').length;

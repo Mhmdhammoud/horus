@@ -816,6 +816,7 @@ function makeGitChange(overrides: Partial<BoundedGitChange> = {}): BoundedGitCha
     totalDeletions: 0,
     window: { since: '24 hours ago', until: undefined },
     truncated: false,
+    degenerate: false,
     ...overrides,
   };
 }

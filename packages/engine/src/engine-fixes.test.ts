@@ -339,7 +339,19 @@ describe('seedTouchedByRelevantChange (HOR-406)', () => {
     totalDeletions: 0,
     window: { since: 'x', until: undefined },
     truncated: false,
+    degenerate: false,
     ...over,
+  });
+
+  it('returns false for a degenerate change window even when a real commit touched the seed (HOR-423)', () => {
+    const rc = change({
+      commits: [makeCommit('real003', 'refactor sale path', [seedFile])],
+      changedFiles: [seedFile],
+      totalInsertions: 12,
+      totalDeletions: 4,
+      degenerate: true,
+    });
+    expect(seedTouchedByRelevantChange(rc, seedFile)).toBe(false);
   });
 
   it('returns true for a non-noise commit that touches the seed within a non-trivial diff', () => {
