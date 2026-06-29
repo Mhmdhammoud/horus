@@ -524,6 +524,73 @@ export function queueFindingConfidence(opts: {
   return starvedCount > 0 && backloggedCount === 0 && failingCount === 0 ? 0.65 : 0.85;
 }
 
+/**
+ * HOR-438: a per-segment queue STRUCTURE detected from queue-edge topology.
+ * `baseName` is the shared logical job; `segments` are the distinct, segment-looking
+ * suffixes it fans out to (markets/regions/tenants/shards/zones).
+ */
+export interface PerSegmentQueueStructure {
+  baseName: string;
+  segments: string[];
+  count: number;
+}
+
+/** Segment delimiter used by per-segment queue naming (`MANAGE_SALES:KSA`). */
+const SEGMENT_DELIMITER = ':';
+
+/**
+ * A segment suffix is a SHORT token — a region/market/tenant/shard/zone code such as
+ * `KSA`, `UAE`, `US-EAST`, `eu1`, `tenant-a`, `shard3` — not an arbitrary long string.
+ * This light sanity check keeps an incidental `:` (namespaced keys, URLs, timestamps)
+ * from being read as a segment fan-out.
+ */
+const SEGMENT_SUFFIX_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,15}$/;
+
+/**
+ * HOR-438: detect a per-segment queue STRUCTURE from the queue-edge topology already
+ * collected (Approach A — the most reliable signal; the data is already present).
+ *
+ * Many systems fan a single logical job out into one queue PER market/region/tenant/
+ * shard/zone (e.g. `MANAGE_SALES:KSA`, `MANAGE_SALES:UAE`). When such a structure is
+ * present, an anomaly on one segment is far more likely EXPECTED per-segment variance
+ * than a uniform failure — so this is a real, CODE-GROUNDED support for the
+ * benign-variance hypothesis. It is never a verdict on its own.
+ *
+ * Detection: split each queue name on the `:` segment delimiter, group by the base name,
+ * and flag a base when 2+ queues share it with DISTINCT, segment-looking suffixes.
+ * False-positive guard: a single queue that merely contains a `:` is NOT a pattern — we
+ * require ≥2 distinct segment suffixes on a shared base.
+ */
+export function detectPerSegmentQueues(
+  queueHits: ReadonlyArray<Pick<QueueEdge, 'queueName'>>,
+): PerSegmentQueueStructure[] {
+  const byBase = new Map<string, Set<string>>();
+  for (const { queueName } of queueHits) {
+    if (typeof queueName !== 'string') continue;
+    const idx = queueName.indexOf(SEGMENT_DELIMITER);
+    // Need both a non-empty base (before the delimiter) and a non-empty suffix (after).
+    if (idx <= 0 || idx >= queueName.length - 1) continue;
+    const base = queueName.slice(0, idx).trim();
+    const suffix = queueName.slice(idx + 1).trim();
+    if (base === '' || suffix === '') continue;
+    // Dimension-name sanity check: the suffix must LOOK like a segment code.
+    if (!SEGMENT_SUFFIX_RE.test(suffix)) continue;
+    const set = byBase.get(base) ?? new Set<string>();
+    set.add(suffix);
+    byBase.set(base, set);
+  }
+  const out: PerSegmentQueueStructure[] = [];
+  for (const [baseName, segs] of byBase) {
+    // False-positive guard: ≥2 DISTINCT segment suffixes sharing the SAME base.
+    if (segs.size < 2) continue;
+    const segments = [...segs].sort();
+    out.push({ baseName, segments, count: segments.length });
+  }
+  // Deterministic order for stable evidence ids / output.
+  out.sort((a, b) => a.baseName.localeCompare(b.baseName));
+  return out;
+}
+
 /** Does `since` look like a range or a concrete ref worth diffing? */
 export function looksDiffable(since: string): boolean {
   const s = since.trim();
@@ -1234,6 +1301,9 @@ export async function investigate(
   const flowEvIds: string[] = [];
   let queueHits: QueueEdge[] = [];
   const queueEvByName = new Map<string, string[]>();
+  // HOR-438: evidence ids for any code-detected per-segment queue STRUCTURE (one queue per
+  // market/region/tenant/shard). Feeds the benign-variance hypothesis as code-grounded support.
+  const perSegmentQueueStructureEvIds: string[] = [];
   let changes: ChangeSet | null = null;
   let changeEvId: string | null = null;
 
@@ -1356,6 +1426,28 @@ export async function investigate(
       const list = queueEvByName.get(edge.queueName) ?? [];
       list.push(ev.id);
       queueEvByName.set(edge.queueName, list);
+    }
+
+    // HOR-438: detect a per-segment queue STRUCTURE (one queue per market/region/tenant/
+    // shard) from the topology just collected. When present, emit ONE code-grounded
+    // evidence item (modest relevance) per detected base — an anomaly on a single segment
+    // is more likely EXPECTED per-segment variance than a uniform failure. This SUPPORTS the
+    // benign-variance hypothesis; it is never a verdict on its own.
+    for (const struct of detectPerSegmentQueues(queueHits)) {
+      const ev = mkEv(
+        'queue-edge',
+        `Per-segment queue structure: "${struct.baseName}" fans out to ${struct.count} segment(s) (${struct.segments.join(', ')})`,
+        {
+          kind: 'per-segment-queue-pattern',
+          baseName: struct.baseName,
+          segments: struct.segments,
+          count: struct.count,
+        },
+        { queueName: struct.baseName },
+        undefined,
+        0.4,
+      );
+      perSegmentQueueStructureEvIds.push(ev.id);
     }
 
     if (changes) {
@@ -2488,6 +2580,10 @@ export async function investigate(
     // the benign-variance hypothesis (#4); the suggested categories de-anchor alert text (#1).
     perDimensionDurationEvIds,
     bimodalMetricEvIds,
+    // HOR-438: code-detected per-segment queue structure — a real, code-grounded support
+    // for benign-variance (one queue per market/region/tenant ⇒ per-segment variance is
+    // expected, not a uniform failure).
+    perSegmentQueueStructureEvIds,
     benignVarianceApplicable:
       looksDurationThemed(hint) ||
       perDimensionDurationEvIds.length > 0 ||
