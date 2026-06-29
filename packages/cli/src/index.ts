@@ -1554,6 +1554,8 @@ Examples:
   return program;
 }
 
+export { reportCrash } from './lib/report-crash.js';
+
 export async function run(argv: string[] = process.argv): Promise<void> {
   // One-time disclosure + install-identity bootstrap. Never throws/blocks.
   maybeShowFirstRunNotice(argv);
