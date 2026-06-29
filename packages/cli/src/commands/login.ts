@@ -9,27 +9,13 @@
  * A token can still be supplied directly via `--token` or `HORUS_TOKEN` (CI and
  * machine use); that path validates against `GET /v1/me` and skips the browser.
  */
-import { execFile } from "node:child_process";
 import pc from "picocolors";
 import { CloudClient, CloudError, CloudOfflineError } from "../lib/cloud/api.js";
 import { writeAuth, readAuth, clearAuth } from "../lib/cloud/auth-store.js";
 import { resolveApiBaseUrl, authedClient } from "../lib/cloud/session.js";
+import { openBrowser } from "../lib/open-url.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** Best-effort open of a URL in the default browser. Never throws. */
-function openBrowser(url: string): void {
-  const cmd =
-    process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  try {
-    execFile(cmd, args, () => {
-      /* ignore — the URL is printed regardless */
-    });
-  } catch {
-    /* headless / no browser — the user opens the printed URL manually */
-  }
-}
 
 /** Validate a directly-supplied token (CI path) and persist it. */
 async function loginWithToken(apiBaseUrl: string, token: string): Promise<number> {

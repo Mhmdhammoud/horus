@@ -393,6 +393,10 @@ export async function runInvestigate(
         } else {
           console.log(pc.dim(`\nAsk a follow-up:  horus ask ${report.id} "<question>"`));
         }
+        // Shared footer nudge (HOR-431 / HOR-439): teach Horus when the cause is wrong, or
+        // file a bug/gap. Dim, two tight lines — the same wording reused across surfaces.
+        console.log(pc.dim(`  Wrong cause? Teach Horus:  horus feedback`));
+        console.log(pc.dim(`  Bug or gap? File an issue:  horus report`));
         // Sampled, skippable impact prompt — never on non-TTY/--json (HOR-326).
         await maybePromptFeedback({
           investigationId: report.id,

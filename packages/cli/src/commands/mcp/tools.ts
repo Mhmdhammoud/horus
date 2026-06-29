@@ -10,6 +10,7 @@
 import { z, type ZodRawShape } from 'zod';
 import { getHeadSha, isWorkingTreeDirty } from '@horus/core';
 import { route, type RouteStep, type RouterCommand } from '@horus/engine';
+import { buildIssue } from '../report-issue.js';
 import {
   createJsonKnowledgeStore,
   searchSnapshot,
@@ -335,6 +336,40 @@ export const KNOWLEDGE_TOOLS: KnowledgeTool[] = [
         return { ok: true, summary: `Data flow "${flow.name}".`, data: { kind: 'dataFlow', flow, staleness: ctx.staleness } };
       }
       return { ok: true, summary: `Nothing to trace for "${str(args.query)}".`, data: { matches: [], staleness: ctx.staleness } };
+    },
+  },
+  {
+    name: 'report_issue',
+    description:
+      'File a Horus bug or capability gap. When you detect that Horus is missing a capability, returns wrong results, or errors, call this to prepare a PRE-FILLED GitHub issue URL (meritt-dev/horus) with an Environment block — then open it or share it with the user. No auth, no data is sent automatically, no dedup.',
+    inputSchema: {
+      title: z.string().optional().describe('issue title (default: derived from hint)'),
+      body: z.string().optional().describe('issue body describing the bug or gap'),
+      labels: z.string().optional().describe('comma-separated GitHub labels (e.g. bug,cli)'),
+      hint: z.string().optional().describe('short context, e.g. the investigation or command that hit the gap'),
+    },
+    handler: (args) => {
+      const issue = buildIssue({
+        title: str(args.title) || undefined,
+        body: str(args.body) || undefined,
+        labels: str(args.labels) || undefined,
+        hint: str(args.hint) || undefined,
+      });
+      return {
+        ok: true,
+        summary: 'GitHub issue URL prepared — open it or share with the user.',
+        data: {
+          url: issue.url,
+          title: issue.title,
+          labels: issue.labels,
+          environment: {
+            horusVersion: issue.environment.horusVersion,
+            sourceVersion: issue.environment.sourceVersion,
+            platform: issue.environment.platform,
+            nodeVersion: issue.environment.nodeVersion,
+          },
+        },
+      };
     },
   },
 ];

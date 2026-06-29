@@ -1,6 +1,6 @@
 import pc from 'picocolors';
 import { loadConfig, resolveEnvironment } from '@horus/core';
-import { openDb, recordOutcomeLabel, isOutcomeResolved } from '@horus/db';
+import { openDb, recordOutcomeLabel, isOutcomeResolved, getLastInvestigationId } from '@horus/db';
 import { runFeedbackPrompt, submitFeedback, parseResolved } from '../lib/telemetry/feedback.js';
 
 /**
@@ -77,10 +77,27 @@ export async function runFeedback(
     cause?: string;
   } = {},
 ): Promise<number> {
-  const id = investigationId?.trim();
+  let id = investigationId?.trim();
+  // No id given → default to the LAST investigation (HOR-431). This is the common case after a
+  // fresh `horus investigate`, so feedback no longer requires copy-pasting an id.
   if (!id) {
-    console.error(pc.red('Usage: horus feedback <investigationId> [--resolved yes|partly|no]'));
-    return 1;
+    let last: string | null = null;
+    try {
+      const config = await loadConfig(opts.config);
+      const { db, sql } = await openDb(config.database.url);
+      try {
+        last = await getLastInvestigationId(db);
+      } finally {
+        await sql.end();
+      }
+    } catch {
+      last = null;
+    }
+    if (!last) {
+      console.error(pc.red('No investigations yet — run: horus investigate "<hint>"'));
+      return 1;
+    }
+    id = last;
   }
 
   // Non-interactive path — agent/scripted feedback via flags. Works without a TTY.
