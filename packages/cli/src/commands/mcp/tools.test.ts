@@ -68,13 +68,29 @@ describe('Horus MCP knowledge tools', () => {
     expect(tool('search_project_knowledge').description).toMatch(/FIRST/);
   });
 
-  it('every tool returns a not-ok no-index result when there is no index', () => {
+  it('every knowledge tool returns a not-ok no-index result when there is no index', () => {
     const root = emptyRoot();
-    for (const t of KNOWLEDGE_TOOLS) {
+    // report_issue is index-INDEPENDENT (it builds a GitHub issue URL) — an agent must be able
+    // to file a gap even when nothing is indexed, so it is exempt from the no-index contract.
+    for (const t of KNOWLEDGE_TOOLS.filter((t) => t.name !== 'report_issue')) {
       const res = t.handler({ query: 'x', question: 'x', name: 'x' }, root);
       expect(res.ok).toBe(false);
       expect(res.summary).toMatch(/No local project-knowledge index/);
     }
+  });
+
+  it('report_issue builds a pre-filled GitHub issue URL without an index', () => {
+    const res = tool('report_issue').handler(
+      { title: 'Axiom connector ignores --service', labels: 'bug,connectors', hint: 'investigate foo' },
+      emptyRoot(),
+    );
+    expect(res.ok).toBe(true);
+    const d = res.data as { url: string; title: string; labels: string[]; environment: Record<string, unknown> };
+    expect(d.url).toMatch(/github\.com\/meritt-dev\/horus\/issues\/new/);
+    expect(d.url).toContain('title=');
+    expect(d.title).toBe('Axiom connector ignores --service');
+    expect(d.labels).toEqual(['bug', 'connectors']);
+    expect(d.environment.horusVersion).toBeTruthy();
   });
 
   it('get_knowledge_status reports schema + staleness', () => {

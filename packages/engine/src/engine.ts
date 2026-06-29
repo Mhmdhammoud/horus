@@ -700,6 +700,49 @@ function splitTopLevelParams(list: string): string[] {
   return out.map((s) => s.trim()).filter((s) => s !== '');
 }
 
+/**
+ * HOR-438 polish: a decorated parameter — TypeGraphQL `@Arg('name', ...)` or NestJS
+ * `@Param('name')`/`@Query('name')`/`@Body('name')` — carries its REAL name in the decorator's
+ * first quoted string. Return that clean name, or null when the param is not a decorated argument
+ * (or the decorator has no quoted name, e.g. `@Body()`). This only affects the DISPLAYED paramName;
+ * the segment-dimension match still runs on the same parsed name so firing is unchanged.
+ */
+const DECORATED_ARG_RE = /^@(?:Arg|Param|Query|Body)\s*\(\s*['"`]([^'"`]+)['"`]/;
+function decoratedArgName(raw: string): string | null {
+  const m = raw.trim().match(DECORATED_ARG_RE);
+  return m ? m[1]! : null;
+}
+
+/** Strip leading parameter decorators (`@Arg(...) `, `@Body() `, …), respecting nested parens. */
+function stripLeadingDecorators(s: string): string {
+  let cur = s.trim();
+  while (cur.startsWith('@')) {
+    const m = cur.match(/^@[A-Za-z_]\w*/);
+    if (!m) break;
+    let i = m[0].length;
+    while (i < cur.length && /\s/.test(cur[i]!)) i++;
+    if (cur[i] === '(') {
+      let depth = 0;
+      let j = i;
+      for (; j < cur.length; j++) {
+        const c = cur[j]!;
+        if (c === '(') depth++;
+        else if (c === ')') {
+          depth--;
+          if (depth === 0) {
+            j++;
+            break;
+          }
+        }
+      }
+      cur = cur.slice(j).trim();
+    } else {
+      cur = cur.slice(i).trim();
+    }
+  }
+  return cur;
+}
+
 /** Parse one parameter into {name, type}. Returns null for destructured/empty params. */
 function parseParam(raw: string): { name: string; type: string } | null {
   let s = raw.trim();
@@ -707,16 +750,30 @@ function parseParam(raw: string): { name: string; type: string } | null {
   s = s.replace(/^(?:public|private|protected|readonly)\s+/g, '').replace(/^\.\.\./, '');
   // Destructured params ({ a, b } / [a, b]) have no single name — skip (conservative).
   if (s.startsWith('{') || s.startsWith('[')) return null;
-  const colon = topLevelIndexOf(s, ':');
-  let namePart = colon >= 0 ? s.slice(0, colon) : s;
-  let typePart = colon >= 0 ? s.slice(colon + 1) : '';
+  // Capture the decorator's quoted name BEFORE stripping it (TypeGraphQL `@Arg('name', ...)`,
+  // NestJS `@Param/@Query/@Body('name')`).
+  const decorated = decoratedArgName(s);
+  // Strip leading decorators so the identifier + type parse cleanly: a decorator body contains
+  // `=>`, commas, and nested parens that confuse the top-level bracket scanner.
+  const stripped = stripLeadingDecorators(s);
+  const colon = topLevelIndexOf(stripped, ':');
+  let namePart = colon >= 0 ? stripped.slice(0, colon) : stripped;
+  let typePart = colon >= 0 ? stripped.slice(colon + 1) : '';
   // Drop default values on either side.
   const typeEq = topLevelIndexOf(typePart, '=');
   if (typeEq >= 0) typePart = typePart.slice(0, typeEq);
-  const nameEq = namePart.indexOf('=');
-  if (nameEq >= 0) namePart = namePart.slice(0, nameEq);
-  const name = namePart.replace(/\?$/, '').trim();
   const type = typePart.trim();
+
+  let name: string;
+  if (decorated !== null) {
+    // Use the decorator's quoted name as the clean DISPLAY name — not the raw decorator text
+    // (which previously leaked through as `@Arg('marketType', ()`).
+    name = decorated;
+  } else {
+    const nameEq = namePart.indexOf('=');
+    if (nameEq >= 0) namePart = namePart.slice(0, nameEq);
+    name = namePart.replace(/\?$/, '').trim();
+  }
   if (name === '') return null;
   return { name, type };
 }

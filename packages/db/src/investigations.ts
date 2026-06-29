@@ -23,6 +23,20 @@ export async function getInvestigation(db: HorusDb, id: string) {
   return rows[0] ?? null;
 }
 
+/**
+ * Return the id of the most recently created investigation, or null when none exist.
+ * Same ordering as {@link listInvestigations} (createdAt desc) so "the last investigation"
+ * means the same row both surfaces would show first. Powers `horus feedback` with no id.
+ */
+export async function getLastInvestigationId(db: HorusDb): Promise<string | null> {
+  const rows = await db
+    .select({ id: investigations.id })
+    .from(investigations)
+    .orderBy(desc(investigations.createdAt))
+    .limit(1);
+  return rows[0]?.id ?? null;
+}
+
 export async function listInvestigations(db: HorusDb, limit = 20) {
   return db
     .select({

@@ -73,6 +73,7 @@ export {
 } from './outcome.js';
 export {
   getInvestigation,
+  getLastInvestigationId,
   listInvestigations,
   listInvestigationsWithReports,
   updateInvestigationReport,

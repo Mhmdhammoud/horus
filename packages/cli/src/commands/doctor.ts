@@ -382,6 +382,8 @@ export async function runDoctor(opts?: {
     }
   }
   write('');
+  write(pc.dim('  Hit a bug or a missing capability? Report it:  horus report'));
+  write('');
 
   return hasFailure ? 1 : 0;
 }

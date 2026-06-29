@@ -82,6 +82,7 @@ import { maybeShowFirstRunNotice } from './lib/telemetry/notice.js';
 import { installCommandTelemetry } from './lib/telemetry/command-hooks.js';
 import { flushTelemetry } from './lib/telemetry/transport.js';
 import { runFeedback } from './commands/feedback.js';
+import { runReportIssue } from './commands/report-issue.js';
 import { runEvalBuild, runEvalBaseline } from './commands/eval.js';
 
 /**
@@ -1432,7 +1433,7 @@ Examples:
 
   program
     .command('feedback [investigationId]')
-    .description('Leave quick impact feedback on an investigation (helps improve Horus)')
+    .description('Leave quick impact feedback on an investigation — defaults to the latest (helps improve Horus)')
     .option(
       '--resolved <verdict>',
       'did Horus point at the cause? yes | partly | no — non-interactive, for agents/scripts',
@@ -1466,6 +1467,32 @@ Examples:
         process.exitCode = await runFeedback(investigationId, opts);
       },
     );
+
+  program
+    .command('report [hint]')
+    .description('File a Horus bug or capability gap — opens a pre-filled GitHub issue (no auth, no data sent)')
+    .option('--title <text>', 'issue title (default: derived from the hint)')
+    .option('--body <text>', 'issue body / description')
+    .option('--labels <list>', 'comma-separated GitHub labels (e.g. bug,cli)')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .action(
+      async (
+        hint: string | undefined,
+        opts: { title?: string; body?: string; labels?: string; config?: string },
+      ) => {
+        process.exitCode = await runReportIssue({
+          hint,
+          title: opts.title,
+          body: opts.body,
+          labels: opts.labels,
+          config: opts.config,
+        });
+      },
+    )
+    .addHelpText('after', `
+Examples:
+  horus report "explain command crashes on monorepos"
+  horus report --title "Axiom connector ignores --service" --labels bug,connectors`);
 
   const telemetry = program
     .command('telemetry')

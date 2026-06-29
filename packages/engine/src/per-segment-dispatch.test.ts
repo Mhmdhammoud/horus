@@ -68,6 +68,23 @@ describe('detectPerSegmentDispatch (HOR-438b)', () => {
     expect(out!.matchedBy).toBe('name'); // "market Type" matches the curated NAME vocab
   });
 
+  it('cleans a decorated argument name (HOR-438): @Arg(\'marketType\', () => String) → "marketType"', () => {
+    // The displayed paramName must be the QUOTED decorator name, not the raw decorator text
+    // (`@Arg('marketType', ()`). Firing is unchanged — it still matches on the clean name.
+    const out = detectPerSegmentDispatch(
+      ctx({
+        name: 'manageSalesForMarket',
+        signature: "manageSalesForMarket(@Arg('marketType', () => String) marketType: string): Promise<void>",
+      }),
+      [],
+      [],
+    );
+    expect(out).not.toBeNull();
+    expect(out!.paramName).toBe('marketType');
+    expect(out!.paramType).toBe('string');
+    expect(out!.matchedBy).toBe('name');
+  });
+
   it('FIRES on a param NAME in the curated vocab (region) — param signal alone is sufficient', () => {
     const out = detectPerSegmentDispatch(
       ctx({ name: 'syncRegion', signature: 'function syncRegion(region: string): void' }),
