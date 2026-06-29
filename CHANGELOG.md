@@ -6,6 +6,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.13.0] — 2026-06-29 · horus-source 2.0.2
+
+- Benign-variance from code alone: when a service splits its work per segment — separate per-market/region/tenant queues, or a dispatcher like `manageSalesForMarket(market)` fanned out per market — Horus now recognizes the natural per-segment duration variance directly from the code, with no telemetry required, so an expected artifact is no longer reported as a confident wrong root cause. (HOR-438)
+- `horus feedback` no longer needs an investigation id — it defaults to your most recent investigation, and a footer after each investigation nudges you to correct a wrong cause. (HOR-431)
+- New `horus report [hint]` command and `report_issue` MCP tool: file a Horus bug or capability gap as a pre-filled GitHub issue with an environment block (CLI + source version, OS, Node). Agents can report gaps they hit mid-task. No auth, nothing sent automatically. (HOR-439)
+- When the CLI and source-intelligence backend versions drift, the version-pin guard now points you to `horus update` to realign. (HOR-436)
+
+## [0.12.5] — 2026-06-29
+
+- `horus doctor` now health-checks every configured connector, not just the first — misconfigured integrations surface up front. (HOR-437)
+
+## [0.12.4] — 2026-06-29
+
+- Investigations no longer over-anchor on an alert's suggested cause: alert-suggested causes are de-anchored, confidence is recalibrated, and a benign-variance hypothesis is weighed so an expected fluctuation isn't promoted to a confident root cause. (HOR-435)
+- Duration-anomaly investigations get real distribution signal: runtime logs are grouped by dimension/region and bimodal (two-population) metrics are detected. (HOR-434)
+
+## [0.12.3] — 2026-06-29 · horus-source 2.0.2
+
+- Self-healing upgrades: upgrading from a pre-2.0 (KuzuDB-era) install now auto-recovers — a legacy or zero-embedding index is detected on host start and re-extracted + re-embedded automatically, no manual reset. (HOR-433)
+- Each investigation records a context-only memory; recurring incidents consolidate into a single item with a recurrence count. (HOR-432)
+
 ## [0.12.2] — 2026-06-28 · horus-source 2.0.1
 
 - Improved investigation accuracy: seed ranking now weights semantic similarity above raw keyword matching, so investigations surface real core code instead of same-named example/test/demo symbols. (HOR-430)
@@ -17,7 +38,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.12.0] — 2026-06-28 · horus-source 2.0.0
 
-- Storage engine rewrite: source-intelligence storage migrated from KuzuDB to SQLite + sqlite-vec (+ FTS5). Lighter install, EOL KuzuDB dependency retired, re-index automatic on upgrade. KuzuDB stays opt-in for one release via `HORUS_SOURCE_STORAGE_BACKEND=kuzu` + the `[kuzu]` extra. (Major: horus-source 2.0.0.)
+- Storage engine rewrite: source-intelligence storage migrated from KuzuDB to SQLite + sqlite-vec (+ FTS5). Lighter install, EOL KuzuDB dependency retired, re-index automatic on upgrade. KuzuDB stays opt-in via `HORUS_SOURCE_STORAGE_BACKEND=kuzu` + the `[kuzu]` extra through the 2.x line, and will be removed in horus-source 3.0.0. (Major: horus-source 2.0.0.)
 
 ## [0.11.0] — 2026-06-28
 
