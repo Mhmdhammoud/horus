@@ -9,7 +9,6 @@
 import { createInterface } from 'node:readline/promises';
 import pc from 'picocolors';
 import { track } from './client.js';
-import { resolveConsent } from './consent.js';
 
 export type Resolved = 'yes' | 'partly' | 'no' | null;
 
@@ -89,27 +88,5 @@ export async function runFeedbackPrompt(
     return { resolved, manualEstimateMinutes };
   } finally {
     rl.close();
-  }
-}
-
-/**
- * Sampled, best-effort feedback prompt for the end of `investigate`. No-ops on
- * non-TTY, when telemetry is off, or outside the sample. Never throws.
- */
-export async function maybePromptFeedback(opts: {
-  investigationId: string;
-  horusSeconds?: number | null;
-  sampleRate?: number;
-  random?: () => number;
-}): Promise<void> {
-  try {
-    if (!process.stdin.isTTY || !process.stdout.isTTY) return;
-    if (!resolveConsent().tierA) return;
-    const rate = opts.sampleRate ?? 0.25;
-    const rand = (opts.random ?? Math.random)();
-    if (rand > rate) return;
-    await runFeedbackPrompt(opts.investigationId, opts.horusSeconds ?? null);
-  } catch {
-    /* feedback must never break the command */
   }
 }

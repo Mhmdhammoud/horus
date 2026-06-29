@@ -13,7 +13,7 @@ import { runFeedbackPrompt, submitFeedback, parseResolved } from '../lib/telemet
  * DB error just means no local label this time. `project` is denormalized (best-effort) so accuracy
  * can be sliced per project; an unresolvable project is stored as null rather than failing.
  */
-async function persistOutcomeLabel(
+export async function persistOutcomeLabel(
   investigationId: string,
   resolved: string,
   manualEstimateMinutes: number | null,
