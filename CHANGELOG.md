@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.13.2] — 2026-06-30 · horus-source 2.0.2
+
+- Feedback at the right moment: instead of asking right after an investigation (before you know if Horus was right), Horus now nudges you once on a later run to label a prior investigation that's still unresolved — rate-limited, dismissible, and never in scripts/CI (`--no-input` / `HORUS_NO_INPUT` to disable). This raises the outcome-label rate that powers Horus's measured accuracy over time. (HOR-431)
+
 ## [0.13.1] — 2026-06-30 · horus-source 2.0.2
 
 - The `horus report` bug/gap path is now fully discoverable: an unexpected crash nudges you to file an issue, and the command is documented in the CLI reference. Completes the surfacing for the reporting path. (HOR-439)
