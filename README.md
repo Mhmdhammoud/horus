@@ -324,6 +324,7 @@ horus investigate --help
 | `horus explain <symbol>` · `blast-radius` · `architecture` · `what-changed` | Source-aware code intelligence (requires source intelligence backend) |
 | `horus memory <show\|add\|list\|link\|...>` | Inspect/author deterministic incident memory; `memory link` adds `supersedes` / `contradicts` / `recurs-with` edges |
 | `horus feedback <id> [--resolved] [--note] [--cause]` | Record outcome feedback on an investigation (improves Horus) |
+| `horus report [hint] [--title --body --labels]` | File a Horus bug or capability gap — opens a pre-filled GitHub issue (no auth, nothing sent automatically) |
 
 ## Local project workflow (git-style)
 
