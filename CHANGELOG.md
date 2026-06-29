@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.13.1] — 2026-06-30 · horus-source 2.0.2
+
+- The `horus report` bug/gap path is now fully discoverable: an unexpected crash nudges you to file an issue, and the command is documented in the CLI reference. Completes the surfacing for the reporting path. (HOR-439)
+
 ## [0.13.0] — 2026-06-29 · horus-source 2.0.2
 
 - Benign-variance from code alone: when a service splits its work per segment — separate per-market/region/tenant queues, or a dispatcher like `manageSalesForMarket(market)` fanned out per market — Horus now recognizes the natural per-segment duration variance directly from the code, with no telemetry required, so an expected artifact is no longer reported as a confident wrong root cause. (HOR-438)
