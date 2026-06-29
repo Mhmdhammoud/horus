@@ -591,6 +591,236 @@ export function detectPerSegmentQueues(
   return out;
 }
 
+/**
+ * HOR-438b: a per-segment DISPATCH detected from the seed's CODE — a function whose
+ * signature takes a SEGMENT DIMENSION parameter (market/region/tenant/shard/…) and is
+ * therefore invoked once per segment (e.g. `manageSalesForMarket(marketType: MarketType)`
+ * called per market). `symbol` is the seed; `paramName`/`paramType` are the segment-dimension
+ * parameter that proves it; `fanOut` records how the per-segment invocation is corroborated
+ * (a queue dispatch, a caller loop, or none — the param signal alone is sufficient).
+ */
+export interface PerSegmentDispatch {
+  symbol: string;
+  paramName: string;
+  paramType: string;
+  fanOut: 'queue' | 'caller-loop' | 'none';
+  /** Which signal proved the segment dimension: the param NAME or its TYPE. */
+  matchedBy: 'name' | 'type';
+}
+
+/**
+ * Curated segment-dimension vocabulary. INTENTIONALLY TIGHT to avoid false positives: only
+ * words that genuinely denote a per-segment processing axis (market/region/tenant/shard/…),
+ * never generic data words. Used for both the param-NAME regex and the param-TYPE root set.
+ */
+const SEGMENT_DIM_NAME_RE =
+  /\b(market|markets|region|regions|tenant|tenants|segment|shard|zone|locale|country|org|account)\b/i;
+const SEGMENT_DIM_TYPE_ROOTS = new Set<string>([
+  'market',
+  'region',
+  'tenant',
+  'segment',
+  'shard',
+  'zone',
+  'locale',
+  'country',
+  'org',
+  'account',
+]);
+/**
+ * Generic parameter names that must NEVER fire the detector even if they appear near a
+ * segment word — a guard against reading an arbitrary `data`/`payload`/`id` as a segment axis.
+ */
+const GENERIC_DISPATCH_PARAM_NAMES = new Set<string>([
+  'id',
+  'data',
+  'input',
+  'item',
+  'payload',
+  'ctx',
+  'context',
+  'options',
+  'opts',
+  'args',
+  'arg',
+  'params',
+  'param',
+  'value',
+  'val',
+  'obj',
+  'config',
+  'req',
+  'res',
+]);
+
+/** Top-level index of a delimiter char, ignoring `<> () [] {}` nesting. -1 if none. */
+function topLevelIndexOf(s: string, ch: string): number {
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]!;
+    if (c === '<' || c === '(' || c === '[' || c === '{') depth++;
+    else if (c === '>' || c === ')' || c === ']' || c === '}') depth--;
+    else if (c === ch && depth === 0) return i;
+  }
+  return -1;
+}
+
+/** Extract the parenthesized parameter list from a signature/source-body head. '' if none. */
+function extractParamList(sig: string): string {
+  const open = sig.indexOf('(');
+  if (open < 0) return '';
+  let depth = 0;
+  for (let i = open; i < sig.length; i++) {
+    const c = sig[i]!;
+    if (c === '(') depth++;
+    else if (c === ')') {
+      depth--;
+      if (depth === 0) return sig.slice(open + 1, i);
+    }
+  }
+  return '';
+}
+
+/** Split a parameter list on top-level commas (respecting generic/tuple/object nesting). */
+function splitTopLevelParams(list: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let cur = '';
+  for (const c of list) {
+    if (c === '<' || c === '(' || c === '[' || c === '{') depth++;
+    else if (c === '>' || c === ')' || c === ']' || c === '}') depth--;
+    if (c === ',' && depth === 0) {
+      out.push(cur);
+      cur = '';
+    } else {
+      cur += c;
+    }
+  }
+  if (cur.trim() !== '') out.push(cur);
+  return out.map((s) => s.trim()).filter((s) => s !== '');
+}
+
+/** Parse one parameter into {name, type}. Returns null for destructured/empty params. */
+function parseParam(raw: string): { name: string; type: string } | null {
+  let s = raw.trim();
+  // Strip TS access modifiers and rest spread.
+  s = s.replace(/^(?:public|private|protected|readonly)\s+/g, '').replace(/^\.\.\./, '');
+  // Destructured params ({ a, b } / [a, b]) have no single name — skip (conservative).
+  if (s.startsWith('{') || s.startsWith('[')) return null;
+  const colon = topLevelIndexOf(s, ':');
+  let namePart = colon >= 0 ? s.slice(0, colon) : s;
+  let typePart = colon >= 0 ? s.slice(colon + 1) : '';
+  // Drop default values on either side.
+  const typeEq = topLevelIndexOf(typePart, '=');
+  if (typeEq >= 0) typePart = typePart.slice(0, typeEq);
+  const nameEq = namePart.indexOf('=');
+  if (nameEq >= 0) namePart = namePart.slice(0, nameEq);
+  const name = namePart.replace(/\?$/, '').trim();
+  const type = typePart.trim();
+  if (name === '') return null;
+  return { name, type };
+}
+
+/** Insert spaces at camelCase / snake / kebab boundaries so `\bword\b` can match `marketType`. */
+function deCamel(s: string): string {
+  return s.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ');
+}
+
+/**
+ * Leading PascalCase word of a type, lowercased — or null if the type is not a PascalCase
+ * named type (primitives like `string`/`number`, or anything starting lowercase, return null).
+ * `MarketType` -> `market`, `Region` -> `region`, `TenantId` -> `tenant`, `string` -> null.
+ */
+function pascalTypeRoot(type: string): string | null {
+  const m = type.match(/^([A-Za-z_][A-Za-z0-9_]*)/);
+  if (!m) return null;
+  const ident = m[1]!;
+  if (!/^[A-Z]/.test(ident)) return null; // must be a PascalCase named type, not a primitive
+  const word = ident.match(/^[A-Z][a-z0-9]*/);
+  return (word ? word[0] : ident).toLowerCase();
+}
+
+/**
+ * HOR-438b: detect that the seed is a per-segment DISPATCHER from its CODE alone — no
+ * telemetry required. This is the sibling to {@link detectPerSegmentQueues} for the case the
+ * queue-suffix detector cannot see: ONE logical queue, but the per-segment split lives in the
+ * code (e.g. `manageSalesForMarket(marketType)` invoked once per market).
+ *
+ * PRIMARY (required): the seed signature has a parameter that is a SEGMENT DIMENSION — its
+ * NAME matches the curated vocabulary (market/region/tenant/shard/zone/locale/country/org/
+ * account), OR its TYPE is a segment-like PascalCase enum/alias whose root is a segment word
+ * (`MarketType`, `Region`, `TenantId`). Generic params (id/data/input/payload/ctx/…) NEVER
+ * fire. The param signal alone is sufficient to support benign-variance, modestly.
+ *
+ * STRENGTHEN (optional corroboration, recorded in `fanOut`): the seed is fanned out
+ * per-segment — it appears as a producer/worker in the queue topology (per-key dispatch), or a
+ * caller body loops over a segment collection and calls the seed. Corroboration is reported,
+ * not required.
+ *
+ * HONESTY: this is a MODEST, code-grounded SUPPORT for benign-variance (a per-segment
+ * processor naturally has per-segment duration variance), NEVER a verdict. Returns null unless
+ * a clear segment-dimension param is present.
+ */
+export function detectPerSegmentDispatch(
+  seedContext: SymbolContext,
+  queueHits: ReadonlyArray<Pick<QueueEdge, 'queueName' | 'producerSymbol' | 'workerSymbol'>>,
+  callers: ReadonlyArray<{ name?: string; sourceBody?: string }>,
+): PerSegmentDispatch | null {
+  const seedName = seedContext.symbol.name ?? '';
+  // STEP 0 — signature source: prefer the dedicated `symbol.signature` field; otherwise parse
+  // the signature from the START of the full source body (where the declaration always sits).
+  const dedicated = seedContext.symbol.signature;
+  const sig =
+    dedicated !== undefined && dedicated.trim() !== ''
+      ? dedicated
+      : (seedContext.sourceBody ?? '').slice(0, 600);
+  const paramList = extractParamList(sig);
+  if (paramList === '') return null;
+
+  // PRIMARY — find a segment-dimension parameter (by NAME or TYPE), never a generic one.
+  let match: { name: string; type: string; by: 'name' | 'type' } | null = null;
+  for (const p of splitTopLevelParams(paramList)) {
+    const parsed = parseParam(p);
+    if (parsed === null) continue;
+    if (GENERIC_DISPATCH_PARAM_NAMES.has(parsed.name.toLowerCase())) continue;
+    if (SEGMENT_DIM_NAME_RE.test(parsed.name) || SEGMENT_DIM_NAME_RE.test(deCamel(parsed.name))) {
+      match = { ...parsed, by: 'name' };
+      break;
+    }
+    const root = pascalTypeRoot(parsed.type);
+    if (root !== null && SEGMENT_DIM_TYPE_ROOTS.has(root)) {
+      match = { ...parsed, by: 'type' };
+      break;
+    }
+  }
+  if (match === null) return null;
+
+  // STRENGTHEN — corroborate the per-segment fan-out (optional; param signal already fired).
+  let fanOut: PerSegmentDispatch['fanOut'] = 'none';
+  const inQueue =
+    seedName !== '' &&
+    queueHits.some(
+      (q) =>
+        (q.producerSymbol !== null && q.producerSymbol === seedName) ||
+        (q.workerSymbol !== null && q.workerSymbol === seedName),
+    );
+  if (inQueue) {
+    fanOut = 'queue';
+  } else {
+    const callerLoops = callers.some((c) => {
+      const body = c.sourceBody ?? '';
+      if (body === '') return false;
+      const hasLoop = /\b(for|forEach|map|while)\b/.test(body);
+      const overSegment = SEGMENT_DIM_NAME_RE.test(body);
+      const callsSeed = seedName !== '' && body.includes(seedName);
+      return hasLoop && overSegment && callsSeed;
+    });
+    if (callerLoops) fanOut = 'caller-loop';
+  }
+
+  return { symbol: seedName, paramName: match.name, paramType: match.type, fanOut, matchedBy: match.by };
+}
+
 /** Does `since` look like a range or a concrete ref worth diffing? */
 export function looksDiffable(since: string): boolean {
   const s = since.trim();
@@ -1444,6 +1674,36 @@ export async function investigate(
           count: struct.count,
         },
         { queueName: struct.baseName },
+        undefined,
+        0.4,
+      );
+      perSegmentQueueStructureEvIds.push(ev.id);
+    }
+
+    // HOR-438b: detect a per-segment DISPATCH from the seed's CODE (no telemetry needed) — a
+    // sibling to the queue-suffix structure above for the case it cannot see: ONE logical queue,
+    // but the per-market/region/tenant split lives in the code (e.g. `manageSalesForMarket(
+    // marketType)` called per market). The seed signature carrying a segment-dimension param is a
+    // modest, code-grounded SUPPORT for benign-variance (a per-segment processor naturally has
+    // per-segment duration variance). Reuse the SAME benignSupport channel as the queue structure
+    // — both are per-segment structure support; neither is ever a verdict.
+    const dispatch = detectPerSegmentDispatch(ctx, queueHits, ctx.callers);
+    if (dispatch) {
+      const fanOutNote =
+        dispatch.fanOut === 'none' ? '' : ` (fan-out: ${dispatch.fanOut})`;
+      const ev = mkEv(
+        'symbol',
+        `Per-segment dispatch: ${dispatch.symbol} takes segment-dimension param "${dispatch.paramName}"${dispatch.paramType ? `: ${dispatch.paramType}` : ''}${fanOutNote}`,
+        {
+          kind: 'per-segment-dispatch',
+          symbol: dispatch.symbol,
+          paramName: dispatch.paramName,
+          paramType: dispatch.paramType,
+          fanOut: dispatch.fanOut,
+        },
+        top.startLine !== undefined && top.startLine > 0
+          ? { symbolId: top.id, file: top.filePath, line: top.startLine }
+          : { symbolId: top.id, file: top.filePath },
         undefined,
         0.4,
       );
