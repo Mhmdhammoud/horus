@@ -4,6 +4,7 @@
  */
 
 import type { Evidence, Symbol, Flow, EvidenceSubject } from '@horus/core';
+import type { DurationDimensionOptions } from '@horus/connectors';
 import type { Timeline } from './timeline.js';
 import type { CorrelationResult } from './correlate.js';
 import type { ValidatedHypothesis } from './validate.js';
@@ -46,6 +47,16 @@ export interface InvestigationInput {
    * frontend in a monorepo (HOR-356).
    */
   scope?: string;
+  /**
+   * HOR-435 (lever #2): how to break a duration/latency anomaly down by an INFO-level
+   * dimension (region / market / tenant). When set AND the hint reads as a duration/latency/
+   * anomaly question, the engine runs the connector `analyzeDurations` query and folds a
+   * `Duration by <dimension>: …` evidence row (per-segment stats in payload) so a skewed
+   * average can be seen as per-segment variance, not a uniform regression. The engine fills
+   * in `from`/`service`/`level` from the investigation scope; omit to use a conservative
+   * default (a `Completed …:REGION ~2m10s` shape). Graceful: a null/empty result adds nothing.
+   */
+  durationDimension?: DurationDimensionOptions;
 }
 
 /**

@@ -36,6 +36,8 @@ import type {
   RedisStateAnalysis,
   SentryProvider,
   AxiomProvider,
+  DurationDimensionOptions,
+  DurationByDimension,
 } from '@horus/connectors';
 import { shortTs, selectStateSignals, tokenize, analyzeQueueRuntime } from '@horus/connectors';
 import { formatSymbolLocation } from './render.js';
@@ -599,6 +601,76 @@ export function looksPerformance(hint: string): boolean {
 }
 
 /**
+ * HOR-435 (lever #2): does the hint read as a duration/latency/anomaly question that
+ * warrants the INFO-level per-dimension duration breakdown? Broader than `looksPerformance`
+ * — it also fires on bare "duration"/"took"/"anomaly"/"variance" wording so a "job duration
+ * anomaly" hint (not literally "slow") still triggers the per-segment query.
+ */
+export function looksDurationThemed(hint: string): boolean {
+  return (
+    looksPerformance(hint) ||
+    /\b(duration|took|elapsed|anomal(?:y|ies|ous)|spike|variance|regress(?:ion|ed)?|p\d{2})\b/i.test(
+      hint,
+    )
+  );
+}
+
+/**
+ * HOR-435 (lever #1, de-anchor): parse the alert/hint TEXT for *suggested* causes — phrases
+ * like "could indicate X", "may be a Y", "suggests Z", "possibly", "likely caused by",
+ * "points to", "consistent with" — and map them to hypothesis categories. The returned
+ * categories are CONTEXT ONLY: the hypothesis layer must NOT raise their prior off this signal
+ * (alert text is never a confidence prior). The point is the opposite of anchoring — we name
+ * what the alert proposed precisely so the engine can de-anchor and demand independent evidence
+ * before any of them earns confidence. Returns [] when the text carries no suggestive framing.
+ */
+export function parseSuggestedCauses(hint: string): string[] {
+  // Only treat keywords as *suggested causes* when the text frames them as a guess. A bare
+  // symptom ("orders are slow") names no cause; "slow — could indicate a DB issue" does.
+  const SUGGESTIVE =
+    /\b(could indicate|may be|might be|maybe|possibly|suggest(?:s|ing|ed)?|likely (?:caused|due)|points? to|consistent with|indicat(?:es|ive)|appears? to be|seems? to be|probably)\b/i;
+  if (!SUGGESTIVE.test(hint)) return [];
+
+  // category → cue words. Conservative: only well-known incident vocabulary maps to a category.
+  const CATEGORY_CUES: Array<[string, RegExp]> = [
+    ['deployment-regression', /\b(deploy(?:ment|ed)?|release|rollout|regression|recent change|shipped)\b/i],
+    ['infrastructure', /\b(database|db|infra(?:structure)?|network|cache|disk|memory|cpu|oom|out of memory|connection pool|datastore|redis|mongo|postgres)\b/i],
+    ['external-api-latency', /\b(upstream|external api|third[- ]party|downstream|api latency|timeout|slow (?:api|service)|gateway)\b/i],
+    ['retry-storm', /\b(retr(?:y|ies)|retry storm|thundering herd|amplif)/i],
+    ['queue-backlog', /\b(queue|backlog|consumer lag|enqueue)\b/i],
+    ['worker-slowdown', /\b(worker|consumer)\b/i],
+    ['benign-variance', /\b(per[- ]segment|per[- ]region|skew(?:ed)?|variance|expected variation|noise)\b/i],
+  ];
+  const out: string[] = [];
+  for (const [category, cue] of CATEGORY_CUES) {
+    if (cue.test(hint)) out.push(category);
+  }
+  return out;
+}
+
+/**
+ * HOR-435 (lever #2): format a millisecond duration as a compact human string
+ * ("2m10s", "19ms", "1.5s", "1h2m"). Used in the `Duration by <dimension>` evidence row.
+ */
+export function formatDurationMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '?';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const totalSec = ms / 1000;
+  if (totalSec < 60) {
+    const s = Math.round(totalSec * 10) / 10;
+    return `${s}s`;
+  }
+  const totalMin = Math.floor(totalSec / 60);
+  const remSec = Math.round(totalSec % 60);
+  if (totalMin < 60) {
+    return remSec > 0 ? `${totalMin}m${remSec}s` : `${totalMin}m`;
+  }
+  const h = Math.floor(totalMin / 60);
+  const remMin = totalMin % 60;
+  return remMin > 0 ? `${h}h${remMin}m` : `${h}h`;
+}
+
+/**
  * HOR-385: the deterministic structural-intent surface.
  *   - `incident`      → the default; full runtime evidence, regression hypotheses
  *                       and confidence ceilings all apply.
@@ -900,6 +972,11 @@ export async function investigate(
   // (`[0]` = the seed X, `[1]` = the isolation target Y).
   const intent = classifyIntent(hint, input.since);
   const namedSymbols = parseNamedSymbols(hint);
+  // HOR-435 (lever #1, de-anchor): causes the alert/hint TEXT merely *suggested* ("could
+  // indicate a DB issue / may be a retry storm"). Parsed here (text only) and threaded into
+  // hypothesis generation as CONTEXT — they earn confidence solely from independent evidence,
+  // never from the alert wording (which would re-anchor the very bias this defuses).
+  const alertSuggestedCategories = parseSuggestedCauses(hint);
   const sourceImpactHint = intent === 'source-impact';
   const preferNamed =
     sourceImpactHint && namedSymbols.length > 0 ? namedSymbols[0] : undefined;
@@ -1361,6 +1438,9 @@ export async function investigate(
   const logEvIds: string[] = [];
   const directLogEvIds: string[] = [];
   const ambientLogEvIds: string[] = [];
+  // HOR-435 (lever #2): ids of per-dimension duration breakdown evidence rows
+  // (`Duration by region: KSA 2m10s, UAE 19ms`) — feed the benign-variance hypothesis.
+  const perDimensionDurationEvIds: string[] = [];
   // HOR-338: track the DIRECT signatures (not just their evidence ids) so the
   // error-correlation cause cites the errors actually linked to the seed/path — not
   // the global top error, which co-occurrence would otherwise cross-wire onto an
@@ -1982,6 +2062,75 @@ export async function investigate(
     }
   }
 
+  // e0a4. DURATION-BY-DIMENSION (HOR-435, lever #2) — the ERROR-only log path is blind to the
+  // ground truth for a duration/latency anomaly, which lives in INFO completion lines
+  // ("Completed MANAGE_SALES:KSA ~2m10s / UAE ~19ms"). For a duration/latency/anomaly-themed
+  // hint we ALSO run the connector `analyzeDurations` query (on Elasticsearch AND Axiom) and
+  // fold a `Duration by <dimension>: KSA 2m10s, UAE 19ms` evidence row with per-segment stats
+  // in the payload. This is what lets the engine see per-segment variance — and SUPPORTS the
+  // benign-variance hypothesis — instead of reading a skewed average as a uniform regression.
+  // Best-effort + opt-in by hint shape: a provider without `analyzeDurations`, a null result,
+  // or a thrown query simply contributes nothing. Never breaks the investigation.
+  if (looksDurationThemed(hint)) {
+    const from = logWindowFrom(input.logsSince ?? input.since);
+    const baseDurationOpts: DurationDimensionOptions = input.durationDimension ?? {
+      // Conservative default for the common `Completed <JOB>:<REGION> ~2m10s` shape: extract an
+      // alphanumeric token after a colon as the dimension, scoped to completion lines, parsing
+      // the duration out of the message. A non-matching corpus yields null (graceful).
+      dimension: { name: 'region', pattern: ':\\s*([A-Za-z][\\w-]+)' },
+      completionText: 'Completed',
+    };
+    const durationOpts: DurationDimensionOptions = {
+      ...baseDurationOpts,
+      from: baseDurationOpts.from ?? from,
+      ...(input.service !== undefined && baseDurationOpts.service === undefined
+        ? { service: input.service }
+        : {}),
+      level: baseDurationOpts.level ?? 'info',
+    };
+    const durationProviders: Array<{
+      source: string;
+      analyze: (o: DurationDimensionOptions) => Promise<DurationByDimension | null>;
+    }> = [];
+    if (deps.logs && typeof deps.logs.analyzeDurations === 'function') {
+      durationProviders.push({ source: 'elasticsearch', analyze: (o) => deps.logs!.analyzeDurations(o) });
+    }
+    if (deps.axiom && typeof deps.axiom.analyzeDurations === 'function') {
+      durationProviders.push({ source: 'axiom', analyze: (o) => deps.axiom!.analyzeDurations(o) });
+    }
+    for (const provider of durationProviders) {
+      try {
+        const result = await provider.analyze(durationOpts);
+        if (result === null) continue;
+        const values = Object.entries(result.byValue);
+        if (values.length === 0) continue;
+        // "KSA 2m10s, UAE 19ms" — sorted slowest-first so the variance reads at a glance.
+        const summary = values
+          .sort((a, b) => b[1].avg - a[1].avg)
+          .map(([val, st]) => `${val} ${formatDurationMs(st.avg)}`)
+          .join(', ');
+        const ev = mkEv(
+          'log',
+          `Duration by ${result.dimension}: ${summary}`.slice(0, 220),
+          {
+            source: provider.source,
+            kind: 'duration-by-dimension',
+            dimension: result.dimension,
+            unit: result.unit,
+            byValue: result.byValue,
+            sampleCount: result.sampleCount,
+          },
+          {},
+          undefined,
+          0.6,
+        );
+        perDimensionDurationEvIds.push(ev.id);
+      } catch {
+        // Best-effort per provider — a duration query failure never breaks the investigation.
+      }
+    }
+  }
+
   // e0b. MONGODB STATE (HOR-33) — application-state anomalies as evidence. Optional;
   // never breaks the investigation on failure. Counts/state only — no raw documents.
   let stateAnalysis: StateAnalysis | null = null;
@@ -2117,6 +2266,10 @@ export async function investigate(
   const METRICS_TIMEOUT_MS = 30_000;
   const metricEvIds: string[] = [];
   const latencyMetricEvIds: string[] = [];
+  // HOR-435 (lever #3): ids of `bimodal-population` metric findings (a high-spike cluster AND
+  // a low/zero cluster co-present on one panel) — possible per-segment variance, not a uniform
+  // regression. These SUPPORT the benign-variance hypothesis and carry lower relevance.
+  const bimodalMetricEvIds: string[] = [];
   const queueMetricEvIds: string[] = [];
   // Per-queue metric IDs — queue-growth anomalies attributed to the matching queue name.
   const queueMetricEvIdsByQueue = new Map<string, string[]>();
@@ -2212,6 +2365,11 @@ export async function investigate(
           const genericPerf =
             serviceFilter.length === 0 && hintIsPerf && f.anomaly === 'latency-spike';
           if (matchesService || matchesHint || genericPerf) latencyMetricEvIds.push(ev.id);
+        } else if (f.anomaly === 'bimodal-population') {
+          // HOR-435 (lever #3): a two-population panel (high-spike cluster AND low/zero
+          // cluster) is possible per-segment variance, not a uniform regression — wire it to
+          // the benign-variance hypothesis rather than treating it as a confident latency cause.
+          bimodalMetricEvIds.push(ev.id);
         } else if (f.anomaly === 'queue-growth') {
           // Attribute each queue-growth anomaly to the specific queue(s) it matches.
           // Match using normalized panel/label strings with word-boundary checks so
@@ -2326,6 +2484,16 @@ export async function investigate(
     suppressRuntimeHypotheses: sourceImpactHint,
     recentChangeRelevant,
     graph,
+    // HOR-435: per-segment duration breakdown (#2) + bimodal-population metric (#3) support
+    // the benign-variance hypothesis (#4); the suggested categories de-anchor alert text (#1).
+    perDimensionDurationEvIds,
+    bimodalMetricEvIds,
+    benignVarianceApplicable:
+      looksDurationThemed(hint) ||
+      perDimensionDurationEvIds.length > 0 ||
+      bimodalMetricEvIds.length > 0 ||
+      latencyMetricEvIds.length > 0,
+    alertSuggestedCategories,
   });
 
   // e4. HYPOTHESIS VALIDATION (HOR-25) — adjust confidence + assign verdicts

@@ -1170,3 +1170,87 @@ describe('logWindowFrom', () => {
     expect(result).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// HOR-435 (lever #2): INFO-level duration-by-dimension evidence wiring
+// ---------------------------------------------------------------------------
+
+describe('investigate() duration-by-dimension evidence (HOR-435 lever #2)', () => {
+  // A logs provider whose analyzeDurations returns a per-segment breakdown: one region runs
+  // 2m10s while another runs 19ms — the ground truth a uniform-regression read would miss.
+  const durationLogs: LogsProvider = {
+    ...fakeLogs,
+    async analyzeErrors() {
+      // No error signatures — the duration anomaly lives entirely in INFO completion lines.
+      return {
+        window: { from: 'x', to: 'y' },
+        totalErrors: 0,
+        signatures: [],
+        newSignatures: [],
+        affectedServices: [],
+      };
+    },
+    async analyzeDurations() {
+      return {
+        dimension: 'region',
+        unit: 'ms' as const,
+        byValue: {
+          KSA: { avg: 130_000, p95: 150_000, count: 12, min: 90_000, max: 160_000 },
+          UAE: { avg: 19, p95: 30, count: 40, min: 5, max: 60 },
+        },
+        sampleCount: 52,
+      };
+    },
+  };
+
+  it('builds a "Duration by region: …" evidence row for a performance hint', async () => {
+    const report = await investigate(
+      { hint: 'sync job duration anomaly — everything is slow', service: 'leadcall-api-prod' },
+      { code: fakeCode, db: fakeDb, logs: durationLogs },
+    );
+    const durEv = report.evidence.find(
+      (e) =>
+        e.kind === 'log' &&
+        typeof e.payload === 'object' &&
+        e.payload !== null &&
+        (e.payload as { kind?: string }).kind === 'duration-by-dimension',
+    );
+    expect(durEv).toBeDefined();
+    expect(durEv!.title).toMatch(/Duration by region:/);
+    // Slowest-first: KSA (2m10s) leads UAE (19ms).
+    expect(durEv!.title).toMatch(/KSA 2m10s/);
+    expect(durEv!.title).toMatch(/UAE 19ms/);
+    // Per-dimension stats are preserved in the payload.
+    const byValue = (durEv!.payload as { byValue: Record<string, { avg: number }> }).byValue;
+    expect(byValue.KSA!.avg).toBe(130_000);
+    expect(byValue.UAE!.avg).toBe(19);
+  });
+
+  it('the duration-by-dimension evidence SUPPORTS the benign-variance hypothesis', async () => {
+    const report = await investigate(
+      { hint: 'sync job latency spike', service: 'leadcall-api-prod' },
+      { code: fakeCode, db: fakeDb, logs: durationLogs },
+    );
+    const bv = report.hypotheses.find((h) => h.category === 'benign-variance');
+    expect(bv).toBeDefined();
+    // It earned support from real per-dimension evidence — verdict supported, but not certain.
+    expect(bv!.verdict).toBe('supported');
+    expect(bv!.supportingPresent).toBeGreaterThan(0);
+    expect(bv!.confidence).toBeLessThan(1);
+  });
+
+  it('does NOT query durations (no duration evidence) for a non-performance hint', async () => {
+    const report = await investigate(
+      { hint: 'who owns the user model', service: 'leadcall-api-prod' },
+      { code: fakeCode, db: fakeDb, logs: durationLogs },
+    );
+    const durEv = report.evidence.find(
+      (e) =>
+        e.kind === 'log' &&
+        typeof e.payload === 'object' &&
+        e.payload !== null &&
+        (e.payload as { kind?: string }).kind === 'duration-by-dimension',
+    );
+    expect(durEv).toBeUndefined();
+  });
+});
