@@ -675,6 +675,7 @@ const quietLogs: LogsProvider = {
   async checkCompatibility() { return { ok: true, indexCount: 1, issues: [] }; },
   toEvidence() { return []; },
   async queryEvidence() { return []; },
+  async analyzeDurations() { return null; },
 };
 
 function makeNoneMetrics(): MetricsProvider {

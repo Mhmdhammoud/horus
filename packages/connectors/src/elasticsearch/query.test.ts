@@ -229,3 +229,74 @@ describe('redactSensitiveString', () => {
     expect(result).not.toContain('4111');
   });
 });
+
+// ---------------------------------------------------------------------------
+// analyzeDurations — INFO-level duration-by-dimension (HOR-434)
+// ---------------------------------------------------------------------------
+
+function hit(source: Record<string, unknown>): Record<string, unknown> {
+  return { _index: 'test-1', _source: source };
+}
+
+describe('ElasticsearchLogsProvider.analyzeDurations', () => {
+  it('aggregates INFO completion durations by a regex-extracted region', async () => {
+    const client = makeClient({
+      hits: {
+        total: { value: 3 },
+        hits: [
+          hit({ level: 30, message: 'Completed MANAGE_SALES:KSA ~2m10s' }),
+          hit({ level: 30, message: 'Completed MANAGE_SALES:KSA ~2m0s' }),
+          hit({ level: 30, message: 'Completed MANAGE_SALES:UAE ~19ms' }),
+        ],
+      },
+    });
+    const result = await makeProvider(client).analyzeDurations({
+      dimension: { name: 'region', pattern: ':([A-Z]{2,})\\b' },
+      completionText: 'Completed',
+    });
+    expect(result).not.toBeNull();
+    expect(result!.dimension).toBe('region');
+    expect(result!.byValue['KSA']!.count).toBe(2);
+    expect(result!.byValue['KSA']!.avg).toBe(125_000);
+    expect(result!.byValue['UAE']!.count).toBe(1);
+    expect(result!.byValue['UAE']!.avg).toBe(19);
+  });
+
+  it('aggregates by a structured dimension + duration field', async () => {
+    const client = makeClient({
+      hits: {
+        total: { value: 2 },
+        hits: [
+          hit({ level: 30, message: 'done', context: { market: 'KSA' }, duration_ms: 130_000 }),
+          hit({ level: 30, message: 'done', context: { market: 'UAE' }, duration_ms: 19 }),
+        ],
+      },
+    });
+    const result = await makeProvider(client).analyzeDurations({
+      dimension: { name: 'market', field: 'context.market' },
+      durationField: 'duration_ms',
+    });
+    expect(result!.byValue['KSA']!.avg).toBe(130_000);
+    expect(result!.byValue['UAE']!.avg).toBe(19);
+  });
+
+  it('returns null when no completion/duration lines match (graceful)', async () => {
+    const client = makeClient({ hits: { total: { value: 0 }, hits: [] } });
+    const result = await makeProvider(client).analyzeDurations({
+      dimension: { name: 'region', pattern: ':([A-Z]{2,})\\b' },
+      completionText: 'Completed',
+    });
+    expect(result).toBeNull();
+  });
+
+  it('never throws — degrades to null when the client search fails', async () => {
+    const client = new ElasticsearchClient({ baseUrl: 'http://mock' });
+    client.search = async () => {
+      throw new Error('boom');
+    };
+    const result = await makeProvider(client).analyzeDurations({
+      dimension: { name: 'region', pattern: ':([A-Z]{2,})\\b' },
+    });
+    expect(result).toBeNull();
+  });
+});

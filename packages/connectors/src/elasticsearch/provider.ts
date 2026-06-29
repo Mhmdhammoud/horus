@@ -35,6 +35,11 @@ import {
   type CompatibilityReport,
   validateMappingAgainstCaps,
 } from './compat.js';
+import {
+  type DurationByDimension,
+  type DurationDimensionOptions,
+  durationsByDimension,
+} from '../duration.js';
 
 export interface LogsProvider extends Provider {
   searchLogs(q: LogQuery): Promise<LogRecord[]>;
@@ -50,6 +55,17 @@ export interface LogsProvider extends Provider {
    * against the preceding window. Defaults to the provider's eventCodeField.
    */
   analyzeErrors(q: LogQuery, field?: string): Promise<LogAnalysis>;
+  /**
+   * INFO-level duration coverage (HOR-434). Query NON-error completion/duration logs
+   * (e.g. `Completed MANAGE_SALES:KSA ~2m10s`) and aggregate duration by an extracted
+   * dimension (region / market / tenant) — from a structured field or a regex over the
+   * job id / message. Returns per-dimension stats `{ region: { KSA: {avg,p95,count,…} } }`
+   * so the engine can see per-segment variance the ERROR-only path is blind to.
+   *
+   * Graceful: no completion logs, no parseable duration, or no extractable dimension
+   * → `null`. Never throws.
+   */
+  analyzeDurations(opts: DurationDimensionOptions): Promise<DurationByDimension | null>;
   /**
    * Check that the configured field mapping is compatible with the actual
    * Elasticsearch index. Returns structured diagnostics with actionable
@@ -157,6 +173,41 @@ export class ElasticsearchLogsProvider implements LogsProvider {
     }
 
     return analysis;
+  }
+
+  async analyzeDurations(
+    opts: DurationDimensionOptions,
+  ): Promise<DurationByDimension | null> {
+    try {
+      // Query NON-error completion logs. Level defaults to 'info' (≥ info floor),
+      // scoped to the completion text via a broad text match so duration lines buried
+      // in detail/context are still found.
+      const q: LogQuery = {
+        level: (opts.level as LogQuery['level']) ?? 'info',
+        limit: opts.limit ?? 500,
+        ...(opts.service !== undefined ? { service: opts.service } : {}),
+        ...(opts.from !== undefined ? { from: opts.from } : {}),
+        ...(opts.to !== undefined ? { to: opts.to } : {}),
+        ...(opts.completionText !== undefined
+          ? { text: opts.completionText, broadText: true }
+          : {}),
+      };
+      const records = await this.searchLogs(q);
+      const normalized = records.map((r) => ({
+        message: r.message,
+        fields: {
+          ...r.raw,
+          ...(r.context !== undefined ? { context: r.context } : {}),
+          ...(r.eventCode !== undefined ? { event_code: r.eventCode } : {}),
+          ...(r.service !== undefined ? { service_name: r.service } : {}),
+          ...(r.detail !== undefined ? { detail: r.detail } : {}),
+          message: r.message,
+        },
+      }));
+      return durationsByDimension(normalized, opts);
+    } catch {
+      return null;
+    }
   }
 
   async checkCompatibility(opts?: CompatibilityOptions): Promise<CompatibilityReport> {

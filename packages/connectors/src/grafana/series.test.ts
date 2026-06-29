@@ -11,8 +11,11 @@ import {
   summarize,
   compareWindows,
   detectSpikes,
+  quartiles,
+  histogram,
+  detectBimodalPopulation,
 } from './series.js';
-import type { MetricSeries } from './series.js';
+import type { MetricSeries, BaselineComparison } from './series.js';
 
 // ---------------------------------------------------------------------------
 // parseValue
@@ -346,5 +349,119 @@ describe('detectSpikes', () => {
     expect(spike).toHaveProperty('mean');
     expect(spike).toHaveProperty('std');
     expect(spike).toHaveProperty('z');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// quartiles / histogram (HOR-435 distribution support)
+// ---------------------------------------------------------------------------
+
+describe('quartiles', () => {
+  it('computes a five-number summary', () => {
+    const q = quartiles([1, 2, 3, 4, 5]);
+    expect(q).not.toBeNull();
+    expect(q!.min).toBe(1);
+    expect(q!.median).toBe(3);
+    expect(q!.max).toBe(5);
+    expect(q!.iqr).toBe(q!.q3 - q!.q1);
+  });
+
+  it('ignores non-finite values and returns null when none are finite', () => {
+    expect(quartiles([Infinity, NaN])).toBeNull();
+    const q = quartiles([Infinity, 10, NaN]);
+    expect(q!.min).toBe(10);
+    expect(q!.max).toBe(10);
+  });
+});
+
+describe('histogram', () => {
+  it('buckets finite values into equal-width bins, max in the final bin', () => {
+    const bins = histogram([0, 1, 2, 9, 10], 5);
+    expect(bins).toHaveLength(5);
+    const total = bins.reduce((a, b) => a + b.count, 0);
+    expect(total).toBe(5);
+    expect(bins[bins.length - 1]!.count).toBeGreaterThanOrEqual(1); // 10 lands last
+  });
+
+  it('returns a single bin when all values are equal', () => {
+    expect(histogram([4, 4, 4])).toEqual([{ lo: 4, hi: 4, count: 3 }]);
+  });
+
+  it('returns [] when there are no finite values', () => {
+    expect(histogram([Infinity, NaN])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectBimodalPopulation (HOR-435)
+// ---------------------------------------------------------------------------
+
+function cmp(ratio: number, overrides: Partial<BaselineComparison> = {}): BaselineComparison {
+  return {
+    labels: {},
+    baselineAvg: 1,
+    currentAvg: ratio,
+    delta: ratio - 1,
+    ratio,
+    isSpike: ratio >= 1.5,
+    ...overrides,
+  };
+}
+
+describe('detectBimodalPopulation', () => {
+  it('flags a co-present high-spike + low + empty/Infinity pattern', () => {
+    const res = detectBimodalPopulation([
+      cmp(3.3),
+      cmp(3.1),
+      cmp(0.5),
+      cmp(0.45),
+      cmp(Infinity), // empty / no-baseline run
+    ]);
+    expect(res.bimodal).toBe(true);
+    expect(res.highCount).toBe(2);
+    expect(res.lowCount).toBe(2);
+    expect(res.degenerateCount).toBe(1);
+  });
+
+  it('does NOT flag a genuine single outlier among normals', () => {
+    // One spike, the rest stable (~1.0) — no counter-population.
+    const res = detectBimodalPopulation([cmp(3.3), cmp(1.0), cmp(1.05), cmp(0.98)]);
+    expect(res.bimodal).toBe(false);
+  });
+
+  it('does NOT flag a single low straggler against a spiking majority', () => {
+    // Lone low member (count 1, share 20%) — below the minMinority floor.
+    const res = detectBimodalPopulation([
+      cmp(3.0),
+      cmp(3.1),
+      cmp(2.9),
+      cmp(3.2),
+      cmp(0.5),
+    ]);
+    expect(res.bimodal).toBe(false);
+  });
+
+  it('does NOT flag two adjacent clusters under loosened thresholds (gap guard)', () => {
+    // high median ~1.225, low median ~0.91 → ratio ~1.35 < gapFactor → not a real gap.
+    const res = detectBimodalPopulation(
+      [cmp(1.2), cmp(1.25), cmp(0.9), cmp(0.92)],
+      { spike: 1.1, drop: 0.95, gapFactor: 2 },
+    );
+    expect(res.bimodal).toBe(false);
+  });
+
+  it('requires a minimum total population', () => {
+    expect(detectBimodalPopulation([cmp(3.3), cmp(0.4)]).bimodal).toBe(false);
+  });
+
+  it('flags a high cluster co-present with an all-empty counter-population', () => {
+    const res = detectBimodalPopulation([
+      cmp(3.3),
+      cmp(3.1),
+      cmp(Infinity),
+      cmp(0, { currentAvg: 0, delta: -1 }),
+    ]);
+    expect(res.bimodal).toBe(true);
+    expect(res.degenerateCount).toBe(2);
   });
 });

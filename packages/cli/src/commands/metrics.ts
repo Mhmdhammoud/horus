@@ -95,6 +95,8 @@ function anomalyLabel(anomaly: MetricFinding['anomaly']): string {
       return 'QUEUE-GROWTH';
     case 'change':
       return 'CHANGE';
+    case 'bimodal-population':
+      return 'BIMODAL-POPULATION';
     case 'none':
       return 'OK';
   }

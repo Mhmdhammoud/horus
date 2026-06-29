@@ -212,3 +212,64 @@ describe('AxiomProvider identity + health', () => {
     expect(h.ok).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// analyzeDurations — INFO-level duration-by-dimension (HOR-434)
+// ---------------------------------------------------------------------------
+
+function providerWithRows(rows: AxiomLogRecord[]): AxiomProvider {
+  const client = new AxiomClient({ token: 't', dataset: 'logs' });
+  client.query = async () => rows;
+  return new AxiomProvider(client, { dataset: 'logs' });
+}
+
+describe('AxiomProvider.analyzeDurations', () => {
+  it('aggregates completion-row durations by a regex-extracted region', async () => {
+    const p = providerWithRows([
+      { fields: { message: 'Completed MANAGE_SALES:KSA ~2m10s' } },
+      { fields: { message: 'Completed MANAGE_SALES:KSA ~2m0s' } },
+      { fields: { message: 'Completed MANAGE_SALES:UAE ~19ms' } },
+    ]);
+    const result = await p.analyzeDurations({
+      dimension: { name: 'region', pattern: ':([A-Z]{2,})\\b' },
+      completionText: 'Completed',
+    });
+    expect(result!.byValue['KSA']!.count).toBe(2);
+    expect(result!.byValue['KSA']!.avg).toBe(125_000);
+    expect(result!.byValue['UAE']!.avg).toBe(19);
+  });
+
+  it('aggregates by structured market + duration_ms fields', async () => {
+    const p = providerWithRows([
+      { fields: { message: 'done', market: 'KSA', duration_ms: 130_000 } },
+      { fields: { message: 'done', market: 'UAE', duration_ms: 19 } },
+    ]);
+    const result = await p.analyzeDurations({
+      dimension: { name: 'market', field: 'market' },
+      durationField: 'duration_ms',
+    });
+    expect(result!.byValue['KSA']!.avg).toBe(130_000);
+    expect(result!.byValue['UAE']!.avg).toBe(19);
+  });
+
+  it('returns null when nothing usable matches (graceful)', async () => {
+    const p = providerWithRows([{ fields: { message: 'heartbeat' } }]);
+    const result = await p.analyzeDurations({
+      dimension: { name: 'region', pattern: ':([A-Z]{2,})\\b' },
+      completionText: 'Completed',
+    });
+    expect(result).toBeNull();
+  });
+
+  it('never throws — degrades to null when the query fails', async () => {
+    const client = new AxiomClient({ token: 't', dataset: 'logs' });
+    client.query = async () => {
+      throw new Error('boom');
+    };
+    const p = new AxiomProvider(client, { dataset: 'logs' });
+    const result = await p.analyzeDurations({
+      dimension: { name: 'region', pattern: ':([A-Z]{2,})\\b' },
+    });
+    expect(result).toBeNull();
+  });
+});

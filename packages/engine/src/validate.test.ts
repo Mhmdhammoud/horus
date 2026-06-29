@@ -168,6 +168,70 @@ describe('validateHypotheses', () => {
     expect(vh?.confidence).toBe(0.3);
   });
 
+  // ── HOR-435 lever #5: shared-evidence confidence calibration ───────────────
+
+  it('(HOR-435) 2+ hypotheses sharing identical supporting evidence (nothing distinguishing) are capped at 0.75', () => {
+    const shared = makeEvidence('shared');
+    // Both would otherwise validate well above 0.75 (high prior + supporting boost).
+    const h1 = makeHypothesis({
+      id: 'h1',
+      category: 'cause-a',
+      confidence: 0.8,
+      supportingEvidenceIds: ['shared'],
+    });
+    const h2 = makeHypothesis({
+      id: 'h2',
+      category: 'cause-b',
+      confidence: 0.8,
+      supportingEvidenceIds: ['shared'],
+    });
+    const result = validateHypotheses([h1, h2], [shared]);
+    const v1 = result.find((v) => v.id === 'h1');
+    const v2 = result.find((v) => v.id === 'h2');
+    expect(v1!.confidence).toBeLessThanOrEqual(0.75);
+    expect(v2!.confidence).toBeLessThanOrEqual(0.75);
+    expect(v1!.confidence).toBe(0.75);
+    expect(v1!.rationale.toLowerCase()).toContain('capped');
+  });
+
+  it('(HOR-435) a single hypothesis on that evidence is NOT capped (no red-herring cohort)', () => {
+    const shared = makeEvidence('shared');
+    const only = makeHypothesis({
+      id: 'solo',
+      confidence: 0.8,
+      supportingEvidenceIds: ['shared'],
+    });
+    const [v] = validateHypotheses([only], [shared]);
+    // 0.8 + 0.15 = 0.95, clamped — not pulled down to 0.75.
+    expect(v!.confidence).toBeGreaterThan(0.75);
+  });
+
+  it('(HOR-435) hypotheses with DISTINCT supporting evidence are not capped (legitimately distinguished)', () => {
+    const e1 = makeEvidence('e-distinct-1');
+    const e2 = makeEvidence('e-distinct-2');
+    const h1 = makeHypothesis({ id: 'd1', confidence: 0.8, supportingEvidenceIds: ['e-distinct-1'] });
+    const h2 = makeHypothesis({ id: 'd2', confidence: 0.8, supportingEvidenceIds: ['e-distinct-2'] });
+    const result = validateHypotheses([h1, h2], [e1, e2]);
+    expect(result.find((v) => v.id === 'd1')!.confidence).toBeGreaterThan(0.75);
+    expect(result.find((v) => v.id === 'd2')!.confidence).toBeGreaterThan(0.75);
+  });
+
+  it('(HOR-435) a cohort where one member has contradicting evidence is not treated as a pure-correlation red herring', () => {
+    const shared = makeEvidence('shared');
+    const contra = makeEvidence('contra');
+    // h2 is weakened by contradicting evidence, so it is excluded from the cohort; h1 is then
+    // alone on the shared-evidence key and is NOT capped.
+    const h1 = makeHypothesis({ id: 'c1', confidence: 0.8, supportingEvidenceIds: ['shared'] });
+    const h2 = makeHypothesis({
+      id: 'c2',
+      confidence: 0.8,
+      supportingEvidenceIds: ['shared'],
+      contradictingEvidenceIds: ['contra'],
+    });
+    const result = validateHypotheses([h1, h2], [shared, contra]);
+    expect(result.find((v) => v.id === 'c1')!.confidence).toBeGreaterThan(0.75);
+  });
+
   // Rationale always ends with a period
   it('rationale is a non-empty sentence ending with a period', () => {
     const hyp = makeHypothesis({ id: 'h_rat', supportingEvidenceIds: ['e1'] });

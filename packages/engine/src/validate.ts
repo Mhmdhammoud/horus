@@ -103,6 +103,40 @@ export function validateHypotheses(
     };
   });
 
+  // HOR-435 (lever #5, calibration): when 2+ hypotheses are supported by the SAME evidence
+  // and nothing distinguishes or contradicts them, they are correlated red herrings — none is
+  // more proven than the others, and purely-correlated support must NOT let any of them reach
+  // certainty just because nothing happened to contradict them. Cap the shared cohort.
+  //
+  // Gate (to avoid penalizing legitimately distinct hypotheses): the cohort must be 2+
+  // hypotheses sharing an IDENTICAL, NON-EMPTY set of PRESENT supporting evidence, with NO
+  // contradicting evidence present on any member. Hypotheses backed by different evidence —
+  // i.e. genuinely distinguished — are grouped separately and left untouched.
+  const SHARED_EVIDENCE_CEILING = 0.75;
+  const bySupport = new Map<string, ValidatedHypothesis[]>();
+  for (const v of validated) {
+    if (v.contradictingPresent > 0) continue;
+    const presentSupport = v.supportingEvidenceIds.filter((id) => present.has(id)).sort();
+    if (presentSupport.length === 0) continue;
+    const key = presentSupport.join('|');
+    const list = bySupport.get(key);
+    if (list === undefined) bySupport.set(key, [v]);
+    else list.push(v);
+  }
+  for (const cohort of bySupport.values()) {
+    if (cohort.length < 2) continue;
+    for (const v of cohort) {
+      if (v.confidence > SHARED_EVIDENCE_CEILING) {
+        v.confidence = SHARED_EVIDENCE_CEILING;
+        v.rationale =
+          v.rationale.replace(/\.$/, '') +
+          `; capped at ${SHARED_EVIDENCE_CEILING} — shares all supporting evidence with ${
+            cohort.length - 1
+          } other hypothesis(es) and nothing distinguishes them.`;
+      }
+    }
+  }
+
   // Sort: by confidence desc, BUT push 'eliminated' verdicts to the end.
   validated.sort((a, b) => {
     const aElim = a.verdict === 'eliminated' ? 1 : 0;

@@ -9,6 +9,7 @@
 
 export * from './source/index.js';
 export * from './contract.js';
+export * from './duration.js';
 export * from './factory.js';
 export * from './source/provider.js';
 export * from './compat.js';

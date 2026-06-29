@@ -295,3 +295,74 @@ describe('findingsToEvidence', () => {
     expect(evidence).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bimodal-population reclassification (HOR-435)
+// ---------------------------------------------------------------------------
+
+describe('buildFindings — bimodal-population (HOR-435)', () => {
+  it('reclassifies a co-present spike + drop + empty pattern as bimodal-population', () => {
+    const baseline = [
+      makeSeries([1], { region: 'ksa' }),
+      makeSeries([1], { region: 'uae' }),
+      makeSeries([1], { region: 'egy' }),
+      makeSeries([0], { region: 'qat' }), // no baseline → Infinity run
+      makeSeries([1], { region: 'bhr' }), // stable
+    ];
+    const current = [
+      makeSeries([3.3], { region: 'ksa' }), // high spike
+      makeSeries([0.5], { region: 'uae' }), // low
+      makeSeries([0.45], { region: 'egy' }), // low
+      makeSeries([2.4], { region: 'qat' }), // empty/Infinity spike
+      makeSeries([1.02], { region: 'bhr' }), // stable → stays "none"
+    ];
+
+    const findings = buildFindings('uid', 'p95 by region', 'latency', baseline, current);
+    const byRegion = new Map(findings.map((f) => [f.labels['region'], f.anomaly]));
+
+    // Every anomalous segment collapses into the single two-population signal …
+    expect(byRegion.get('ksa')).toBe('bimodal-population');
+    expect(byRegion.get('uae')).toBe('bimodal-population');
+    expect(byRegion.get('egy')).toBe('bimodal-population');
+    expect(byRegion.get('qat')).toBe('bimodal-population');
+    // … instead of several independent "latency-spike"/"change" labels.
+    expect([...byRegion.values()]).not.toContain('latency-spike');
+    // The genuinely stable segment is untouched.
+    expect(byRegion.get('bhr')).toBe('none');
+  });
+
+  it('does NOT reclassify a lone latency spike among stable segments', () => {
+    const baseline = [
+      makeSeries([1], { region: 'ksa' }),
+      makeSeries([1], { region: 'uae' }),
+      makeSeries([1], { region: 'egy' }),
+    ];
+    const current = [
+      makeSeries([4], { region: 'ksa' }), // single outlier
+      makeSeries([1.0], { region: 'uae' }),
+      makeSeries([1.05], { region: 'egy' }),
+    ];
+    const findings = buildFindings('uid', 'p95 by region', 'latency', baseline, current);
+    const ksa = findings.find((f) => f.labels['region'] === 'ksa');
+    expect(ksa!.anomaly).toBe('latency-spike'); // honest single-cause label preserved
+  });
+
+  it('gives bimodal-population a lower relevance than a single latency-spike', () => {
+    const bimodalFinding: MetricFinding = {
+      dashboardUid: 'd',
+      panelTitle: 'p95',
+      kind: 'latency',
+      anomaly: 'bimodal-population',
+      labels: { region: 'ksa' },
+      baselineAvg: 1,
+      currentAvg: 3.3,
+      ratio: 3.3,
+      lastValue: 3.3,
+    };
+    const ev = findingsToEvidence([bimodalFinding], 'q', '2026-06-14T00:00:00Z');
+    expect(ev[0]!.relevance).toBe(0.6);
+    expect(ev[0]!.relevance).toBeLessThan(0.85); // < latency-spike
+    expect(ev[0]!.title).toContain('Bimodal Population');
+    expect(ev[0]!.title).toContain('per-segment variance');
+  });
+});

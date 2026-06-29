@@ -83,6 +83,34 @@ export interface HypothesisContext {
    * boost confidence for hypotheses even when per-kind evidence arrays are thin.
    */
   graph?: InvestigationGraph;
+  /**
+   * HOR-435 (lever #2/#4): evidence ids of per-dimension duration breakdowns
+   * (`Duration by region: KSA 2m10s, UAE 19ms`). These SUPPORT the benign-variance
+   * hypothesis — one segment slow while another is fast is the fingerprint of expected
+   * per-segment variance, not a uniform failure.
+   */
+  perDimensionDurationEvIds?: string[];
+  /**
+   * HOR-435 (lever #3/#4): evidence ids of `bimodal-population` metric findings (a
+   * high-spike cluster AND a low/zero cluster co-present on one panel). Also SUPPORT the
+   * benign-variance hypothesis.
+   */
+  bimodalMetricEvIds?: string[];
+  /**
+   * HOR-435 (lever #4): emit the benign-variance hypothesis even with no supporting
+   * evidence yet, so the competing set still names "this may be expected variance" on a
+   * duration/latency/anomaly-themed investigation. When false/undefined the hypothesis is
+   * emitted ONLY if per-dimension duration or bimodal-population evidence is present.
+   */
+  benignVarianceApplicable?: boolean;
+  /**
+   * HOR-435 (lever #1, de-anchor): hypothesis categories that the alert/hint TEXT merely
+   * *suggested* ("could indicate a database issue / may be a retry storm"). Alert text is
+   * CONTEXT-ONLY and is NEVER a confidence prior — a suggested category does NOT get a
+   * higher prior here; the only effect is an honest annotation on the unsupported ones that
+   * confidence must come from independent collected evidence, not the alert wording.
+   */
+  alertSuggestedCategories?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +318,56 @@ export function generateHypotheses(
       ? []
       : ['Infrastructure metrics + datastore/cache state (`horus metrics`)'],
   });
+
+  // g. benign-variance (HOR-435, lever #4) — the anomaly may reflect EXPECTED per-segment/
+  // per-region variance (or a skewed average), NOT a failure. This is the de-anchoring
+  // counter-hypothesis to "the whole job regressed": when one region runs 2m10s while another
+  // runs 19ms, the average is misleading and there may be nothing broken at all. Its base prior
+  // is deliberately LOW (0.1) and rises ONLY with real evidence — the per-dimension duration
+  // breakdown (#2) and/or a bimodal-population metric signal (#3). It is never auto-confirmed:
+  // it competes for confidence, it does not win by default.
+  const benignSupport = [
+    ...new Set([
+      ...(ctx.perDimensionDurationEvIds ?? []),
+      ...(ctx.bimodalMetricEvIds ?? []),
+    ]),
+  ];
+  if (benignSupport.length > 0 || ctx.benignVarianceApplicable === true) {
+    hyps.push({
+      id: globalThis.crypto.randomUUID(),
+      category: 'benign-variance',
+      statement:
+        'The anomaly may reflect expected per-segment/per-region variance (or a skewed average), not a failure.',
+      confidence: 0.1,
+      supportingEvidenceIds: benignSupport,
+      contradictingEvidenceIds: [],
+      missingEvidence:
+        benignSupport.length > 0
+          ? []
+          : [
+              'Per-segment duration breakdown (region/market/tenant) or a bimodal metric distribution (`horus logs` / `horus metrics`)',
+            ],
+    });
+  }
+
+  // HOR-435 (lever #1, de-anchor): the alert/hint TEXT may *suggest* causes ("could indicate
+  // a database issue / may be a retry storm"). Honesty invariant: alert/memory text is
+  // CONTEXT-ONLY and NEVER a confidence prior. So a text-suggested category does NOT receive a
+  // higher prior — its confidence is identical to what the collected evidence alone earns.
+  // The only effect is an explicit annotation on the still-unsupported ones, so the report
+  // makes the de-anchoring visible ("named by the alert, but not yet evidenced") instead of
+  // silently letting the alert wording promote a red herring.
+  const suggested = new Set(ctx.alertSuggestedCategories ?? []);
+  if (suggested.size > 0) {
+    for (const h of hyps) {
+      if (suggested.has(h.category) && h.supportingEvidenceIds.length === 0) {
+        h.missingEvidence = [
+          ...h.missingEvidence,
+          'Suggested by the alert/hint text — confidence requires independent evidence, not the alert wording itself',
+        ];
+      }
+    }
+  }
 
   // Sort by confidence descending (stable — JS Array.sort is stable in V8 / Node 11+)
   hyps.sort((a, b) => b.confidence - a.confidence);

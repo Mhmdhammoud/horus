@@ -353,6 +353,102 @@ describe('generateHypotheses', () => {
     expect(ws!.supportingEvidenceIds).not.toContain(queueEv.id);
   });
 
+  // ── HOR-435 lever #4: benign-variance hypothesis ───────────────────────────
+
+  it('(HOR-435) benign-variance appears and is SUPPORTED by per-dimension duration evidence', () => {
+    const durEvId = 'dur-by-region-ev';
+    const evidence: Evidence[] = [makeEvidence('log', durEvId)];
+    const hyps = generateHypotheses(evidence, emptyCorrelation, {
+      seedLabel: 'SyncJob',
+      queues: [],
+      perDimensionDurationEvIds: [durEvId],
+    });
+    const bv = hyps.find((h) => h.category === 'benign-variance');
+    expect(bv).toBeDefined();
+    // Low base prior — rises only with the real per-dimension evidence.
+    expect(bv!.confidence).toBe(0.1);
+    expect(bv!.supportingEvidenceIds).toContain(durEvId);
+    expect(bv!.missingEvidence).toHaveLength(0);
+    // Validation lifts it (evidence present) but never to certainty.
+    const [validated] = validateHypotheses([bv!], evidence);
+    expect(validated!.verdict).toBe('supported');
+    expect(validated!.confidence).toBeGreaterThan(0.1);
+    expect(validated!.confidence).toBeLessThan(1);
+  });
+
+  it('(HOR-435) benign-variance is also supported by a bimodal-population metric signal', () => {
+    const bimodalId = 'bimodal-metric-ev';
+    const evidence: Evidence[] = [makeEvidence('metric', bimodalId)];
+    const hyps = generateHypotheses(evidence, emptyCorrelation, {
+      seedLabel: 'X',
+      queues: [],
+      bimodalMetricEvIds: [bimodalId],
+    });
+    const bv = hyps.find((h) => h.category === 'benign-variance');
+    expect(bv).toBeDefined();
+    expect(bv!.supportingEvidenceIds).toContain(bimodalId);
+  });
+
+  it('(HOR-435) benign-variance is emitted (unsupported) when the investigation is anomaly-themed, but stays low', () => {
+    const hyps = generateHypotheses([makeEvidence('symbol')], emptyCorrelation, {
+      seedLabel: 'X',
+      queues: [],
+      benignVarianceApplicable: true,
+    });
+    const bv = hyps.find((h) => h.category === 'benign-variance');
+    expect(bv).toBeDefined();
+    expect(bv!.confidence).toBe(0.1);
+    expect(bv!.supportingEvidenceIds).toHaveLength(0);
+    expect(bv!.missingEvidence.length).toBeGreaterThan(0);
+  });
+
+  it('(HOR-435) benign-variance is NOT emitted on a non-anomaly investigation with no duration/bimodal evidence', () => {
+    const hyps = generateHypotheses([makeEvidence('commit')], emptyCorrelation, {
+      seedLabel: 'X',
+      queues: [],
+    });
+    expect(hyps.find((h) => h.category === 'benign-variance')).toBeUndefined();
+  });
+
+  // ── HOR-435 lever #1: de-anchor alert-suggested causes ─────────────────────
+
+  it('(HOR-435) an alert-suggested category does NOT auto-promote — confidence is identical with/without the suggestion', () => {
+    const evidence: Evidence[] = [makeEvidence('symbol')];
+    const withoutSuggestion = generateHypotheses(evidence, emptyCorrelation, {
+      seedLabel: 'X',
+      queues: [],
+    });
+    const withSuggestion = generateHypotheses(evidence, emptyCorrelation, {
+      seedLabel: 'X',
+      queues: [],
+      alertSuggestedCategories: ['infrastructure', 'retry-storm'],
+    });
+    for (const cat of ['infrastructure', 'retry-storm']) {
+      const a = withoutSuggestion.find((h) => h.category === cat);
+      const b = withSuggestion.find((h) => h.category === cat);
+      expect(a).toBeDefined();
+      expect(b).toBeDefined();
+      // Alert text is CONTEXT-ONLY — the prior is unchanged by being named in the alert.
+      expect(b!.confidence).toBe(a!.confidence);
+      // ...but the de-anchoring is made explicit on the still-unsupported hypothesis.
+      expect(b!.missingEvidence.some((m) => /independent evidence/i.test(m))).toBe(true);
+    }
+  });
+
+  it('(HOR-435) a suggested category that HAS independent evidence is not annotated (it earned support honestly)', () => {
+    const stateEv = makeEvidence('state');
+    const hyps = generateHypotheses([stateEv], emptyCorrelation, {
+      seedLabel: 'X',
+      queues: [],
+      alertSuggestedCategories: ['infrastructure'],
+    });
+    const infra = hyps.find((h) => h.category === 'infrastructure');
+    expect(infra).toBeDefined();
+    expect(infra!.supportingEvidenceIds).toContain(stateEv.id);
+    // No "needs independent evidence" annotation — it already has it.
+    expect(infra!.missingEvidence.some((m) => /independent evidence/i.test(m))).toBe(false);
+  });
+
   it('worker-slowdown verdict is unconfirmed without metric evidence, supported with it', () => {
     const queueEv = makeEvidence('queue-edge');
 
