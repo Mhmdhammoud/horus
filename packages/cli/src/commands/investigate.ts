@@ -177,6 +177,11 @@ export async function runInvestigate(
     format?: string;
     ai?: boolean;
     aiModel?: string;
+    /**
+     * Proceed even when the installed horus-source backend drifts from the pinned version
+     * (HOR-436 escape hatch — `--force` / `--skip-version-check`). Opt-in; warns loudly.
+     */
+    force?: boolean;
     /** Injectable AI provider for smoke tests — bypasses credential requirement. */
     _aiProvider?: NarrativeProvider;
   },
@@ -220,6 +225,7 @@ export async function runInvestigate(
       ctx = await buildInvestigationContext(renv, {
         databaseUrl: config.database.url,
         ...(opts.service !== undefined ? { service: opts.service } : {}),
+        ...(opts.force !== undefined ? { force: opts.force } : {}),
       });
     } catch (err) {
       // No source-intelligence connector configured — same hard requirement as before.

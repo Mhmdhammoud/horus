@@ -112,6 +112,79 @@ describe('assertSourceVersionPinned', () => {
     stubVersion(null);
     await expect(assertSourceVersionPinned()).resolves.toBeUndefined();
   });
+
+  // HOR-436 — opt-in escape hatch. The pin stays STRICT by default; a bypass proceeds LOUDLY.
+  describe('bypass (HOR-436)', () => {
+    /** Run `fn` with HORUS_SKIP_VERSION_CHECK set to `value`, restoring the prior value after. */
+    async function withSkipEnv(value: string, fn: () => Promise<void>): Promise<void> {
+      const prev = process.env['HORUS_SKIP_VERSION_CHECK'];
+      process.env['HORUS_SKIP_VERSION_CHECK'] = value;
+      try {
+        await fn();
+      } finally {
+        if (prev === undefined) delete process.env['HORUS_SKIP_VERSION_CHECK'];
+        else process.env['HORUS_SKIP_VERSION_CHECK'] = prev;
+      }
+    }
+
+    it('via env HORUS_SKIP_VERSION_CHECK=1 — proceeds with a LOUD warning instead of throwing', async () => {
+      stubVersion(`horus-source ${DRIFTED}\n`);
+      const warn = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+      try {
+        await withSkipEnv('1', async () => {
+          await expect(assertSourceVersionPinned()).resolves.toBeUndefined();
+        });
+        expect(warn).toHaveBeenCalled();
+        const msg = warn.mock.calls.map((c) => String(c[0])).join('');
+        expect(msg).toMatch(/WARNING/);
+        expect(msg).toContain(DRIFTED);
+        expect(msg).toContain(PINNED_SOURCE_VERSION);
+        expect(msg).toContain(`uv tool install horus-source==${PINNED_SOURCE_VERSION}`);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('via env HORUS_SKIP_VERSION_CHECK=true — also accepts the string "true"', async () => {
+      stubVersion(`horus-source ${DRIFTED}\n`);
+      const warn = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+      try {
+        await withSkipEnv('true', async () => {
+          await expect(assertSourceVersionPinned()).resolves.toBeUndefined();
+        });
+        expect(warn).toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('via the force flag — proceeds (with a warning) without throwing', async () => {
+      stubVersion(`horus-source ${DRIFTED}\n`);
+      const warn = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+      try {
+        await expect(assertSourceVersionPinned({ force: true })).resolves.toBeUndefined();
+        expect(warn).toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('default (no bypass) STILL blocks, with a recovery path: `horus update`, the pinned install, the env var, and --force', async () => {
+      stubVersion(`horus-source ${DRIFTED}\n`);
+      // The pin is a safety guard — without an explicit opt-in it must still hard-block.
+      await expect(assertSourceVersionPinned()).rejects.toBeInstanceOf(SourceVersionMismatchError);
+      let msg = '';
+      try {
+        await assertSourceVersionPinned();
+      } catch (e) {
+        msg = (e as Error).message;
+      }
+      expect(msg).toContain('horus update');
+      expect(msg).toContain(`uv tool install horus-source==${PINNED_SOURCE_VERSION}`);
+      expect(msg).toContain('HORUS_SKIP_VERSION_CHECK');
+      expect(msg).toContain('--force');
+    });
+  });
 });
 
 describe('reconcileSpawnedHost', () => {

@@ -65,12 +65,26 @@ export class SourceVersionMismatchError extends Error {
     super(
       `horus-source ${installed} is installed but Horus is pinned to ${pinned}. ` +
         `A drifted backend builds a graph this CLI cannot map and can corrupt the index ` +
-        `(e.g. duplicate-primary-key failures during "Running initial index"). ` +
-        `Run \`horus update\` to sync the backend, or re-run the installer: ` +
-        `curl -fsSL https://horus.sh/install.sh | bash`,
+        `(e.g. duplicate-primary-key failures during "Running initial index").\n` +
+        `  Fix it — run \`horus update\` to re-sync the backend to ${pinned} ` +
+        `(or install it directly: uv tool install horus-source==${pinned}).\n` +
+        `  Or proceed anyway (results may be unreliable) — re-run with --force, ` +
+        `or set HORUS_SKIP_VERSION_CHECK=1.`,
     );
     this.name = 'SourceVersionMismatchError';
   }
+}
+
+/**
+ * Whether the version-pin guard is being bypassed — opt-in ONLY (HOR-436). True when the
+ * caller passes `--force` (`opts.force`) or exports `HORUS_SKIP_VERSION_CHECK` set to `1`
+ * (or `true`). The STRICT pin stays the default; this is the deliberate escape hatch and a
+ * bypass never happens silently (callers warn loudly — see {@link assertSourceVersionPinned}).
+ */
+export function versionCheckBypassed(opts?: { force?: boolean }): boolean {
+  if (opts?.force) return true;
+  const flag = (process.env['HORUS_SKIP_VERSION_CHECK'] ?? '').trim().toLowerCase();
+  return flag === '1' || flag === 'true';
 }
 
 /**
@@ -82,13 +96,32 @@ export class SourceVersionMismatchError extends Error {
  * A version that cannot be read/parsed is allowed through (treated as "unknown", matching
  * how `horus status` reports it) — we only block on a *known* mismatch.
  *
- * @throws {SourceVersionMismatchError} when the installed version is known and differs.
+ * Escape hatch (HOR-436): a known mismatch can be overridden — opt-in only — via `--force`
+ * (`opts.force`) or `HORUS_SKIP_VERSION_CHECK=1`. The bypass does NOT skip silently: it emits
+ * a LOUD warning and then proceeds, so a drifted run is always visible. The pin remains STRICT
+ * by default; without a bypass a mismatch still throws with a copy-pasteable recovery path.
+ *
+ * @throws {SourceVersionMismatchError} when the installed version is known, differs, and no
+ *   bypass is in effect.
  */
-export async function assertSourceVersionPinned(): Promise<void> {
+export async function assertSourceVersionPinned(opts?: { force?: boolean }): Promise<void> {
   const installed = await getSourceVersion();
-  if (installed !== null && installed !== PINNED_SOURCE_VERSION) {
-    throw new SourceVersionMismatchError(installed, PINNED_SOURCE_VERSION);
+  // Unknown (binary missing / unparseable) or an exact match → nothing to enforce.
+  if (installed === null || installed === PINNED_SOURCE_VERSION) return;
+
+  // Known mismatch. The only way past the STRICT pin is an explicit opt-in bypass — and even
+  // then we proceed LOUDLY so a drifted run is never silent (HOR-436).
+  if (versionCheckBypassed(opts)) {
+    process.stderr.write(
+      `\n⚠ WARNING: Horus pins horus-source ${PINNED_SOURCE_VERSION} but ${installed} is installed — ` +
+        `proceeding because the version check was bypassed. Results may be unreliable (a drifted ` +
+        `backend can build a graph this CLI mis-maps). ` +
+        `Re-sync with: horus update (or: uv tool install horus-source==${PINNED_SOURCE_VERSION})\n\n`,
+    );
+    return;
   }
+
+  throw new SourceVersionMismatchError(installed, PINNED_SOURCE_VERSION);
 }
 
 /** Has the repo been analyzed? Checks `.horus/source/`. */
