@@ -6,10 +6,9 @@ import {
   parseResolved,
   parseManualEstimate,
   submitFeedback,
-  maybePromptFeedback,
 } from './feedback.js';
 import { readSpooledEvents } from './spool.js';
-import { loadOrInitTelemetryState, updateTelemetryState } from './store.js';
+import { loadOrInitTelemetryState } from './store.js';
 import { runFeedback } from '../../commands/feedback.js';
 
 const ENV_KEYS = [
@@ -124,27 +123,6 @@ describe('runFeedback (non-interactive flag path — agent/scripted)', () => {
   });
 });
 
-describe('maybePromptFeedback gating (never reaches the prompt)', () => {
-  it('skips on non-TTY', async () => {
-    loadOrInitTelemetryState();
-    setTTY(false);
-    await maybePromptFeedback({ investigationId: 'inv-1', random: () => 0 });
-    expect(readSpooledEvents()).toEqual([]);
-  });
-
-  it('skips outside the sample (random > rate)', async () => {
-    loadOrInitTelemetryState();
-    setTTY(true);
-    await maybePromptFeedback({ investigationId: 'inv-1', sampleRate: 0.25, random: () => 0.9 });
-    expect(readSpooledEvents()).toEqual([]);
-  });
-
-  it('skips when telemetry is disabled', async () => {
-    updateTelemetryState((s) => {
-      s.tierA.enabled = false;
-    });
-    setTTY(true);
-    await maybePromptFeedback({ investigationId: 'inv-1', sampleRate: 1, random: () => 0 });
-    expect(readSpooledEvents()).toEqual([]);
-  });
-});
+// The investigate-time sampled prompt (maybePromptFeedback) was removed in HOR-431:
+// prompting at investigate time is premature. The deferred resolution-time nudge that
+// replaces it is covered by feedback-nudge.test.ts.

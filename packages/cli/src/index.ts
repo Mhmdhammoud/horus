@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { HORUS_VERSION } from '@horus/core';
 import { maybeNotifyUpdate } from './lib/update-notifier.js';
+import { maybePromptResolutionFeedback } from './lib/feedback-nudge.js';
 import { runStatus } from './commands/status.js';
 import { runExplain } from './commands/explain.js';
 import { runIndex } from './commands/index-repo.js';
@@ -1563,7 +1564,15 @@ export async function run(argv: string[] = process.argv): Promise<void> {
   // Tier-A usage events (command.invoked/completed) — fire-and-forget, gated on
   // consent, spooled locally. Never affects command behavior.
   installCommandTelemetry(program);
-  await program.parseAsync(argv);
+  // `--no-input` is a global, position-independent kill-switch for interactive prompts
+  // (CI/agents). Strip it before commander parses so no subcommand sees an unknown option;
+  // the feedback nudge reads the original process.argv to honor it. `HORUS_NO_INPUT=1` works too.
+  const parseArgv = argv.filter((a) => a !== '--no-input');
+  await program.parseAsync(parseArgv);
   // Best-effort, time-boxed drain of spooled events to the cloud. Never throws.
   await flushTelemetry();
+  // Resolution-time feedback nudge (HOR-431): at the END of a run, if a prior investigation is
+  // still unlabeled and old enough, ask once. Deferred (never at investigate time), rate-limited,
+  // dismissible, suppressed on non-TTY/CI/--json/--no-input. Never blocks or throws.
+  await maybePromptResolutionFeedback();
 }

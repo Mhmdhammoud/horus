@@ -11,7 +11,6 @@ import { authedClient, repoRootOrCwd } from '../lib/cloud/session.js';
 import { uploadInvestigationToCloud } from '../lib/cloud/investigation-sync.js';
 import { track } from '../lib/telemetry/client.js';
 import { isContentSharingEnabled } from '../lib/telemetry/consent.js';
-import { maybePromptFeedback } from '../lib/telemetry/feedback.js';
 import { reportCloudError } from './context.js';
 import { computeFreshness, renderFreshness, readIndexMeta, commitsSince } from '../lib/freshness.js';
 import {
@@ -181,7 +180,6 @@ export async function runInvestigate(
     _aiProvider?: NarrativeProvider;
   },
 ): Promise<number> {
-  const startedAtMs = Date.now();
   try {
     const config = await loadConfig(opts.config, { name: opts.name });
 
@@ -395,13 +393,10 @@ export async function runInvestigate(
         }
         // Shared footer nudge (HOR-431 / HOR-439): teach Horus when the cause is wrong, or
         // file a bug/gap. Dim, two tight lines — the same wording reused across surfaces.
+        // The interactive feedback PROMPT is deferred to a later run (HOR-431, resolution-time
+        // nudge) — never asked here at investigate time, before the user knows if Horus was right.
         console.log(pc.dim(`  Wrong cause? Teach Horus:  horus feedback`));
         console.log(pc.dim(`  Bug or gap? File an issue:  horus report`));
-        // Sampled, skippable impact prompt — never on non-TTY/--json (HOR-326).
-        await maybePromptFeedback({
-          investigationId: report.id,
-          horusSeconds: (Date.now() - startedAtMs) / 1000,
-        });
       }
     } finally {
       // Close EVERY connector + the DB — an unclosed pg/ioredis handle keeps the Node event
