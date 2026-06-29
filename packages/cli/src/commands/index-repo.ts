@@ -123,11 +123,6 @@ export interface IndexOptions {
   fast?: boolean;
   /** Import a Maison Safqa knowledge-base JSON instead of deriving from source. */
   importKb?: string;
-  /**
-   * Proceed even when the installed horus-source backend drifts from the pinned version
-   * (HOR-436 escape hatch — `--force` / `--skip-version-check`). Opt-in; warns loudly.
-   */
-  skipVersionCheck?: boolean;
 }
 
 /**
@@ -369,10 +364,8 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
       }
       // Refuse to analyze or host with a drifted backend — a version mismatch corrupts
       // the Kùzu graph identically on every rebuild, so a plain reindex can never recover.
-      // HOR-436: `--force` / `--skip-version-check` (or HORUS_SKIP_VERSION_CHECK=1) opts past
-      // this guard with a loud warning, for the offline / deliberately-pinned-mismatch case.
       try {
-        await assertSourceVersionPinned(opts.skipVersionCheck ? { force: true } : undefined);
+        await assertSourceVersionPinned();
       } catch (err) {
         console.error(pc.red(`  ${(err as Error).message}`));
         return 1;

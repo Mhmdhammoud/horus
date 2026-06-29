@@ -112,7 +112,7 @@ export async function verifyHostServesRepo(
  */
 export async function ensureOwnSourceHost(
   root: string,
-  opts: { timeoutMs?: number; force?: boolean } = {},
+  opts: { timeoutMs?: number } = {},
 ): Promise<EnsureHostResult> {
   // 1) The repo's own recorded host, if it is up and genuinely serving this repo.
   const ownUrl = readSourceHostUrl(root);
@@ -128,7 +128,7 @@ export async function ensureOwnSourceHost(
   // un-analyzed backend.
   if (!(await sourceAvailable())) return { ok: false, reason: 'source-unavailable' };
   try {
-    await assertSourceVersionPinned(opts.force ? { force: true } : undefined);
+    await assertSourceVersionPinned();
   } catch {
     return { ok: false, reason: 'version-mismatch' };
   }
@@ -172,12 +172,10 @@ export async function ensureOwnSourceHost(
 export async function resolveSourceHostUrl(
   root: string,
   configuredUrl: string,
-  opts: { timeoutMs?: number; log?: (line: string) => void; force?: boolean } = {},
+  opts: { timeoutMs?: number; log?: (line: string) => void } = {},
 ): Promise<EnsureHostResult> {
   const log = opts.log ?? (() => {});
-  const healOpts: { timeoutMs?: number; force?: boolean } = {};
-  if (opts.timeoutMs !== undefined) healOpts.timeoutMs = opts.timeoutMs;
-  if (opts.force !== undefined) healOpts.force = opts.force;
+  const healOpts = opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {};
 
   // Self-heal the configured host if it is down (HOR-319 layer 1).
   let healthyUrl: string | null = null;
@@ -228,7 +226,7 @@ export async function resolveSourceHostUrl(
 export async function ensureSourceHost(
   root: string,
   hostUrl: string,
-  opts: { timeoutMs?: number; force?: boolean } = {},
+  opts: { timeoutMs?: number } = {},
 ): Promise<EnsureHostResult> {
   // Maybe it recovered between the caller's health check and now.
   if (await isHostHealthy(hostUrl)) return { ok: true, hostUrl };
@@ -237,9 +235,8 @@ export async function ensureSourceHost(
   if (!(await sourceAvailable())) return { ok: false, reason: 'source-unavailable' };
   // Never restart a host with a drifted backend — it would re-corrupt the graph the same
   // way `horus index` would. Mirror that guard here so self-heal can't smuggle one in.
-  // (HOR-436: honors the same opt-in bypass — `--force` / HORUS_SKIP_VERSION_CHECK.)
   try {
-    await assertSourceVersionPinned(opts.force ? { force: true } : undefined);
+    await assertSourceVersionPinned();
   } catch {
     return { ok: false, reason: 'version-mismatch' };
   }

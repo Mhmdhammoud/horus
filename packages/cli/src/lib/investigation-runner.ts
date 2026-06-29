@@ -74,11 +74,6 @@ export interface BuildContextOptions {
   service?: string;
   /** Sink for human-readable status/warning lines (default: console.error). */
   log?: (line: string) => void;
-  /**
-   * Bypass the source-version pin guard (HOR-436 — `--force` / `--skip-version-check`).
-   * Opt-in; the guard otherwise blocks self-healing a host on a drifted backend.
-   */
-  force?: boolean;
 }
 
 /**
@@ -113,10 +108,7 @@ export async function buildInvestigationContext(
     // (never ground on a foreign repo's host occupying the shared :8420 default). The
     // resolved URL may differ from the configured one when we had to start this repo's own
     // host on a free port — rebuild the provider to point at the verified host.
-    const resolved = await resolveSourceHostUrl(renv.path, sourceUrl, {
-      log,
-      ...(opts.force !== undefined ? { force: opts.force } : {}),
-    });
+    const resolved = await resolveSourceHostUrl(renv.path, sourceUrl, { log });
     runtimeOnly = !resolved.ok;
     if (resolved.ok && resolved.hostUrl && resolved.hostUrl !== sourceUrl) {
       code = codeForUrl(resolved.hostUrl);

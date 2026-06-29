@@ -351,7 +351,6 @@ Examples:
     .option('--changed', 'pre-push-safe: refresh knowledge for changed files only')
     .option('--fast', 'speed hint, used with --changed')
     .option('--import-kb <path>', 'import a knowledge-base JSON (e.g. Maison Safqa MCP) as the knowledge source')
-    .option('--force, --skip-version-check', 'proceed even if the installed horus-source backend drifts from the pinned version (results may be unreliable; prefer `horus update`)')
     .action(
       async (opts: {
         config?: string;
@@ -362,7 +361,6 @@ Examples:
         changed?: boolean;
         fast?: boolean;
         importKb?: string;
-        skipVersionCheck?: boolean;
       }) => {
         process.exitCode = await runIndex(opts);
       },
@@ -725,7 +723,6 @@ Examples:
     .option('--format <fmt>', 'output format: text | markdown | json', 'text')
     .option('--ai', 'enrich report with AI narrative (requires ANTHROPIC_API_KEY; falls back to deterministic on failure)')
     .option('--ai-model <model>', 'AI model for --ai (default: claude-opus-4-8)')
-    .option('--force, --skip-version-check', 'proceed even if the installed horus-source backend drifts from the pinned version (results may be unreliable; prefer `horus update`)')
     .action(
       async (
         hint: string,
@@ -744,7 +741,6 @@ Examples:
           format?: string;
           ai?: boolean;
           aiModel?: string;
-          skipVersionCheck?: boolean;
         },
       ) => {
         process.exitCode = await runInvestigate(hint, {
@@ -762,7 +758,6 @@ Examples:
           format: opts.format,
           ai: opts.ai,
           aiModel: opts.aiModel,
-          force: opts.skipVersionCheck,
         });
       },
     )
