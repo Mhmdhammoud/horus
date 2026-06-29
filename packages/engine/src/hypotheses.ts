@@ -97,6 +97,14 @@ export interface HypothesisContext {
    */
   bimodalMetricEvIds?: string[];
   /**
+   * HOR-438: evidence ids of code-detected per-segment queue STRUCTURE (one queue per
+   * market/region/tenant/shard, e.g. `MANAGE_SALES:KSA` + `MANAGE_SALES:UAE`). The code
+   * SHOWING per-segment processing is a real, code-grounded support for the benign-variance
+   * hypothesis — an anomaly on one segment is more likely expected per-segment variance than
+   * a uniform failure. It SUPPORTS benign-variance; it is never a verdict.
+   */
+  perSegmentQueueStructureEvIds?: string[];
+  /**
    * HOR-435 (lever #4): emit the benign-variance hypothesis even with no supporting
    * evidence yet, so the competing set still names "this may be expected variance" on a
    * duration/latency/anomaly-themed investigation. When false/undefined the hypothesis is
@@ -324,12 +332,14 @@ export function generateHypotheses(
   // counter-hypothesis to "the whole job regressed": when one region runs 2m10s while another
   // runs 19ms, the average is misleading and there may be nothing broken at all. Its base prior
   // is deliberately LOW (0.1) and rises ONLY with real evidence — the per-dimension duration
-  // breakdown (#2) and/or a bimodal-population metric signal (#3). It is never auto-confirmed:
-  // it competes for confidence, it does not win by default.
+  // breakdown (#2), a bimodal-population metric signal (#3), and/or a code-detected per-segment
+  // queue STRUCTURE (HOR-438: one queue per market/region/tenant ⇒ per-segment processing is
+  // expected). It is never auto-confirmed: it competes for confidence, it does not win by default.
   const benignSupport = [
     ...new Set([
       ...(ctx.perDimensionDurationEvIds ?? []),
       ...(ctx.bimodalMetricEvIds ?? []),
+      ...(ctx.perSegmentQueueStructureEvIds ?? []),
     ]),
   ];
   if (benignSupport.length > 0 || ctx.benignVarianceApplicable === true) {

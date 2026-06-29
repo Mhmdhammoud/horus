@@ -389,6 +389,51 @@ describe('generateHypotheses', () => {
     expect(bv!.supportingEvidenceIds).toContain(bimodalId);
   });
 
+  it('(HOR-438) benign-variance RISES when code-detected per-segment queue structure is present', () => {
+    const segId = 'per-segment-queue-ev';
+    const evidence: Evidence[] = [makeEvidence('queue-edge', segId)];
+    const hyps = generateHypotheses(evidence, emptyCorrelation, {
+      seedLabel: 'ManageSalesWorker',
+      queues: ['MANAGE_SALES:KSA', 'MANAGE_SALES:UAE'],
+      perSegmentQueueStructureEvIds: [segId],
+    });
+    const bv = hyps.find((h) => h.category === 'benign-variance');
+    expect(bv).toBeDefined();
+    // Base prior stays LOW (honesty) — the per-segment structure is support, not a verdict.
+    expect(bv!.confidence).toBe(0.1);
+    expect(bv!.supportingEvidenceIds).toContain(segId);
+    expect(bv!.missingEvidence).toHaveLength(0);
+    // Validation lifts it above the base prior (real support present) but never to certainty.
+    const [validated] = validateHypotheses([bv!], evidence);
+    expect(validated!.verdict).toBe('supported');
+    expect(validated!.confidence).toBeGreaterThan(0.1);
+    expect(validated!.confidence).toBeLessThan(1);
+  });
+
+  it('(HOR-438) per-segment queue support does NOT let benign-variance outrank a genuine failure', () => {
+    // A genuine deployment regression (relevant commit) co-present with a per-segment
+    // queue structure: benign-variance must NOT win — the real failure outranks it.
+    const commitId = 'real-regression-commit';
+    const segId = 'per-segment-queue-ev';
+    const commitEv = makeEvidence('commit', commitId);
+    const segEv = makeEvidence('queue-edge', segId);
+    const evidence: Evidence[] = [commitEv, segEv];
+    const hyps = generateHypotheses(evidence, emptyCorrelation, {
+      seedLabel: 'ManageSalesWorker',
+      queues: ['MANAGE_SALES:KSA', 'MANAGE_SALES:UAE'],
+      perSegmentQueueStructureEvIds: [segId],
+    });
+    const validated = validateHypotheses(hyps, evidence);
+    const bv = validated.find((h) => h.category === 'benign-variance')!;
+    const dr = validated.find((h) => h.category === 'deployment-regression')!;
+    expect(bv).toBeDefined();
+    expect(dr).toBeDefined();
+    // The genuine failure outranks benign-variance.
+    expect(dr.confidence).toBeGreaterThan(bv.confidence);
+    // ...and the top-ranked hypothesis is not benign-variance.
+    expect(validated[0]!.category).not.toBe('benign-variance');
+  });
+
   it('(HOR-435) benign-variance is emitted (unsupported) when the investigation is anomaly-themed, but stays low', () => {
     const hyps = generateHypotheses([makeEvidence('symbol')], emptyCorrelation, {
       seedLabel: 'X',
