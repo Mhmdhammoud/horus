@@ -5,6 +5,7 @@ import {
   discoverLocalConfig,
   readLocalConfig,
   loadConfig,
+  type ConnectorsConfig,
 } from '@horus/core';
 import { checkDatabase, type DbHealth } from '@horus/db';
 
@@ -18,6 +19,173 @@ interface DoctorCheck {
   detail: string;
   next?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Connector readiness registry (HOR-437)
+//
+// One descriptor per connector kind, keyed by the SAME connector keys the engine
+// resolves and the factory (`@horus/connectors`) instantiates — `keyof ConnectorsConfig`.
+// The mapped `ConnectorRegistry` type forces an entry for EVERY connector key, so
+// adding a new connector to the config schema is a COMPILE ERROR here until its
+// readiness check is added. A connector can never again be silently omitted from
+// `horus doctor` — which was the original bug: Axiom (HOR-429) was wired into the
+// config schema + factory but never added to doctor's hardcoded check list.
+// ---------------------------------------------------------------------------
+
+type ConnectorReadinessCheck<K extends keyof ConnectorsConfig> = (
+  cfg: NonNullable<ConnectorsConfig[K]>,
+  ctx: string,
+) => DoctorCheck;
+
+type ConnectorRegistry = {
+  [K in keyof Required<ConnectorsConfig>]: {
+    /** Display label shown in the readiness output. */
+    label: string;
+    /** Next-step hint when this connector is absent from every environment. */
+    absentNext: string;
+    /** Build the readiness check for a configured (non-null) connector in one env. */
+    check: ConnectorReadinessCheck<K>;
+  };
+};
+
+const CONNECTOR_CHECKS: ConnectorRegistry = {
+  // Elasticsearch (runtime logs)
+  elasticsearch: {
+    label: 'Elasticsearch',
+    absentNext:
+      'add connectors.elasticsearch to an environment in your Horus config for runtime log evidence',
+    check: (es, ctx) =>
+      !es.indexPattern
+        ? {
+            label: 'Elasticsearch',
+            status: 'warn',
+            detail: `${ctx} — indexPattern not set`,
+            next: 'set indexPattern in connectors.elasticsearch',
+          }
+        : {
+            label: 'Elasticsearch',
+            status: 'pass',
+            detail: `${ctx} — ${es.indexPattern} [runtime ingestion pending]`,
+          },
+  },
+  // Grafana (metrics)
+  grafana: {
+    label: 'Grafana',
+    absentNext: 'add connectors.grafana to an environment for metric evidence',
+    check: (g, ctx) =>
+      !g.url
+        ? {
+            label: 'Grafana',
+            status: 'warn',
+            detail: `${ctx} — URL not set`,
+            next: 'set grafana.url or grafana.urlEnv in your Horus config',
+          }
+        : {
+            label: 'Grafana',
+            status: 'pass',
+            detail: `${ctx} — URL configured${g.dashboard ? ` (${g.dashboard})` : ''} [runtime ingestion pending]`,
+          },
+  },
+  // MongoDB (state)
+  mongodb: {
+    label: 'MongoDB',
+    absentNext: 'add connectors.mongodb to an environment for database state evidence',
+    check: (m, ctx) =>
+      !m.url
+        ? {
+            label: 'MongoDB',
+            status: 'warn',
+            detail: `${ctx} — URL not set`,
+            next: 'set mongodb.url or mongodb.urlEnv in your Horus config',
+          }
+        : {
+            label: 'MongoDB',
+            status: 'pass',
+            detail: `${ctx} — ${m.database} [runtime ingestion pending]`,
+          },
+  },
+  // Postgres (state)
+  postgres: {
+    label: 'Postgres',
+    absentNext: 'add connectors.postgres to an environment for database state evidence',
+    check: (p, ctx) =>
+      !p.url
+        ? {
+            label: 'Postgres',
+            status: 'warn',
+            detail: `${ctx} — URL not set`,
+            next: 'set postgres.url or postgres.urlEnv in your Horus config',
+          }
+        : {
+            label: 'Postgres',
+            status: 'pass',
+            detail: `${ctx} — ${p.database ?? p.schema ?? 'postgres'} [runtime ingestion pending]`,
+          },
+  },
+  // Sentry (error tracking)
+  sentry: {
+    label: 'Sentry',
+    absentNext: 'add connectors.sentry to an environment for error-tracking evidence',
+    check: (s, ctx) => {
+      const tokenSet = s.authToken || process.env[s.authTokenEnv ?? 'SENTRY_AUTH_TOKEN'];
+      return !tokenSet
+        ? {
+            label: 'Sentry',
+            status: 'warn',
+            detail: `${ctx} — auth token not set`,
+            next: 'set sentry.authToken or sentry.authTokenEnv (default SENTRY_AUTH_TOKEN) in your Horus config',
+          }
+        : {
+            label: 'Sentry',
+            status: 'pass',
+            detail: `${ctx} — ${s.org}/${s.project} [runtime ingestion pending]`,
+          };
+    },
+  },
+  // Axiom (structured logs) — HOR-437: previously omitted from doctor entirely.
+  axiom: {
+    label: 'Axiom',
+    absentNext: 'add connectors.axiom to an environment for structured log evidence',
+    check: (a, ctx) => {
+      const tokenSet = a.token || process.env[a.tokenEnv ?? 'AXIOM_TOKEN'];
+      return !tokenSet
+        ? {
+            label: 'Axiom',
+            status: 'warn',
+            detail: `${ctx} — API token not set`,
+            next: 'set axiom.token or axiom.tokenEnv (default AXIOM_TOKEN) in your Horus config',
+          }
+        : {
+            label: 'Axiom',
+            status: 'pass',
+            detail: `${ctx} — ${a.dataset} [runtime ingestion pending]`,
+          };
+    },
+  },
+  // Redis / BullMQ (queue + cache/state)
+  redis: {
+    label: 'Redis',
+    absentNext: 'add connectors.redis to an environment for queue state evidence',
+    check: (r, ctx) =>
+      !r.url
+        ? {
+            label: 'Redis',
+            status: 'warn',
+            detail: `${ctx} — URL not set`,
+            next: 'set redis.url or redis.urlEnv in your Horus config',
+          }
+        : {
+            label: 'Redis',
+            status: 'pass',
+            detail: `${ctx} — URL configured [runtime ingestion pending]`,
+          },
+  },
+};
+
+/** All connector keys covered by the doctor readiness registry. Exported for tests. */
+export const DOCTOR_CONNECTOR_KEYS = Object.keys(CONNECTOR_CHECKS) as (keyof ConnectorsConfig)[];
+
+export { CONNECTOR_CHECKS };
 
 export interface DoctorOutput {
   version: string;
@@ -149,185 +317,39 @@ export async function runDoctor(opts?: {
     }
   }
 
-  // Runtime connector checks — all connector types resolved in one config pass.
+  // Runtime connector checks — driven off the connector registry (HOR-437), the same
+  // connector key set the engine resolves and the factory instantiates. Every
+  // configured connector in every environment gets a readiness line; any connector
+  // never configured gets a single "not configured" hint. New connectors are covered
+  // automatically (the registry is exhaustive over `keyof ConnectorsConfig`).
   try {
     const globalConfig = await loadConfig(opts?.config, { cwd });
-    let anyEs = false;
-    let anyGrafana = false;
-    let anyMongo = false;
-    let anyPostgres = false;
-    let anySentry = false;
-    let anyRedis = false;
+    const configured = new Set<keyof ConnectorsConfig>();
 
     for (const project of globalConfig.projects) {
       for (const env of project.environments) {
         const ctx = `${project.name}/${env.name}`;
         const c = env.connectors;
-
-        // Elasticsearch
-        if (c.elasticsearch) {
-          anyEs = true;
-          if (!c.elasticsearch.indexPattern) {
-            checks.push({
-              label: 'Elasticsearch',
-              status: 'warn',
-              detail: `${ctx} — indexPattern not set`,
-              next: 'set indexPattern in connectors.elasticsearch',
-            });
-          } else {
-            checks.push({
-              label: 'Elasticsearch',
-              status: 'pass',
-              detail: `${ctx} — ${c.elasticsearch.indexPattern} [runtime ingestion pending]`,
-            });
-          }
-        }
-
-        // Grafana (metrics)
-        if (c.grafana) {
-          anyGrafana = true;
-          if (!c.grafana.url) {
-            checks.push({
-              label: 'Grafana',
-              status: 'warn',
-              detail: `${ctx} — URL not set`,
-              next: 'set grafana.url or grafana.urlEnv in your Horus config',
-            });
-          } else {
-            const dashHint = c.grafana.dashboard ? ` (${c.grafana.dashboard})` : '';
-            checks.push({
-              label: 'Grafana',
-              status: 'pass',
-              detail: `${ctx} — URL configured${dashHint} [runtime ingestion pending]`,
-            });
-          }
-        }
-
-        // MongoDB (state)
-        if (c.mongodb) {
-          anyMongo = true;
-          if (!c.mongodb.url) {
-            checks.push({
-              label: 'MongoDB',
-              status: 'warn',
-              detail: `${ctx} — URL not set`,
-              next: 'set mongodb.url or mongodb.urlEnv in your Horus config',
-            });
-          } else {
-            checks.push({
-              label: 'MongoDB',
-              status: 'pass',
-              detail: `${ctx} — ${c.mongodb.database} [runtime ingestion pending]`,
-            });
-          }
-        }
-
-        // Postgres (state)
-        if (c.postgres) {
-          anyPostgres = true;
-          if (!c.postgres.url) {
-            checks.push({
-              label: 'Postgres',
-              status: 'warn',
-              detail: `${ctx} — URL not set`,
-              next: 'set postgres.url or postgres.urlEnv in your Horus config',
-            });
-          } else {
-            checks.push({
-              label: 'Postgres',
-              status: 'pass',
-              detail: `${ctx} — ${c.postgres.database ?? c.postgres.schema ?? 'postgres'} [runtime ingestion pending]`,
-            });
-          }
-        }
-
-        // Sentry (error tracking)
-        if (c.sentry) {
-          anySentry = true;
-          const tokenSet = c.sentry.authToken || process.env[c.sentry.authTokenEnv ?? 'SENTRY_AUTH_TOKEN'];
-          if (!tokenSet) {
-            checks.push({
-              label: 'Sentry',
-              status: 'warn',
-              detail: `${ctx} — auth token not set`,
-              next: 'set sentry.authToken or sentry.authTokenEnv (default SENTRY_AUTH_TOKEN) in your Horus config',
-            });
-          } else {
-            checks.push({
-              label: 'Sentry',
-              status: 'pass',
-              detail: `${ctx} — ${c.sentry.org}/${c.sentry.project} [runtime ingestion pending]`,
-            });
-          }
-        }
-
-        // Redis / BullMQ (queue state)
-        if (c.redis) {
-          anyRedis = true;
-          if (!c.redis.url) {
-            checks.push({
-              label: 'Redis',
-              status: 'warn',
-              detail: `${ctx} — URL not set`,
-              next: 'set redis.url or redis.urlEnv in your Horus config',
-            });
-          } else {
-            checks.push({
-              label: 'Redis',
-              status: 'pass',
-              detail: `${ctx} — URL configured [runtime ingestion pending]`,
-            });
-          }
+        for (const key of DOCTOR_CONNECTOR_KEYS) {
+          const cfg = c[key];
+          if (cfg === undefined) continue;
+          configured.add(key);
+          // The mapped registry type guarantees key/cfg correlation; the cast just
+          // bridges the per-key generic across the dynamic key loop.
+          const run = CONNECTOR_CHECKS[key].check as (cfg: unknown, ctx: string) => DoctorCheck;
+          checks.push(run(cfg, ctx));
         }
       }
     }
 
-    if (!anyEs) {
+    for (const key of DOCTOR_CONNECTOR_KEYS) {
+      if (configured.has(key)) continue;
+      const desc = CONNECTOR_CHECKS[key];
       checks.push({
-        label: 'Elasticsearch',
+        label: desc.label,
         status: 'warn',
         detail: 'not configured',
-        next: 'add connectors.elasticsearch to an environment in your Horus config for runtime log evidence',
-      });
-    }
-    if (!anyGrafana) {
-      checks.push({
-        label: 'Grafana',
-        status: 'warn',
-        detail: 'not configured',
-        next: 'add connectors.grafana to an environment for metric evidence',
-      });
-    }
-    if (!anyMongo) {
-      checks.push({
-        label: 'MongoDB',
-        status: 'warn',
-        detail: 'not configured',
-        next: 'add connectors.mongodb to an environment for database state evidence',
-      });
-    }
-    if (!anyPostgres) {
-      checks.push({
-        label: 'Postgres',
-        status: 'warn',
-        detail: 'not configured',
-        next: 'add connectors.postgres to an environment for database state evidence',
-      });
-    }
-    if (!anySentry) {
-      checks.push({
-        label: 'Sentry',
-        status: 'warn',
-        detail: 'not configured',
-        next: 'add connectors.sentry to an environment for error-tracking evidence',
-      });
-    }
-    if (!anyRedis) {
-      checks.push({
-        label: 'Redis',
-        status: 'warn',
-        detail: 'not configured',
-        next: 'add connectors.redis to an environment for queue state evidence',
+        next: desc.absentNext,
       });
     }
   } catch {

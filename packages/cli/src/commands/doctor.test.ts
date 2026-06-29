@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { runDoctor } from './doctor.js';
+import { runDoctor, CONNECTOR_CHECKS, DOCTOR_CONNECTOR_KEYS } from './doctor.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -890,5 +890,191 @@ describe('runDoctor --json', () => {
     expect(out.summary.pass).toBe(passCount);
     expect(out.summary.warn).toBe(warnCount);
     expect(out.summary.fail).toBe(failCount);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOR-437: doctor must cover EVERY configured connector (Axiom + future ones)
+//
+// The bug: doctor's connector checks were a hardcoded list (ES, Grafana, Mongo,
+// Postgres, Sentry, Redis) that was never updated when Axiom was added — so
+// `horus doctor` silently skipped Axiom. The fix drives the checks off the
+// connector registry (exhaustive over `keyof ConnectorsConfig`), so these tests
+// assert coverage of the WHOLE supported set, not a fixed snapshot.
+// ---------------------------------------------------------------------------
+
+describe('runDoctor — full connector coverage (HOR-437)', () => {
+  it('the registry covers the full supported connector set including axiom', () => {
+    const keys = new Set(DOCTOR_CONNECTOR_KEYS as string[]);
+    for (const expected of [
+      'elasticsearch',
+      'grafana',
+      'sentry',
+      'mongodb',
+      'postgres',
+      'redis',
+      'axiom',
+    ]) {
+      expect(keys.has(expected)).toBe(true);
+    }
+  });
+
+  it('reports a readiness line for EVERY connector type (registry-driven)', async () => {
+    // An env with no connectors configured — every registry connector should still
+    // produce a "not configured" readiness line. Driven off CONNECTOR_CHECKS so a
+    // newly-added connector cannot be silently omitted from this assertion.
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{ name: "production", connectors: {} }],
+  }],
+};
+`);
+    const { lines, code } = await captureOutput((write) =>
+      runDoctor({ config: configPath, json: true, _dbCheck: stubDbReady, write }),
+    );
+    expect(code).toBe(0);
+    const out = JSON.parse(lines.join(''));
+    const labels = new Set<string>(out.checks.map((c: { label: string }) => c.label));
+    for (const key of DOCTOR_CONNECTOR_KEYS) {
+      expect(labels.has(CONNECTOR_CHECKS[key].label)).toBe(true);
+    }
+    // Explicitly confirm Axiom — the connector the old hardcoded list missed.
+    expect(labels.has('Axiom')).toBe(true);
+  });
+
+  it('reports a line for every configured connector when ALL are present', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{
+      name: "production",
+      connectors: {
+        elasticsearch: { indexPattern: "my-api-prod-*" },
+        grafana: { url: "https://grafana.internal:3000" },
+        mongodb: { url: "mongodb://localhost:27017", database: "my-api" },
+        postgres: { url: "postgresql://localhost:5432/my-api", database: "my-api" },
+        sentry: { org: "acme", project: "my-api", authToken: "sentry-tok" },
+        axiom: { dataset: "my-api-logs", token: "axiom-tok" },
+        redis: { url: "redis://localhost:6379" },
+      },
+    }],
+  }],
+};
+`);
+    const { lines, code } = await captureOutput((write) =>
+      runDoctor({ config: configPath, json: true, _dbCheck: stubDbReady, write }),
+    );
+    expect(code).toBe(0);
+    const out = JSON.parse(lines.join(''));
+    const labels = new Set<string>(out.checks.map((c: { label: string }) => c.label));
+    for (const key of DOCTOR_CONNECTOR_KEYS) {
+      expect(labels.has(CONNECTOR_CHECKS[key].label)).toBe(true);
+    }
+  });
+});
+
+describe('runDoctor — Axiom present (HOR-437)', () => {
+  it('shows pass and the dataset when Axiom token + dataset are configured', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{
+      name: "production",
+      connectors: { axiom: { dataset: "my-api-logs", token: "axiom-secret-token" } },
+    }],
+  }],
+};
+`);
+    const { lines, code } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    expect(code).toBe(0);
+    const output = lines.join('\n');
+    expect(output).toContain('Axiom');
+    expect(output).toContain('my-api-logs');
+    expect(output).toContain('my-api/production');
+    expect(output).toContain('pending');
+  });
+
+  it('does not print the Axiom API token secret', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{
+      name: "production",
+      connectors: { axiom: { dataset: "my-api-logs", token: "axiom-secret-token", url: "https://axiom-secret.example.com" } },
+    }],
+  }],
+};
+`);
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    const output = lines.join('\n');
+    expect(output).not.toContain('axiom-secret-token');
+    expect(output).not.toContain('axiom-secret.example.com');
+  });
+
+  it('warns when Axiom is configured without a token', async () => {
+    const dir = tempDir();
+    const prev = process.env['AXIOM_TOKEN'];
+    delete process.env['AXIOM_TOKEN'];
+    try {
+      const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{
+      name: "production",
+      connectors: { axiom: { dataset: "my-api-logs" } },
+    }],
+  }],
+};
+`);
+      const { lines } = await captureOutput((write) =>
+        runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+      );
+      const output = lines.join('\n');
+      expect(output).toContain('API token not set');
+      expect(output).toContain('axiom.token');
+    } finally {
+      if (prev !== undefined) process.env['AXIOM_TOKEN'] = prev;
+    }
+  });
+});
+
+describe('runDoctor — Axiom absent (HOR-437)', () => {
+  it('shows "not configured" and a hint when no environment has Axiom', async () => {
+    const dir = tempDir();
+    const configPath = writeJsConfig(dir, `export default {
+  database: ${DB},
+  projects: [{
+    name: "my-api",
+    repositories: [{ name: "my-api", path: "/repos/my-api" }],
+    environments: [{ name: "production", connectors: {} }],
+  }],
+};
+`);
+    const { lines } = await captureOutput((write) =>
+      runDoctor({ config: configPath, _dbCheck: stubDbReady, write }),
+    );
+    const output = lines.join('\n');
+    expect(output).toContain('Axiom');
+    expect(output).toContain('not configured');
+    expect(output).toContain('connectors.axiom');
   });
 });
