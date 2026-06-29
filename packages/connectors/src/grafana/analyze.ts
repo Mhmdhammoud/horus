@@ -9,6 +9,7 @@ import {
   type BaselineComparison,
   summarize,
   compareWindows,
+  detectBimodalPopulation,
 } from './series.js';
 import type { MetricKind } from './panels.js';
 
@@ -22,6 +23,13 @@ export type Anomaly =
   | 'throughput-drop'
   | 'queue-growth'
   | 'change'
+  /**
+   * Two co-present sub-populations on one panel (HOR-435): a high-spike cluster AND a
+   * low/zero/empty cluster — possible per-segment variance, NOT a uniform regression.
+   * Reclassifies what would otherwise be several independent latency-spike/under-load
+   * findings, and carries LOWER relevance to de-anchor the engine's confidence.
+   */
+  | 'bimodal-population'
   | 'none';
 
 export interface MetricFinding {
@@ -104,8 +112,30 @@ export function buildFindings(
   current: MetricSeries[],
 ): MetricFinding[] {
   const comparisons = compareWindows(baseline, current);
+
+  // HOR-435: panel-level two-population check. When a high-spike cluster AND a
+  // low/zero/empty cluster are co-present across this panel's series, the per-series
+  // labels (each "latency-spike" / "under load") overstate a uniform regression. We
+  // reclassify the members of BOTH clusters as a single 'bimodal-population' signal —
+  // possible per-segment variance — which de-anchors the engine. The stable middle
+  // and lone outliers are untouched (detectBimodalPopulation is conservative).
+  const bimodal = detectBimodalPopulation(comparisons);
+  const spike = 1.5;
+  const drop = 0.67;
+  const isBimodalMember = (cmp: BaselineComparison): boolean => {
+    const r = cmp.ratio;
+    if (!Number.isFinite(r)) return true; // empty / Infinity run
+    if (r >= spike) return true; // high cluster
+    if (r === 0) return true; // empty / zero
+    return r > 0 && r <= drop; // genuine low cluster
+  };
+
   return comparisons.map((cmp): MetricFinding => {
-    const anomaly = classifyAnomaly(kind, cmp);
+    const baseAnomaly = classifyAnomaly(kind, cmp);
+    const anomaly: Anomaly =
+      bimodal.bimodal && baseAnomaly !== 'none' && isBimodalMember(cmp)
+        ? 'bimodal-population'
+        : baseAnomaly;
 
     // Determine lastValue: last sample of the current series matching these labels
     const currentSeries = current.find((s) => {
@@ -145,6 +175,8 @@ function anomalyLabel(anomaly: Anomaly): string {
       return 'Queue Growth';
     case 'change':
       return 'Change';
+    case 'bimodal-population':
+      return 'Bimodal Population (possible per-segment variance)';
     case 'none':
       return 'No Anomaly';
   }
@@ -160,6 +192,11 @@ function anomalyRelevance(anomaly: Anomaly): number {
       return 0.8;
     case 'change':
       return 0.55;
+    // Lower than a confident single-cause spike: a two-population pattern is a
+    // hypothesis ("per-segment variance"), not a uniform regression — keep the
+    // engine honest by NOT presenting it with spike-level weight (HOR-435).
+    case 'bimodal-population':
+      return 0.6;
     case 'none':
       return 0;
   }

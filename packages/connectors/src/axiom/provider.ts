@@ -21,6 +21,11 @@ import {
   buildRecentErrorsApl,
   type AxiomLogRecord,
 } from './client.js';
+import {
+  type DurationByDimension,
+  type DurationDimensionOptions,
+  durationsByDimension,
+} from '../duration.js';
 
 export interface AxiomProviderOpts {
   /** Dataset to query (also used for evidence provenance + APL building). */
@@ -114,6 +119,44 @@ export class AxiomProvider implements Provider {
       return this.toEvidence(records, hintTerms, opts.collectedAt ?? new Date().toISOString());
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * INFO-level duration coverage (HOR-434). Query NON-error completion/duration rows
+   * (e.g. `Completed MANAGE_SALES:KSA ~2m10s`) and aggregate duration by an extracted
+   * dimension (region / market / tenant) — from a structured field or a regex over the
+   * job id / message. Returns per-dimension stats `{ region: { KSA: {avg,p95,count,…} } }`
+   * so the engine sees per-segment variance the error-biased `collect()` path misses.
+   *
+   * Graceful: no completion rows, no parseable duration, or no extractable dimension
+   * → `null`. Never throws.
+   */
+  async analyzeDurations(
+    opts: DurationDimensionOptions,
+  ): Promise<DurationByDimension | null> {
+    try {
+      const to = opts.to ?? new Date().toISOString();
+      const from =
+        opts.from ??
+        new Date(
+          Date.parse(to) - (this.opts.windowMs ?? DEFAULT_WINDOW_MS),
+        ).toISOString();
+      // A broad all-levels scan biased to the completion text (these lines are INFO,
+      // not error — the incident-aware error queries would never surface them).
+      const apl = buildApl(
+        this.opts.dataset,
+        opts.completionText !== undefined ? [opts.completionText] : [],
+        opts.limit ?? 500,
+      );
+      const rows = await this.client.query(apl, from, to);
+      const normalized = rows.map((rec) => ({
+        message: pickField(rec.fields, MESSAGE_FIELDS) ?? '',
+        fields: rec.fields,
+      }));
+      return durationsByDimension(normalized, opts);
+    } catch {
+      return null;
     }
   }
 

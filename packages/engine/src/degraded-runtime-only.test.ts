@@ -52,6 +52,7 @@ const logsWithErrors: LogsProvider = {
   async checkCompatibility() { return { ok: true, indexCount: 1, issues: [] }; },
   toEvidence() { return []; },
   async queryEvidence() { return []; },
+  async analyzeDurations() { return null; },
 };
 
 describe('HOR-319 layer-2 — runtime-only degrade (code: null)', () => {

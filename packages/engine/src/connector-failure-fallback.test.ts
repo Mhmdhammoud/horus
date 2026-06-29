@@ -136,6 +136,7 @@ const baseLogsProvider: LogsProvider = {
   async checkCompatibility() { return okCompat; },
   toEvidence() { return []; },
   async queryEvidence() { return []; },
+  async analyzeDurations() { return null; },
 };
 
 // ---------------------------------------------------------------------------

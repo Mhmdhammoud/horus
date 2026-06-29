@@ -222,6 +222,9 @@ const fakeLogs: LogsProvider = {
   async queryEvidence(_q, _collectedAt?) {
     return [];
   },
+  async analyzeDurations() {
+    return null;
+  },
 };
 
 // ---------------------------------------------------------------------------
