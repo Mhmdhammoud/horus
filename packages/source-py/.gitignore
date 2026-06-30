@@ -1,0 +1,28 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Keep the pre-built frontend dist so pip install git+URL works without a Node build step
+!src/horus_source/web/frontend/dist/
+
+# Virtual environments
+.venv
+
+# Horus index data
+.horus/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+docs/
+node_modules/
+.claude/
+.agents/
