@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.18.0] — unreleased · horus-source 2.1.0
+
+- **Go, Java, and Rust support.** Horus now indexes Go, Java, and Rust repositories (paired horus-source 2.1.0): functions/methods, structs/classes/records/enums, interfaces/traits, imports, call graphs, and heritage (Java `extends`/`implements`, Rust `impl Trait for Type`); Spring annotations feed entrypoint detection. Verified end-to-end on real OSS repos. (HOR-459, HOR-460, HOR-461)
+- **Sharper causes when nothing is linked to the seed.** When no runtime error is structurally tied to the implicated code, investigations now surface a symptom-matching runtime signal — a warn-level event whose code names the symptom (e.g. `SALE_028` "Sale with link not found" for "sale links broken") — as a hedged cause ranked above a speculative deployment guess, instead of defaulting to "a recent commit may have caused this". Precision-gated so a loud unrelated warning can't false-match. On a live tenant's eval set this lifted headline accuracy from ~28% to ~57% with no false fires. (HOR-453)
+- Internal: the horus-source backend is now also vendored into the monorepo (`packages/source-py`) with its own CI, the first step toward a single-repo/single-release setup. No user-facing change. (HOR-450)
+
 ## [0.17.1] — 2026-06-30 · horus-source 2.0.2
 
 - New `horus notify` command to configure the watch outbound sink (0.17.0) without hand-editing config: `horus notify set --url <webhook> [--secret <s>] [--min-confidence 0.6] [--cloud]`, plus `show`, `test` (sends a sample dispatch to verify the webhook), and `remove`. The webhook signing secret is stored encrypted in `.horus/secrets.local.json` (never plaintext in config), consistent with connector-secret encryption. (HOR-454)
