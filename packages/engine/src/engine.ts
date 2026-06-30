@@ -56,6 +56,7 @@ import {
 import { buildGraph } from './graph.js';
 import { buildCauseChains } from './cause-chain.js';
 import { rankCauses, selectHeadlineCause, type CauseInput, type CauseCandidate } from './score-cause.js';
+import { detectDataFlowCause } from './detect-data-flow-cause.js';
 import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
 import { recallSimilar, storeIncidentMemory, deriveTags } from './memory.js';
@@ -3391,6 +3392,26 @@ export async function investigate(
           count: lead.count,
           severity: tier === SEV_ERROR ? 'error' : tier === SEV_WARN ? 'warn' : 'info',
         },
+      });
+    }
+  }
+
+  // f-data-flow (HOR-446): a SOURCE-ONLY mechanism read from the seed's OWN body — in-place
+  // mutation, an unawaited async write, a fixed polling cadence, or a hardcoded threshold/bound.
+  // The dogfood showed the real cause is usually here yet never a candidate. Pushed at a LOW prior
+  // (~0.2, hedged "could explain … verify against runtime evidence") so any genuine runtime/source
+  // cause still outranks it; the single-source ceiling keeps it in the observation/possible band.
+  // Skipped in source-impact mode (its summary is a structural impact result, not a cause headline).
+  if (top && seedEv && ctx && !sourceImpactHint) {
+    const dataFlow = detectDataFlowCause(ctx);
+    if (dataFlow) {
+      causeInputs.push({
+        id: 'cause:seed-data-flow',
+        title: dataFlow.title.slice(0, 220),
+        category: 'data-flow',
+        sourceEvidenceIds: [seedEv.id],
+        baseScore: dataFlow.baseScore,
+        metadata: { dataFlowPattern: dataFlow.pattern, matched: dataFlow.matched, blastRadius },
       });
     }
   }
