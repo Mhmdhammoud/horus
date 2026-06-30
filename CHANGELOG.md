@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.15.2] — 2026-06-30 · horus-source 2.0.2
+
+- The source-only data-flow cause (0.15.0) now looks one hop out from the seed — the function it calls or a closely-related function — so it can name a mechanism that lives in a reducer, a library helper, or a sibling method rather than only the entry point. Also recognizes an exact-equality database lookup with no normalization (a value that differs only in case/whitespace returns no rows) as a candidate cause. Still hedged and source-only; never outranks a genuine evidence-backed cause. (HOR-448)
+
 ## [0.15.1] — 2026-06-30 · horus-source 2.0.2
 
 - More accurate localization on TypeScript/GraphQL apps. Investigations no longer anchor on auto-generated code (e.g. a `Cart` type in `graphql/generated.tsx`) or other type declarations when a real function with the same name exists — the actual implementation (`cartReducer`, a service method, …) is now chosen as the seed, which also lets the source-only data-flow cause (0.15.0) read the right code. A type you explicitly point at still surfaces. (HOR-447)
