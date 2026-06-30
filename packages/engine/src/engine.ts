@@ -3331,15 +3331,24 @@ export async function investigate(
     // and the changed symbol name(s) — so the cause names what to look at, not just the
     // seed + range. Bounded to 1-2 commits and a few symbols to stay scannable.
     const citation = formatRegressionCitation(recentChanges, changes, seedFile);
+    // HOR-451: how focused was the seed-touching change? Reused for BOTH the score and the title.
+    const seedFocus = seedInChanges ? seedTouchingCommitFocus(recentChanges, top?.filePath) : null;
+    // A BROAD/diffuse commit (touched many files) that merely included the seed's file is not a
+    // credible specific culprit — naming it ("integrate PrestaShop API client may have caused
+    // [unrelated symptom]") misleads, especially when no runtime evidence corroborates it. Reframe
+    // honestly rather than confidently blaming the broad change.
+    const isBroadChange = seedFocus !== null && seedFocus > 14;
     // #3: only attribute the regression to the seed when an in-window commit actually touched the
     // seed's file. Otherwise be honest — changes shipped, but none to the seed — instead of
     // pinning it on the newest unrelated commit.
     const regressionTitle =
-      top && seedInChanges
+      top && seedInChanges && !isBroadChange
         ? `Recent change${citation.commitClause} to ${top.name}${citation.symbolClause} in ${changeRangeLabel} may have introduced the regression`
-        : top
-          ? `Changes shipped in ${changeRangeLabel} but none touched ${top.name} — a regression here is unlikely to be a code change to the seed itself (check upstream deps, data, or config)`
-          : `Recent change${citation.commitClause}${citation.symbolClause} in ${changeRangeLabel} may have introduced the regression`;
+        : top && seedInChanges && isBroadChange
+          ? `No specific cause identified from the available evidence — a broad recent change (${seedFocus} files) in ${changeRangeLabel} touched ${top.name}'s file but isn't clearly linked to the symptom; connect runtime evidence (logs/metrics) for a code-aware cause`
+          : top
+            ? `Changes shipped in ${changeRangeLabel} but none touched ${top.name} — a regression here is unlikely to be a code change to the seed itself (check upstream deps, data, or config)`
+            : `Recent change${citation.commitClause}${citation.symbolClause} in ${changeRangeLabel} may have introduced the regression`;
     causeInputs.push({
       id: 'cause:deployment-regression',
       title: regressionTitle,
@@ -3349,7 +3358,7 @@ export async function investigate(
       // HOR-451: scale the seed-touched prior by commit focus — a broad/diffuse commit that merely
       // touched the seed no longer outranks an evidence-backed runtime cause.
       baseScore: clamp01(
-        (seedInChanges ? regressionSeedTouchedScore(seedTouchingCommitFocus(recentChanges, top?.filePath)) : 0.18) +
+        (seedInChanges ? regressionSeedTouchedScore(seedFocus) : 0.18) +
           (queueHits.length > 0 ? 0.05 : 0),
       ),
       metadata: { blastRadius },
