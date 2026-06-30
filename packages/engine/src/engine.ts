@@ -1609,11 +1609,15 @@ export async function investigate(
         ? `${(top.id.split(':').pop() ?? '').replace(/\.constructor$/, '') || top.name} (constructor)`
         : top.name;
 
-    // c. GATHER
+    // c. GATHER. HOR-445: degrade the per-symbol source queries (impact, flows) rather than abort —
+    // a single failing query (e.g. an impact 404 on an exotic seed id like a `#private` method) must
+    // NOT sink the whole investigation; each already has a supported empty state (impact=null,
+    // flows=[]). context() stays required (its failure is a fundamental seed-context loss handled by
+    // the outer catch), which also preserves its non-null narrowing downstream.
     [ctx, impact, flows] = await Promise.all([
       code.context(top.id),
-      code.impact(top.id, 2),
-      code.flowsFor(top.id),
+      code.impact(top.id, 2).catch(() => null),
+      code.flowsFor(top.id).catch(() => []),
     ]);
     let edges: QueueEdge[] = [];
     try {
@@ -1694,12 +1698,16 @@ export async function investigate(
       flowEvIds.push(ev.id);
     }
 
-    impactEv = mkEv(
-      'impact',
-      `Impact of ${top.name}: ${impact.affected} affected symbol(s)`,
-      { affected: impact.affected },
-      { symbolId: top.id, file: top.filePath },
-    );
+    // HOR-445: only when the impact query succeeded — a degraded (failed) impact contributes no
+    // blast-radius evidence rather than a fabricated "0 affected".
+    if (impact) {
+      impactEv = mkEv(
+        'impact',
+        `Impact of ${top.name}: ${impact.affected} affected symbol(s)`,
+        { affected: impact.affected },
+        { symbolId: top.id, file: top.filePath },
+      );
+    }
 
     // One queue-edge evidence per hit; track ids per distinct queue for findings/causes.
     for (const edge of queueHits) {

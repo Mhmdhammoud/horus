@@ -504,3 +504,36 @@ describe('HOR-108 connector fallback — Scenario G: multiple simultaneous failu
     expect(serialized).not.toContain('ECONNREFUSED');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Scenario H (HOR-445): a SOURCE query throws — e.g. the impact endpoint 404s on a
+// #private-method seed. investigate() must degrade (no impact evidence), never abort.
+// ---------------------------------------------------------------------------
+
+describe('HOR-445 source-query fallback — code.impact throws (impact 404)', () => {
+  const impactThrowsCode: CodeProvider = {
+    ...fakeCode,
+    async impact(): Promise<ImpactResult> {
+      throw new Error('Source request failed: GET /api/impact/method:source/core/Ky.ts:Ky.#x?depth=2 -> HTTP 404');
+    },
+  };
+
+  it('investigate() degrades and does not throw when the impact query fails', async () => {
+    await expect(
+      investigate({ hint: 'zoho' }, { code: impactThrowsCode, db: fakeDb }),
+    ).resolves.toBeDefined();
+  });
+
+  it('produces a complete report with valid confidence after an impact failure', async () => {
+    const report = await investigate({ hint: 'zoho' }, { code: impactThrowsCode, db: fakeDb });
+    expect(typeof report.summary).toBe('string');
+    expect(report.summary.length).toBeGreaterThan(0);
+    expect(report.confidence).toBeGreaterThanOrEqual(0);
+    expect(report.confidence).toBeLessThanOrEqual(1);
+  });
+
+  it('does not leak the raw source request path into the report', async () => {
+    const report = await investigate({ hint: 'zoho' }, { code: impactThrowsCode, db: fakeDb });
+    expect(JSON.stringify(report)).not.toContain('/api/impact');
+  });
+});
