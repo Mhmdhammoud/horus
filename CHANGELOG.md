@@ -6,6 +6,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.16.0] — 2026-06-30 · horus-source 2.0.2
+
+- Connector credentials are now **encrypted at rest**. Tokens, passwords and connection URLs are AES-256-GCM encrypted into a gitignored `.horus/secrets.local.json`, with the 32-byte master key held by your OS keychain (macOS Keychain, Linux libsecret, Windows DPAPI) — never the repo (`HORUS_SECRET_KEY` overrides for CI/headless). `config.json` keeps only non-secret fields and stays safe to share. New `horus secrets status|migrate|key`, and `horus doctor` now warns when `.horus/` isn't gitignored or config still holds a plaintext secret. Backward-compatible — existing plaintext config still resolves. (HOR-452)
+- More trustworthy root causes on real systems (from live connector dogfooding). A recent commit that only touched documentation or reformatted code is no longer blamed as a regression; a broad, diffuse commit that merely touched the implicated file is down-weighted so an evidence-backed runtime cause isn't outranked by it; and an informational/diagnostic log signal can no longer be presented as a confident root cause. (HOR-451)
+
 ## [0.15.2] — 2026-06-30 · horus-source 2.0.2
 
 - The source-only data-flow cause (0.15.0) now looks one hop out from the seed — the function it calls or a closely-related function — so it can name a mechanism that lives in a reducer, a library helper, or a sibling method rather than only the entry point. Also recognizes an exact-equality database lookup with no normalization (a value that differs only in case/whitespace returns no rows) as a candidate cause. Still hedged and source-only; never outranks a genuine evidence-backed cause. (HOR-448)
