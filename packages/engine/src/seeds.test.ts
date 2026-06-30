@@ -9,6 +9,8 @@ import {
   parseNamedSymbols,
   qualifierBoost,
   isAnchoredExactSeed,
+  isCodegenPath,
+  isTypeDeclarationSymbol,
 } from './seeds.js';
 
 function sym(name: string, filePath: string): Symbol {
@@ -457,5 +459,41 @@ describe('parseNamedSymbols — verify-isolation X/Y by SOURCE-STRING index, not
   it('isolation target Y after X for a plain "does X affect Y" question', () => {
     const got = parseNamedSymbols('does OrderService affect InventoryService');
     expect(got).toEqual(['OrderService', 'InventoryService']);
+  });
+});
+
+describe('HOR-447 — codegen + type-declaration seed demotion', () => {
+  it('isCodegenPath flags generated artifacts, not real source', () => {
+    expect(isCodegenPath('src/graphql/generated.tsx')).toBe(true);
+    expect(isCodegenPath('src/api/schema.generated.ts')).toBe(true);
+    expect(isCodegenPath('src/__generated__/types.ts')).toBe(true);
+    expect(isCodegenPath('src/queries.graphql.ts')).toBe(true);
+    expect(isCodegenPath('src/reducers/cart.ts')).toBe(false);
+    expect(isCodegenPath('src/services/sale.service.ts')).toBe(false);
+  });
+
+  it('isTypeDeclarationSymbol flags type-alias/interface/enum kinds, not functions/methods/classes', () => {
+    expect(isTypeDeclarationSymbol({ id: 'type_alias:src/x.ts:Cart', name: 'Cart', filePath: 'src/x.ts' })).toBe(true);
+    expect(isTypeDeclarationSymbol({ id: 'interface:src/x.ts:IFoo', name: 'IFoo', filePath: 'src/x.ts' })).toBe(true);
+    expect(isTypeDeclarationSymbol({ id: 'enum:src/x.ts:Status', name: 'Status', filePath: 'src/x.ts' })).toBe(true);
+    expect(isTypeDeclarationSymbol({ id: 'function:src/x.ts:doThing', name: 'doThing', filePath: 'src/x.ts' })).toBe(false);
+    expect(isTypeDeclarationSymbol({ id: 'method:src/x.ts:Svc.run', name: 'run', filePath: 'src/x.ts' })).toBe(false);
+    expect(isTypeDeclarationSymbol({ id: 'class:src/x.ts:Svc', name: 'Svc', filePath: 'src/x.ts' })).toBe(false);
+  });
+
+  it('hard-demotes a generated Cart type alias below the real cartReducer (the dogfood case)', () => {
+    const cartType: Symbol = { id: 'type_alias:src/graphql/generated.tsx:Cart', name: 'Cart', filePath: 'src/graphql/generated.tsx', score: 1 };
+    const cartReducer: Symbol = { id: 'function:src/reducers/cart.ts:cartReducer', name: 'cartReducer', filePath: 'src/reducers/cart.ts', score: 0.03 };
+    // prose hint "cart" (hintHasCode=false): without HOR-447 the type's 1.0 search score wins.
+    const ranked = rankSeeds([cartType, cartReducer], ['cart'], undefined, false);
+    expect(ranked[0]?.symbol.name).toBe('cartReducer');
+  });
+
+  it('still surfaces a type seed the request explicitly qualifies (anchored exemption)', () => {
+    const cartType: Symbol = { id: 'type_alias:src/graphql/generated.tsx:Cart', name: 'Cart', filePath: 'src/graphql/generated.tsx', score: 1 };
+    const cartReducer: Symbol = { id: 'function:src/reducers/cart.ts:cartReducer', name: 'cartReducer', filePath: 'src/reducers/cart.ts', score: 0.03 };
+    const q = parseSeedQualifier('src/graphql/generated.tsx:Cart')!;
+    const ranked = rankSeeds([cartType, cartReducer], ['cart'], undefined, false, q);
+    expect(ranked[0]?.symbol.name).toBe('Cart');
   });
 });

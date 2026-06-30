@@ -43,6 +43,30 @@ export function isTypeLikeName(name: string): boolean {
   return TYPE_LIKE_NAME.test(name);
 }
 
+// HOR-447: auto-generated codegen artifacts (GraphQL codegen, *.generated.*, __generated__/) hug
+// hint tokens (a `Cart` type in `graphql/generated.tsx` scored 1.0) yet are never the incident
+// surface — the fault is in the function that USES the generated type, not the generated type.
+const CODEGEN_PATH_RE = /(^|\/)(?:__generated__|generated)\//i;
+// A `generated.tsx` basename (preceded by `/` or start) OR a `*.generated.* / *.gen.*` suffix.
+// (A bare `gen.ts` basename is deliberately NOT matched — too ambiguous.)
+const CODEGEN_FILE_RE = /(?:(?:^|\/)generated|[._-](?:generated|gen))\.[jt]sx?$/i;
+const GQL_GEN_FILE_RE = /\.(?:graphql|gql)\.[jt]sx?$/i;
+/** True when a file path looks auto-generated (codegen) and so should not be the seed when real code exists. */
+export function isCodegenPath(filePath: string): boolean {
+  return CODEGEN_PATH_RE.test(filePath) || CODEGEN_FILE_RE.test(filePath) || GQL_GEN_FILE_RE.test(filePath);
+}
+
+// HOR-447: a symbol's graph KIND is the prefix of its id (`<kind>:<path>:<name>`, e.g.
+// `type_alias:src/graphql/generated.tsx:Cart`). A type alias / interface / enum is a DECLARATION,
+// not where a runtime fault originates — so an executable function/method must outrank a
+// same-named type (the dogfood `Cart` type alias beat `cartReducer`). This is the authoritative
+// kind-based companion to the name-heuristic {@link isTypeLikeName}.
+const TYPE_DECL_KIND_RE = /^(?:type_alias|typealias|type|interface|enum)$/i;
+export function isTypeDeclarationSymbol(s: Symbol): boolean {
+  const kind = s.id.split(':', 1)[0] ?? '';
+  return TYPE_DECL_KIND_RE.test(kind);
+}
+
 /**
  * Derive the executable counterpart name for a type-like name, or null.
  * e.g. "SyncBrandFulfillmentsResult" -> "SyncBrandFulfillments"; "IOrderService" -> "OrderService".
@@ -321,6 +345,11 @@ export function scoreSeed(
   if (s.score !== undefined) score += s.score * (hintHasCode ? 8 : 2.0);
   // A File node is rarely the right seed — prefer the function/method that raises the signal.
   if (/\.[jt]sx?$/i.test(s.name)) score -= 5;
+  // HOR-447: demote auto-generated codegen files and non-executable type declarations so an
+  // executable implementation wins a same-name collision (a generated `Cart` type must lose to
+  // `cartReducer`). These also trigger the decisive hard-demotion in rankSeeds when real code exists.
+  if (isCodegenPath(s.filePath)) score -= 5;
+  if (isTypeDeclarationSymbol(s)) score -= 6;
   // Domain-hint boost: strongly prefer symbols whose name/path contain hint tokens.
   // +2 per matching token, capped at +6 so a 3-token match decisively beats a
   // generic architectural-role match (max architectural score is +5).
@@ -359,6 +388,18 @@ export function isDeprioritizedSeedPath(filePath: string): boolean {
       filePath,
     )
   );
+}
+
+/**
+ * HOR-447: the FULL set of seeds hard-demoted below real executable code when any exists — the
+ * test/example/docs paths above (HOR-376) PLUS auto-generated codegen files and non-executable type
+ * declarations (type alias / interface / enum, by graph kind). A generated `Cart` type or a codegen
+ * file is never the mechanism of a runtime symptom; the fault is in the function that uses it. The
+ * `anchored` exemption (decisive qualifier / prompt-named / high-confidence code-hit) still applies,
+ * so a deliberately-targeted type can surface.
+ */
+export function isDeprioritizedSeed(s: Symbol): boolean {
+  return isDeprioritizedSeedPath(s.filePath) || isCodegenPath(s.filePath) || isTypeDeclarationSymbol(s);
 }
 
 /**
@@ -411,7 +452,7 @@ export function rankSeeds(
     score: scoreSeed(symbol, i, hintTokens, changedFiles, hintHasCode, qualifier, preferNamed),
     role: seedRole(symbol),
     i,
-    deprio: isDeprioritizedSeedPath(symbol.filePath),
+    deprio: isDeprioritizedSeed(symbol),
     // HOR-430: a deprioritized candidate the request anchors on exactly is exempt from the
     // hard demotion below — it keeps only the soft path penalty so a strong/exact match in an
     // example/test file can still surface.
