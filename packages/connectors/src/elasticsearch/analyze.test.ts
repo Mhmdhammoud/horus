@@ -111,6 +111,28 @@ describe('buildErrorAnalysisBody (Meritt mapping)', () => {
     expect(filters).toContain('"level":{"gte":50}');
   });
 
+  it('lowers the floor to warn ONLY when a hint-text query scopes it (HOR-453)', () => {
+    const scoped = buildErrorAnalysisBody(
+      { service: 'svc', from: '2026-06-07T00:00:00Z', level: 'warn', text: 'sale link not found' },
+      'event_code',
+      MERITT_FIELD_MAPPING,
+    );
+    const scopedFilters = JSON.stringify(
+      ((scoped['query'] as Record<string, unknown>)['bool'] as Record<string, unknown>)['filter'],
+    );
+    expect(scopedFilters).toContain('"level":{"gte":40}');
+    // Without text, a below-error level is ignored — the error floor stays (no benign-warn flood).
+    const unscoped = buildErrorAnalysisBody(
+      { service: 'svc', from: '2026-06-07T00:00:00Z', level: 'warn' },
+      'event_code',
+      MERITT_FIELD_MAPPING,
+    );
+    const unscopedFilters = JSON.stringify(
+      ((unscoped['query'] as Record<string, unknown>)['bool'] as Record<string, unknown>)['filter'],
+    );
+    expect(unscopedFilters).toContain('"level":{"gte":50}');
+  });
+
   it('honors an explicit above-error level even on a scoped event_code lookup', () => {
     // A caller deliberately raising the floor above error (e.g. 'fatal') is a narrowing,
     // not the implicit error default — keep it.
