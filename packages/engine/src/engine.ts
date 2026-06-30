@@ -1237,6 +1237,27 @@ export function isNoiseCommit(commit: Pick<GitCommit, 'subject' | 'author'>): bo
   // pre-commit autoupdate / pre-commit.ci.
   if (/pre-commit.*autoupdate/i.test(subject) || /\[pre-commit\.ci\]/i.test(subject)) return true;
 
+  // HOR-451: NON-CAUSAL commit types/intents — documentation, formatting/style, tests, CI config —
+  // do not change runtime behaviour, so they must not earn the seed-touched regression boost.
+  // (maison dogfood: a `feat(...): add comprehensive documentation` docs commit was headlined as
+  // the cause of a "scheduler config save" failure, and a `refactor: clean up code formatting`
+  // commit headlined 5 unrelated incidents — both merely touched the seed's file.)
+  // Conventional-commit type prefix declaring non-causal intent.
+  if (/^(docs|style|test|ci)(\([^)]*\))?[:!]/i.test(subject)) return true;
+  // Formatting / lint-only intents (catches a mistyped `refactor: clean up code formatting`).
+  if (/\b(reformat|whitespace|prettier|eslint)\b/i.test(subject)) return true;
+  if (/\bcode\s*(style|formatting)\b/i.test(subject)) return true;
+  if (/\bclean\s*up\b[^.]*\bformat/i.test(subject)) return true;
+  // Documentation-only intents, even when mislabelled `feat`/`chore` (catches the maison
+  // `feat(horus): add comprehensive documentation` case) — but SPARE commits that touch a code
+  // artifact (a docs *endpoint/API/service*), which are behavioural and can regress.
+  if (
+    /\b(documentation|docs|readme)\b/i.test(subject) &&
+    !/\b(endpoint|api|service|handler|controller|component|module|feature|migration|schema|query|cache|queue|webhook|sdk|cli|route)\b/i.test(subject)
+  ) {
+    return true;
+  }
+
   return false;
 }
 
@@ -1264,6 +1285,45 @@ export function seedTouchedByRelevantChange(
   return recentChanges.commits.some(
     (c) => !isNoiseCommit(c) && c.files.some(matchesSeed),
   );
+}
+
+/**
+ * HOR-451: how FOCUSED is the change that touched the seed? Returns the smallest changed-file count
+ * among the non-noise commits that actually touched the seed's file (the most-focused such commit),
+ * or null when none did. A tightly-scoped commit (a few files incl. the seed) is strong regression
+ * evidence; a broad commit (e.g. a 22-file integration that incidentally touched the seed along with
+ * everything else) is weak. Pure + deterministic.
+ */
+export function seedTouchingCommitFocus(
+  recentChanges: BoundedGitChange | undefined,
+  seedFile: string | undefined,
+): number | null {
+  if (recentChanges === undefined || seedFile === undefined) return null;
+  if (recentChanges.degenerate) return null;
+  const matchesSeed = (f: string): boolean =>
+    f === seedFile || seedFile.endsWith(f) || f.endsWith(seedFile);
+  let min: number | null = null;
+  for (const c of recentChanges.commits) {
+    if (isNoiseCommit(c)) continue;
+    if (!c.files.some(matchesSeed)) continue;
+    const n = c.files.length;
+    if (min === null || n < min) min = n;
+  }
+  return min;
+}
+
+/**
+ * HOR-451: the deployment-regression prior, scaled by how focused the seed-touching change was.
+ * A focused commit earns the full prior; a broad/diffuse one is demoted toward the un-boosted floor
+ * so an evidence-backed runtime cause (a data-state anomaly, a real error) is no longer outranked by
+ * "a 22-file commit happened to touch this file" (maison dogfood). Pure.
+ */
+export function regressionSeedTouchedScore(focus: number | null): number {
+  if (focus === null) return 0.18; // no relevant commit touched the seed
+  if (focus <= 4) return 0.45; // tightly-scoped change incl. the seed — strong
+  if (focus <= 8) return 0.38;
+  if (focus <= 14) return 0.3;
+  return 0.2; // broad/diffuse commit (touched ~everything) — weak; yields to runtime evidence
 }
 
 /**
@@ -3286,7 +3346,12 @@ export async function investigate(
       category: 'deployment-regression',
       sourceEvidenceIds: [changeEvId, ...(seedEv ? [seedEv.id] : [])],
       // A regression NOT backed by a seed-touching commit must not score like one that is.
-      baseScore: clamp01((seedInChanges ? 0.45 : 0.18) + (queueHits.length > 0 ? 0.05 : 0)),
+      // HOR-451: scale the seed-touched prior by commit focus — a broad/diffuse commit that merely
+      // touched the seed no longer outranks an evidence-backed runtime cause.
+      baseScore: clamp01(
+        (seedInChanges ? regressionSeedTouchedScore(seedTouchingCommitFocus(recentChanges, top?.filePath)) : 0.18) +
+          (queueHits.length > 0 ? 0.05 : 0),
+      ),
       metadata: { blastRadius },
     });
   }
@@ -3365,34 +3430,38 @@ export async function investigate(
       // Label and weight HONESTLY by severity. An error is "the likely failure"; a warning
       // is a frequent warning (not asserted as the failure); a debug/info code is a
       // diagnostic signal. Only an error-tier code gets the strong failure prior.
-      let title: string;
-      let baseScore: number;
-      if (tier === SEV_ERROR) {
-        title = bySeed
-          ? `Runtime error ${lead.code} (${lead.count}x in Elasticsearch) is raised by ${raiser} — the likely failure${msgClause}`
-          : `Runtime error ${lead.code} (${lead.count}x in Elasticsearch) surfaces on ${raiser}${depClause}${msgClause}`;
-        baseScore = clamp01(0.6 + volumeBoost - calleePenalty);
-      } else if (tier === SEV_WARN) {
-        title = `Warning ${lead.code} (${lead.count}x in Elasticsearch) ${bySeed ? 'is raised by' : 'surfaces on'} ${raiser}${depClause}${msgClause}`;
-        baseScore = clamp01(0.42 + volumeBoost - calleePenalty);
-      } else {
-        title = `Diagnostic signal ${lead.code} (${lead.count}x in Elasticsearch) is logged by ${raiser}${depClause} — informational, not an error${msgClause}`;
-        baseScore = clamp01(0.3 + volumeBoost - calleePenalty);
+      // HOR-451: an INFO/DEBUG-tier diagnostic (e.g. a `D_…` code logged 428x) is informational by
+      // definition — it must NEVER become a headline-eligible root cause. A high-volume debug signal
+      // was boosting to finalScore 1.000 over a real data-state anomaly (maison fulfillment-sync
+      // dogfood). Emit a CAUSE only for error/warn tiers; the diagnostic still rides in evidence +
+      // timeline. (If every joined signal is info/debug, no seed-emitted cause is offered.)
+      if (tier === SEV_ERROR || tier === SEV_WARN) {
+        let title: string;
+        let baseScore: number;
+        if (tier === SEV_ERROR) {
+          title = bySeed
+            ? `Runtime error ${lead.code} (${lead.count}x in Elasticsearch) is raised by ${raiser} — the likely failure${msgClause}`
+            : `Runtime error ${lead.code} (${lead.count}x in Elasticsearch) surfaces on ${raiser}${depClause}${msgClause}`;
+          baseScore = clamp01(0.6 + volumeBoost - calleePenalty);
+        } else {
+          title = `Warning ${lead.code} (${lead.count}x in Elasticsearch) ${bySeed ? 'is raised by' : 'surfaces on'} ${raiser}${depClause}${msgClause}`;
+          baseScore = clamp01(0.42 + volumeBoost - calleePenalty);
+        }
+        causeInputs.push({
+          id: 'cause:seed-emitted-error',
+          title: title.slice(0, 220),
+          category: 'error-correlation',
+          sourceEvidenceIds,
+          baseScore,
+          metadata: {
+            blastRadius,
+            seedEmitted: true,
+            code: lead.code,
+            count: lead.count,
+            severity: tier === SEV_ERROR ? 'error' : 'warn',
+          },
+        });
       }
-      causeInputs.push({
-        id: 'cause:seed-emitted-error',
-        title: title.slice(0, 220),
-        category: 'error-correlation',
-        sourceEvidenceIds,
-        baseScore,
-        metadata: {
-          blastRadius,
-          seedEmitted: true,
-          code: lead.code,
-          count: lead.count,
-          severity: tier === SEV_ERROR ? 'error' : tier === SEV_WARN ? 'warn' : 'info',
-        },
-      });
     }
   }
 

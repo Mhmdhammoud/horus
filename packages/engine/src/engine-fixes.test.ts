@@ -32,7 +32,7 @@ vi.mock('./git-collector.js', async (importOriginal) => {
   return { ...actual, collectGitChanges: vi.fn(), defaultChangeWindowSince: vi.fn() };
 });
 
-import { investigate, confidenceCeilingForCause, looksExplanatory, looksPerformance, classifyIntent, looksSourceImpact, looksVerifyIsolation, INCIDENT_SYMPTOM_RE, formatRegressionCitation, buildBehavioralWalkthrough, seedEmittedSeverityTier, isNoiseCommit, seedTouchedByRelevantChange } from './engine.js';
+import { investigate, confidenceCeilingForCause, looksExplanatory, looksPerformance, classifyIntent, looksSourceImpact, looksVerifyIsolation, INCIDENT_SYMPTOM_RE, formatRegressionCitation, buildBehavioralWalkthrough, seedEmittedSeverityTier, isNoiseCommit, seedTouchedByRelevantChange, seedTouchingCommitFocus, regressionSeedTouchedScore } from './engine.js';
 import { collectGitChanges, defaultChangeWindowSince } from './git-collector.js';
 
 const mockCollectGitChanges = vi.mocked(collectGitChanges);
@@ -327,6 +327,24 @@ describe('isNoiseCommit (HOR-406)', () => {
     // "release" must be at the start to count as release-prep — a fix mentioning it is real work.
     expect(isNoiseCommit({ subject: 'fix the release-blocking sale bug', author: 'Dev' })).toBe(false);
   });
+
+  it('flags non-causal docs / formatting / style / test / ci commits (HOR-451)', () => {
+    // Conventional-commit type prefixes that declare non-causal intent.
+    expect(isNoiseCommit({ subject: 'docs(api): document the sync endpoint', author: 'Dev' })).toBe(true);
+    expect(isNoiseCommit({ subject: 'style: run prettier across services', author: 'Dev' })).toBe(true);
+    expect(isNoiseCommit({ subject: 'test(order): add fulfillment specs', author: 'Dev' })).toBe(true);
+    expect(isNoiseCommit({ subject: 'ci: bump node version in workflow', author: 'Dev' })).toBe(true);
+    // The maison smoking guns — a mistyped refactor/feat that is really formatting/docs.
+    expect(isNoiseCommit({ subject: 'refactor(order): clean up code formatting and imports', author: 'Dev' })).toBe(true);
+    expect(isNoiseCommit({ subject: 'feat(horus): add comprehensive documentation for Horus', author: 'Dev' })).toBe(true);
+    expect(isNoiseCommit({ subject: 'chore: fix eslint warnings', author: 'Dev' })).toBe(true);
+  });
+
+  it('does NOT over-flag behavioural commits that merely mention format/docs words', () => {
+    // A real behavioural fix to currency formatting must stay causal (not the bare "format" word).
+    expect(isNoiseCommit({ subject: 'fix(currency): correct price rounding in checkout', author: 'Dev' })).toBe(false);
+    expect(isNoiseCommit({ subject: 'feat: add a documentation export API endpoint', author: 'Dev' })).toBe(false);
+  });
 });
 
 describe('seedTouchedByRelevantChange (HOR-406)', () => {
@@ -397,6 +415,47 @@ describe('seedTouchedByRelevantChange (HOR-406)', () => {
   it('returns false when there is no change window or no seed', () => {
     expect(seedTouchedByRelevantChange(undefined, seedFile)).toBe(false);
     expect(seedTouchedByRelevantChange(change({ totalInsertions: 5 }), undefined)).toBe(false);
+  });
+});
+
+describe('commit-focus scaling of the deployment-regression prior (HOR-451)', () => {
+  const seedFile = 'src/services/sale.service.ts';
+  const change = (commits: GitCommit[]): BoundedGitChange => ({
+    commits,
+    fileStats: [],
+    changedFiles: [],
+    totalInsertions: 10,
+    totalDeletions: 2,
+    window: { since: 'x', until: undefined },
+    truncated: false,
+    degenerate: false,
+  });
+  const filesN = (n: number): string[] => [seedFile, ...Array.from({ length: n - 1 }, (_, i) => `src/x${i}.ts`)];
+
+  it('reports the MOST-focused non-noise commit that touched the seed', () => {
+    const rc = change([
+      makeCommit('broad01', 'feat(presta): integrate PrestaShop API client', filesN(22)),
+      makeCommit('focus01', 'feat(gaia): enhance token mgmt', filesN(7)),
+      makeCommit('noise01', 'refactor: clean up code formatting', filesN(3)), // non-causal → ignored
+    ]);
+    expect(seedTouchingCommitFocus(rc, seedFile)).toBe(7);
+  });
+
+  it('returns null when only broad-but-noise commits touched the seed, and the broad commit alone yields the floor', () => {
+    const onlyBroad = change([makeCommit('broad01', 'feat(presta): integrate PrestaShop API client', filesN(22))]);
+    expect(seedTouchingCommitFocus(onlyBroad, seedFile)).toBe(22);
+    expect(regressionSeedTouchedScore(22)).toBeCloseTo(0.2); // broad → demoted, yields to runtime evidence
+  });
+
+  it('scales the prior: focused commit strong, broad commit weak', () => {
+    expect(regressionSeedTouchedScore(null)).toBeCloseTo(0.18);
+    expect(regressionSeedTouchedScore(2)).toBeCloseTo(0.45);
+    expect(regressionSeedTouchedScore(7)).toBeCloseTo(0.38);
+    expect(regressionSeedTouchedScore(12)).toBeCloseTo(0.3);
+    expect(regressionSeedTouchedScore(22)).toBeCloseTo(0.2);
+    // A broad commit (0.20) no longer outranks a data-state anomaly (~0.21); a focused one (0.45) still does.
+    expect(regressionSeedTouchedScore(22)).toBeLessThan(0.21);
+    expect(regressionSeedTouchedScore(3)).toBeGreaterThan(0.21);
   });
 });
 
