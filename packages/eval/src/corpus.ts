@@ -208,7 +208,10 @@ function fnv1a(s: string): number {
  * Deterministic holdout split spec: `hash(investigationId) % 100 < holdoutPct` → holdout, else
  * train. Stable and reproducible — the same investigation always lands in the same bucket.
  */
-export function holdoutSplit(rows: readonly CorpusRow[], holdoutPct = 20): HoldoutSplit {
+export function holdoutSplit(
+  rows: readonly { investigationId: string }[],
+  holdoutPct = 20,
+): HoldoutSplit {
   const train: string[] = [];
   const holdout: string[] = [];
   for (const r of rows) {

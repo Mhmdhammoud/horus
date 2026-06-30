@@ -85,6 +85,7 @@ import { flushTelemetry } from './lib/telemetry/transport.js';
 import { runFeedback } from './commands/feedback.js';
 import { runReportIssue } from './commands/report-issue.js';
 import { runEvalBuild, runEvalBaseline } from './commands/eval.js';
+import { runTrain } from './commands/train.js';
 
 /**
  * Build the Horus CLI program. Commands are added as their phases land:
@@ -670,6 +671,25 @@ Examples:
         process.exitCode = await runEvalBaseline(opts);
       },
     );
+
+  program
+    .command('train')
+    .description('Fit the local, per-tenant reranker over your outcome-label corpus (off until it beats baseline)')
+    .option('-c, --config <path>', 'path to horus.config.ts')
+    .option('--source <source>', 'filter to one signal source: feedback | confirm')
+    .option('--days <n>', 'only train on labels from the last N days', (v) => Number(v))
+    .option('--limit <n>', 'max labels to scan', (v) => Number(v))
+    .addHelpText(
+      'after',
+      `
+The reranker is LOCAL and per-tenant: your corpus never leaves this machine. It only REORDERS
+candidate causes among those that already clear Horus's confidence gates — it never changes a
+score, a confidence, or a verdict. It ships OFF; once trained, enable with:
+  HORUS_RERANK=1 horus investigate "<hint>"`,
+    )
+    .action(async (opts: { config?: string; source?: string; days?: number; limit?: number }) => {
+      process.exitCode = await runTrain(opts);
+    });
 
   program
     .command('mcp')

@@ -40,8 +40,12 @@ import type {
 } from '@horus/connectors';
 import { openDb } from '@horus/db';
 import type { DbHandle } from '@horus/db';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { investigate, createLocalMemoryStore } from '@horus/engine';
-import type { InvestigationReport } from '@horus/engine';
+import type { InvestigationReport, CauseCandidate } from '@horus/engine';
+import { applyReranker, isRerankerModel } from '@horus/eval';
 import { resolveSourceHostUrl } from './ensure-host.js';
 
 /**
@@ -180,6 +184,25 @@ export interface RunInvestigationInput {
 }
 
 /**
+ * HOR-404: load the LOCAL reranker as an engine `rerank` fn, or undefined. OFF by default — active
+ * only when `HORUS_RERANK` is truthy AND a saved model beat the baseline on its holdout (delta > 0).
+ * Fail-closed: any error (missing/corrupt/under-performing model) → undefined → Horus keeps its
+ * deterministic ranking. The model only ever REORDERS the eligible causes the engine hands it.
+ */
+function loadReranker(): ((causes: readonly CauseCandidate[]) => CauseCandidate[]) | undefined {
+  const flag = process.env.HORUS_RERANK;
+  if (!flag || flag === '0' || flag.toLowerCase() === 'false') return undefined;
+  try {
+    const blob: unknown = JSON.parse(readFileSync(join(homedir(), '.horus', 'reranker.json'), 'utf8'));
+    if (!isRerankerModel(blob)) return undefined;
+    if ((blob.holdout?.delta ?? 0) <= 0) return undefined; // never apply a model that didn't beat baseline
+    return (causes) => applyReranker(blob, causes);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Run a single investigation against a prepared context and persist it. The engine writes
  * the report into the local DB via the `db` dep, so it lands in incident memory and is
  * resolvable by `horus ask`. Bounded by `timeoutMs` so an unreachable/slow connector can
@@ -191,6 +214,7 @@ export async function runOneInvestigation(
   opts: { timeoutMs?: number } = {},
 ): Promise<InvestigationReport> {
   const { renv } = ctx;
+  const rerank = loadReranker();
   const investigation = investigate(
     {
       hint: input.hint,
@@ -227,6 +251,9 @@ export async function runOneInvestigation(
         redis: !!renv.connectors.redis?.url,
         queue: !!ctx.queue,
       },
+      // HOR-404: inject the learned reranker only when enabled + proven (loadReranker gates both);
+      // CONTEXT-ONLY — it reorders eligible causes, never touches confidence/verdict/ceilings.
+      ...(rerank ? { rerank } : {}),
     },
   );
 

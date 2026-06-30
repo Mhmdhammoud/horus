@@ -55,7 +55,7 @@ import {
 } from '@horus/db';
 import { buildGraph } from './graph.js';
 import { buildCauseChains } from './cause-chain.js';
-import { rankCauses, selectHeadlineCause, type CauseInput } from './score-cause.js';
+import { rankCauses, selectHeadlineCause, type CauseInput, type CauseCandidate } from './score-cause.js';
 import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
 import { recallSimilar, storeIncidentMemory, deriveTags } from './memory.js';
@@ -96,6 +96,14 @@ export interface EngineDeps {
    */
   code?: CodeProvider | null;
   db: HorusDb;
+  /**
+   * Optional learned reranker (HOR-404). Injected as a pure REORDER function so the engine never
+   * imports the model layer (`@horus/eval`) — the dependency stays one-way. When supplied, it picks
+   * the headline cause among the ALREADY-ELIGIBLE candidates (the ≥0.2 + seed-linked gates are
+   * unchanged); it can NEVER promote an ineligible cause, alter finalScore/confidence/bands, or raise
+   * any ceiling. Absent (the default) ⇒ headline selection is the hand-tuned finalScore argmax.
+   */
+  rerank?: (causes: readonly CauseCandidate[]) => CauseCandidate[];
   /** Optional Elasticsearch logs provider — when absent the investigation runs source-intelligence-only. */
   logs?: LogsProvider | null;
   /** Optional MongoDB state provider — folds application-state anomalies as evidence. */
@@ -1314,7 +1322,7 @@ export async function investigate(
   input: InvestigationInput,
   deps: EngineDeps,
 ): Promise<InvestigationReport> {
-  const { code, db } = deps;
+  const { code, db, rerank } = deps;
 
   // a. PARSE
   const hint = input.hint.trim();
@@ -3574,7 +3582,7 @@ export async function investigate(
   // confidence + unlinked-headline cap below stay correct even if rankCauses' output order ever
   // changes. No-op today — rankCauses already sorts by finalScore desc, so argmax == [0].
   // (HOR-340/336: a sub-threshold cause must not headline; selectHeadlineCause enforces the ≥0.2 bar.)
-  const { headlineCause, headlineLinked } = selectHeadlineCause(rankedCauses, isLinkedToSeed);
+  const { headlineCause, headlineLinked } = selectHeadlineCause(rankedCauses, isLinkedToSeed, rerank);
   // #2 calibration — a headline that isn't structurally linked to the seed is a co-occurring
   // signal, not a verified diagnosis: cap it in the "possible" band so it never reads as a
   // confident "likely" diagnosis (and so confidence actually discriminates linked vs not).
