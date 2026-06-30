@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.17.0] — 2026-06-30 · horus-source 2.0.2
+
+- `horus watch` can now NOTIFY you. When it auto-investigates a new incident and the result clears a confidence threshold, it dispatches the one-line cause to a configured outbound sink — a generic webhook (Slack-compatible JSON, HMAC-signed with `X-Horus-Signature` when you set a secret) and/or a Horus Cloud push. Configure per environment: `environments[].notify: { minConfidence, webhook: { url, secret }, cloud }`. Best-effort and resilient — a failed dispatch is logged and the watch loop keeps running. No daemon; `watch` stays a poller. (HOR-454)
+
 ## [0.16.1] — 2026-06-30 · horus-source 2.0.2
 
 - A broad, sweeping commit (e.g. a large integration touching dozens of files) that merely *included* the implicated file is no longer presented as the confident root cause of an unrelated symptom. When the most-focused recent change touching that file is still broad and nothing else corroborates it, the investigation now says "No specific cause identified from the available evidence — a broad recent change touched this file but isn't clearly linked; connect runtime evidence for a code-aware cause" instead of naming the commit. (HOR-451)
