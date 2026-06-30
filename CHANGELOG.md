@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.15.1] — 2026-06-30 · horus-source 2.0.2
+
+- More accurate localization on TypeScript/GraphQL apps. Investigations no longer anchor on auto-generated code (e.g. a `Cart` type in `graphql/generated.tsx`) or other type declarations when a real function with the same name exists — the actual implementation (`cartReducer`, a service method, …) is now chosen as the seed, which also lets the source-only data-flow cause (0.15.0) read the right code. A type you explicitly point at still surfaces. (HOR-447)
+
 ## [0.15.0] — 2026-06-30 · horus-source 2.0.2
 
 - Sharper root causes without runtime data. When investigating with no logs/metrics connected, Horus now reads the implicated function's own code and proposes a concrete mechanism — a fixed polling cadence, an in-place state mutation, an unawaited async write, or a hardcoded threshold/retry limit (incl. reference-equality bail-outs) — instead of always falling back to "a recent commit may have caused this". It stays a hedged, clearly-source-only suggestion ("verify against runtime evidence") that never outranks a genuine, evidence-backed cause. (HOR-446)
