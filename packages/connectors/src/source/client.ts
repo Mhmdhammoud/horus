@@ -21,6 +21,17 @@ import type {
   SourceSearchResult,
 } from './types.js';
 
+/**
+ * Encode a graph node id for use as a URL PATH segment (HOR-445). `encodeURI` is intentionally used
+ * to keep `/` and `:` literal (the backend's node ids are path-shaped, e.g.
+ * `method:source/foo.ts:Bar.baz`), but it leaves `#` and `?` UNescaped — and a `#private` method id
+ * (`Bar.#baz`) would otherwise truncate the URL at the fragment, hitting the wrong route (404). Escape
+ * exactly those two structural delimiters; the backend percent-decodes them back to the real id.
+ */
+export function encodeNodePath(nodeId: string): string {
+  return encodeURI(nodeId).replace(/#/g, '%23').replace(/\?/g, '%3F');
+}
+
 export class SourceHttpError extends Error {
   public status: number;
   public body: string;
@@ -178,7 +189,7 @@ export class SourceHttpClient {
   impact(nodeId: string, depth = 3): Promise<SourceImpactResult> {
     return this.request<SourceImpactResult>(
       'GET',
-      `/api/impact/${encodeURI(nodeId)}?depth=${depth}`,
+      `/api/impact/${encodeNodePath(nodeId)}?depth=${depth}`,
     );
   }
 
@@ -236,7 +247,7 @@ export class SourceHttpClient {
 
   /** Process flows a symbol participates in, with each flow's named ordered steps. */
   flows(nodeId: string): Promise<SourceFlowsResult> {
-    return this.request<SourceFlowsResult>('GET', `/api/flows/${encodeURI(nodeId)}`);
+    return this.request<SourceFlowsResult>('GET', `/api/flows/${encodeNodePath(nodeId)}`);
   }
 
   /** Method symbols of `className` defined in `file`, ordered by start line. */
@@ -250,7 +261,7 @@ export class SourceHttpClient {
 
   /** Extended node detail — node + content + callers/callees/typeRefs + imports + coupling + communities. */
   node(nodeId: string): Promise<SourceNodeDetail> {
-    return this.request<SourceNodeDetail>('GET', `/api/node/${encodeURI(nodeId)}`);
+    return this.request<SourceNodeDetail>('GET', `/api/node/${encodeNodePath(nodeId)}`);
   }
 
   /** Community clusters with their member nodes (source-graph extraction). */
