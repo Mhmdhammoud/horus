@@ -18,3 +18,20 @@ export {
   type ReportResolver,
 } from './corpus.js';
 export { computeBaseline, featureSeparation } from './baseline.js';
+export {
+  RERANKER_VERSION,
+  MIN_TRAIN_INVESTIGATIONS,
+  trainReranker,
+  applyReranker,
+  deriveLabels,
+  collectFeatureKeys,
+  extractRawFeatures,
+  matchesConfirmedCause,
+  baselineTop,
+  isRerankerModel,
+  type RankableCause,
+  type RerankInvestigation,
+  type RerankerModel,
+  type RerankTrainResult,
+  type RerankTrainSkip,
+} from './reranker.js';
