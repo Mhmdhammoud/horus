@@ -57,6 +57,7 @@ import { buildGraph } from './graph.js';
 import { buildCauseChains } from './cause-chain.js';
 import { rankCauses, selectHeadlineCause, type CauseInput, type CauseCandidate } from './score-cause.js';
 import { detectDataFlowCauseAcross } from './detect-data-flow-cause.js';
+import { selectHintMatchedSignal } from './hint-matched-signal.js';
 import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
 import { recallSimilar, storeIncidentMemory, deriveTags } from './memory.js';
@@ -3471,6 +3472,71 @@ export async function investigate(
           },
         });
       }
+    }
+  }
+
+  // f-hint-matched (HOR-453): when NO error is structurally linked to the seed, the dominant
+  // signal that names the symptom is often WARN-level and never becomes a candidate, so the
+  // headline falls back to a speculative deployment-regression. Do ONE bounded, hint-text-scoped
+  // WARN fetch and surface a symptom-matching signal — PRECISION-GATED by selectHintMatchedSignal
+  // (event_code shares a distinctive hint token, or message shares >=2), so a loud unrelated
+  // "...not found" warning can't false-match. Hedged; ranks above a speculative regression, below
+  // a seed-linked error. Skipped in source-impact mode.
+  if (
+    deps.logs &&
+    typeof deps.logs.analyzeErrors === 'function' &&
+    seedEmittedJoins.length === 0 &&
+    !sourceImpactHint &&
+    meaningfulHintTokens.length > 0
+  ) {
+    try {
+      const warnAnalysis = await deps.logs.analyzeErrors({
+        service: input.service,
+        from: logWindowFrom(input.logsSince ?? input.since),
+        level: 'warn',
+        // Plain message match (OR semantics) — NOT broadText, whose phrase-match would
+        // require the hint words to appear contiguously (e.g. "Sale with link not found"
+        // wouldn't match the phrase "sale links found"). selectHintMatchedSignal then
+        // applies the precision gate on the returned signatures.
+        text: meaningfulHintTokens.filter((t) => t.length >= 4).join(' '),
+      });
+      const picked = selectHintMatchedSignal(warnAnalysis.signatures ?? [], meaningfulHintTokens);
+      if (picked) {
+        const tier = seedEmittedSeverityTier(null, picked.code, picked.message);
+        const volumeBoost = Math.min(0.1, Math.log10(Math.max(1, picked.count)) * 0.03);
+        const msgClause = picked.message
+          ? ` — "${picked.message.replace(/\s+/g, ' ').trim().slice(0, 80)}"`
+          : '';
+        const ev = mkEv(
+          'log',
+          `event_code ${picked.code}: ${picked.count}x in Elasticsearch — matches the reported symptom`.slice(0, 220),
+          {
+            signature: picked.code,
+            count: picked.count,
+            sampleMessage: picked.message || null,
+            relevanceClass: 'direct',
+            relevanceReason: `event_code ${picked.code} matches the reported symptom (not structurally linked to the seed)`,
+            hintMatched: true,
+          },
+          {},
+          undefined,
+          0.75,
+        );
+        logEvIds.push(ev.id);
+        causeInputs.push({
+          id: 'cause:hint-matched-signal',
+          title: `Runtime signal ${picked.code} (${picked.count}x in Elasticsearch) matches the reported symptom but isn't structurally linked to ${top?.name ?? 'the seed'}${msgClause} — verify`.slice(0, 220),
+          category: 'error-correlation',
+          sourceEvidenceIds: [ev.id],
+          // A signal whose event_code/message names the symptom is stronger evidence than a
+          // diffuse recent commit that merely touched the seed's file (order-of-trust), so it
+          // ranks above the broad-commit regression floor (~0.54). Still below a seed-LINKED error.
+          baseScore: clamp01((tier === SEV_ERROR ? 0.6 : 0.56) + volumeBoost),
+          metadata: { blastRadius, hintMatched: true, code: picked.code, count: picked.count },
+        });
+      }
+    } catch {
+      // best-effort — a warn fetch failure must never break the investigation
     }
   }
 
