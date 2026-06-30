@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.15.0] — 2026-06-30 · horus-source 2.0.2
+
+- Sharper root causes without runtime data. When investigating with no logs/metrics connected, Horus now reads the implicated function's own code and proposes a concrete mechanism — a fixed polling cadence, an in-place state mutation, an unawaited async write, or a hardcoded threshold/retry limit (incl. reference-equality bail-outs) — instead of always falling back to "a recent commit may have caused this". It stays a hedged, clearly-source-only suggestion ("verify against runtime evidence") that never outranks a genuine, evidence-backed cause. (HOR-446)
+
 ## [0.14.1] — 2026-06-30 · horus-source 2.0.2
 
 - Fixed: `horus investigate` no longer aborts when a source query fails on an unusual symbol. A seed that resolved to a `#private` class method made the impact lookup 404 (the `#` truncated the request URL), and the whole investigation exited with an error. The symbol id is now encoded correctly, and a failed impact/flows query degrades gracefully (no blast-radius evidence) instead of sinking the run. (HOR-445)
