@@ -56,7 +56,7 @@ import {
 import { buildGraph } from './graph.js';
 import { buildCauseChains } from './cause-chain.js';
 import { rankCauses, selectHeadlineCause, type CauseInput, type CauseCandidate } from './score-cause.js';
-import { detectDataFlowCause } from './detect-data-flow-cause.js';
+import { detectDataFlowCauseAcross } from './detect-data-flow-cause.js';
 import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
 import { recallSimilar, storeIncidentMemory, deriveTags } from './memory.js';
@@ -3402,8 +3402,17 @@ export async function investigate(
   // (~0.2, hedged "could explain … verify against runtime evidence") so any genuine runtime/source
   // cause still outranks it; the single-source ceiling keeps it in the observation/possible band.
   // Skipped in source-impact mode (its summary is a structural impact result, not a cause headline).
-  if (top && seedEv && ctx && !sourceImpactHint) {
-    const dataFlow = detectDataFlowCause(ctx);
+  if (top && seedEv && ctx && code && !sourceImpactHint) {
+    // HOR-448: the mechanism is often ONE HOP from the #1 seed (the reducer an action dispatches to,
+    // the lib fn a wrapper calls, a sibling method), so scan the top seed PLUS the next few ranked
+    // seeds and the seed's direct callees (bounded). Each extra context is a best-effort fetch.
+    const scanIds = [
+      ...new Set([...seeds.slice(1, 4).map((s) => s.id), ...(ctx.callees ?? []).slice(0, 4).map((c) => c.id)]),
+    ].filter((id) => id !== top.id);
+    const extraCtxs = (
+      await Promise.all(scanIds.map((id) => code.context(id).catch(() => null)))
+    ).filter((c): c is SymbolContext => c !== null);
+    const dataFlow = detectDataFlowCauseAcross([ctx, ...extraCtxs]);
     if (dataFlow) {
       causeInputs.push({
         id: 'cause:seed-data-flow',
