@@ -1091,3 +1091,65 @@ describe('selectHeadlineCause — reorder-safe headline selection', () => {
     expect(headlineCause).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// HOR-404 — the optional reranker is honesty-bounded: it may change WHICH eligible
+// cause headlines, but never promotes an ineligible cause and never moves topCause
+// (the ceiling basis) or any score.
+// ---------------------------------------------------------------------------
+
+describe('selectHeadlineCause — HOR-404 reranker (honesty-bounded)', () => {
+  function cand(id: string, finalScore: number, sourceEvidenceIds: string[]): CauseCandidate {
+    return {
+      id,
+      title: `Cause ${id}`,
+      category: 'other',
+      sourceEvidenceIds,
+      affectedNodeIds: [],
+      baseScore: finalScore,
+      finalScore,
+      confidence: finalScore,
+      band: 'possible',
+      explanations: [],
+    };
+  }
+  const isLinked = (ids: string[]): boolean => ids.includes('ev_seed');
+  // A stand-in "learned order": rank candidates by a fixed id priority.
+  const rerankByIds =
+    (priority: string[]) =>
+    (cs: readonly CauseCandidate[]): CauseCandidate[] =>
+      [...cs].sort((a, b) => priority.indexOf(a.id) - priority.indexOf(b.id));
+
+  it('promotes a lower-finalScore ELIGIBLE linked cause to headline; topCause stays finalScore argmax', () => {
+    const causes = [cand('strong', 0.8, ['ev_seed']), cand('weak', 0.5, ['ev_seed'])];
+    const r = selectHeadlineCause(causes, isLinked, rerankByIds(['weak', 'strong']));
+    expect(r.headlineCause?.id).toBe('weak'); // reranker changed the headline
+    expect(r.headlineLinked).toBe(true);
+    expect(r.topCause?.id).toBe('strong'); // ceiling basis UNCHANGED (finalScore argmax)
+  });
+
+  it('NEVER promotes a sub-0.2 cause, even when the reranker ranks it first', () => {
+    const causes = [cand('ok', 0.5, ['ev_seed']), cand('tiny', 0.1, ['ev_seed'])];
+    const r = selectHeadlineCause(causes, isLinked, rerankByIds(['tiny', 'ok']));
+    expect(r.headlineCause?.id).toBe('ok');
+  });
+
+  it('NEVER promotes an UNLINKED cause when a linked-eligible one exists', () => {
+    const causes = [cand('linked', 0.5, ['ev_seed']), cand('unlinked', 0.9, ['ev_other'])];
+    const r = selectHeadlineCause(causes, isLinked, rerankByIds(['unlinked', 'linked']));
+    expect(r.headlineCause?.id).toBe('linked');
+    expect(r.headlineLinked).toBe(true);
+  });
+
+  it('no reranker ⇒ headline is the finalScore argmax among eligible (behavior preserved)', () => {
+    const causes = [cand('a', 0.5, ['ev_seed']), cand('b', 0.8, ['ev_seed'])];
+    expect(selectHeadlineCause(causes, isLinked).headlineCause?.id).toBe('b');
+  });
+
+  it('a reranker returning foreign candidates falls back to finalScore argmax (includes guard)', () => {
+    const causes = [cand('a', 0.5, ['ev_seed']), cand('b', 0.8, ['ev_seed'])];
+    const bogus = (): CauseCandidate[] => [cand('ghost', 1.0, ['ev_seed'])];
+    const r = selectHeadlineCause(causes, isLinked, bogus);
+    expect(r.headlineCause?.id).toBe('b');
+  });
+});

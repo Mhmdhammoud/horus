@@ -635,26 +635,44 @@ export function rankCauses(
 export function selectHeadlineCause(
   rankedCauses: readonly CauseCandidate[],
   isLinkedToSeed: (sourceEvidenceIds: string[]) => boolean,
+  rerank?: (causes: readonly CauseCandidate[]) => CauseCandidate[],
 ): {
   topCause: CauseCandidate | undefined;
   topLinkedCause: CauseCandidate | undefined;
   headlineCause: CauseCandidate | undefined;
   headlineLinked: boolean;
 } {
+  // `topCause` stays the finalScore ARGMAX — it drives the downstream confidence ceiling and the
+  // unlinked fallback, and must NEVER be influenced by the reranker (HOR-404 honesty bound: the
+  // reranker may change WHICH eligible cause headlines, never the ceiling derived from the strongest
+  // available cause, and never any score).
   let topCause: CauseCandidate | undefined;
-  let topLinkedCause: CauseCandidate | undefined;
   for (const c of rankedCauses) {
     if (topCause === undefined || c.finalScore > topCause.finalScore) topCause = c;
-    if (
-      c.finalScore >= 0.2 &&
-      isLinkedToSeed(c.sourceEvidenceIds) &&
-      (topLinkedCause === undefined || c.finalScore > topLinkedCause.finalScore)
-    ) {
-      topLinkedCause = c;
-    }
   }
-  const headlineCause =
-    topLinkedCause ?? (topCause && topCause.finalScore >= 0.2 ? topCause : undefined);
+
+  // Pick the headline among an ALREADY-ELIGIBLE set: with a reranker, by learned order; without one,
+  // by finalScore argmax (behavior-identical to the pre-HOR-404 engine). The reranker only REORDERS
+  // the eligible candidates — it can never promote a cause that failed the ≥0.2 / seed-linked gates
+  // applied below, and `includes` rejects any candidate it did not receive.
+  const pickEligible = (set: CauseCandidate[]): CauseCandidate | undefined => {
+    if (set.length === 0) return undefined;
+    if (rerank) {
+      const top = rerank(set).find((c) => set.includes(c));
+      if (top) return top;
+    }
+    let best = set[0]!;
+    for (const c of set) if (c.finalScore > best.finalScore) best = c;
+    return best;
+  };
+
+  const linkedEligible = rankedCauses.filter(
+    (c) => c.finalScore >= 0.2 && isLinkedToSeed(c.sourceEvidenceIds),
+  );
+  const allEligible = rankedCauses.filter((c) => c.finalScore >= 0.2);
+
+  const topLinkedCause = pickEligible(linkedEligible);
+  const headlineCause = topLinkedCause ?? pickEligible(allEligible);
   const headlineLinked =
     headlineCause !== undefined && isLinkedToSeed(headlineCause.sourceEvidenceIds);
   return { topCause, topLinkedCause, headlineCause, headlineLinked };
