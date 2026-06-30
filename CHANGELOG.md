@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.14.1] — 2026-06-30 · horus-source 2.0.2
+
+- Fixed: `horus investigate` no longer aborts when a source query fails on an unusual symbol. A seed that resolved to a `#private` class method made the impact lookup 404 (the `#` truncated the request URL), and the whole investigation exited with an error. The symbol id is now encoded correctly, and a failed impact/flows query degrades gracefully (no blast-radius evidence) instead of sinking the run. (HOR-445)
+
 ## [0.14.0] — 2026-06-30 · horus-source 2.0.2
 
 - Horus can now LEARN from your feedback. A local, per-tenant reranker (`horus train`) fits on your own outcome-label corpus and reorders candidate causes so the right one surfaces more often — measured honestly against a held-out baseline. It is a ranking aid only: it reorders among causes that already clear Horus's confidence gates and never changes a score, a confidence, or a verdict. Your corpus never leaves your machine; it ships OFF and trains nothing until the corpus is large enough to beat the baseline, then you enable a proven model with `HORUS_RERANK=1`. (HOR-404)
