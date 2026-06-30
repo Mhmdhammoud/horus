@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Symbol, SymbolContext } from '@horus/core';
 import type { InvestigationGraph } from './graph.js';
-import { detectDataFlowCause } from './detect-data-flow-cause.js';
+import { detectDataFlowCause, detectDataFlowCauseAcross } from './detect-data-flow-cause.js';
 import { rankCauses, type CauseInput, type ScoringContext } from './score-cause.js';
 
 function mkCtx(
@@ -104,5 +104,37 @@ describe('honesty invariant — a data-flow cause never outranks a genuine cause
     const df = ranked.find((c) => c.id === 'cause:seed-data-flow');
     expect(df).toBeDefined();
     expect(df!.finalScore).toBeLessThan(0.65); // never reaches "likely"/"highly-likely"
+  });
+});
+
+describe('detectDataFlowCause — exact-match-query (HOR-448)', () => {
+  it('fires on a SQL WHERE col = $1 with no normalization', () => {
+    const f = detectDataFlowCause(mkCtx('async function lookup(p){ return db.query("SELECT * FROM plates WHERE plate_number = $1", [p]); }', { name: 'searchByPlateNumber', signature: 'async (p)' }));
+    expect(f?.pattern).toBe('exact-match-query');
+  });
+  it('does NOT fire when the query normalizes (LOWER/LIKE)', () => {
+    expect(detectDataFlowCause(mkCtx('function lookup(p){ return db.query("SELECT * FROM plates WHERE LOWER(plate) = LOWER($1)", [p]); }', { name: 'searchByPlateNumber' }))).toBeNull();
+  });
+  it('fires on an ORM exact-field find({ field: ... })', () => {
+    const f = detectDataFlowCause(mkCtx('async function get(n){ return PlateModel.findOne({ plateNumber: n }); }', { name: 'getPlate', signature: 'async (n)', callees: ['findOne'] }));
+    expect(f?.pattern).toBe('exact-match-query');
+  });
+  it('does NOT fire on Array.prototype.find with a predicate', () => {
+    expect(detectDataFlowCause(mkCtx('function pick(items, id){ return items.find((x) => x.id === id); }', { name: 'pick' }))).toBeNull();
+  });
+});
+
+describe('detectDataFlowCauseAcross (HOR-448) — finds the mechanism one hop from the #1 seed', () => {
+  it('returns the mutation in the reducer (seed #2) when the top seed (an action) has no mechanism', () => {
+    const actionCtx = mkCtx('export const changeQuantity = (id, qty) => ({ type: "CHANGE", id, qty });', { name: 'changeQuantity', filePath: 'src/actions/cart.ts' });
+    const reducerCtx = mkCtx('case "ADD": state.items.push(action.item); return state;', { name: 'cartReducer', filePath: 'src/reducers/cart.ts' });
+    const f = detectDataFlowCauseAcross([actionCtx, reducerCtx]);
+    expect(f?.pattern).toBe('in-place-mutation');
+    expect(f?.title).toContain('cartReducer');
+  });
+  it('returns null when no scanned context has a detectable mechanism', () => {
+    const a = mkCtx('export const noop = () => 1;', { name: 'noop' });
+    const b = mkCtx('export const passthrough = (x) => x;', { name: 'passthrough' });
+    expect(detectDataFlowCauseAcross([a, b])).toBeNull();
   });
 });

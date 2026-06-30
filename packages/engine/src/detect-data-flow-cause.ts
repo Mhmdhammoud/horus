@@ -17,6 +17,7 @@ import type { SymbolContext } from '@horus/core';
 
 export type DataFlowPattern =
   | 'fixed-cadence'
+  | 'exact-match-query'
   | 'in-place-mutation'
   | 'unawaited-async-write'
   | 'hardcoded-bound';
@@ -63,6 +64,24 @@ function detectFixedCadence(body: string, name: string): DataFlowFinding | null 
   if (cad && !CONFIG_SRC.test(grp(cad, 0))) {
     const frag = grp(cad, 0).trim().slice(0, 40);
     return { pattern: 'fixed-cadence', matched: frag, baseScore: 0.2, title: hedged(name, `uses a fixed cadence (\`${frag}\`); the symptom may track that interval`) };
+  }
+  return null;
+}
+
+// 1b. exact-match-query — an equality lookup with no normalization, so a value differing only in
+// formatting (case/whitespace/leading zeros) returns no rows (HOR-448; the car-plate-finder case).
+function detectExactMatchQuery(body: string, name: string): DataFlowFinding | null {
+  const sql = /\bWHERE\b[^;]*?["'`]?\b\w+\b["'`]?\s*=\s*[$?:]\w*/i.exec(body);
+  if (sql && !/\b(?:LIKE|ILIKE|LOWER|UPPER|TRIM|SIMILAR|REGEXP)\b/i.test(grp(sql, 0))) {
+    const frag = grp(sql, 0).trim().slice(0, 48);
+    return { pattern: 'exact-match-query', matched: frag, baseScore: 0.2, title: hedged(name, `matches on an exact-equality query (\`${frag}\`) with no normalization, so a value differing only in formatting (case, whitespace, leading zeros) returns no rows`) };
+  }
+  // ORM exact-field lookup: `.find({ field: … })` / findOne / findUnique with an OBJECT-literal arg
+  // (Array.prototype.find takes a predicate fn, not an object, so this is a store/ORM query).
+  const orm = /\.(?:find|findOne|findFirst|findUnique)\s*\(\s*\{\s*\w+\s*:/.exec(body);
+  if (orm) {
+    const frag = grp(orm, 0).trim().slice(0, 40);
+    return { pattern: 'exact-match-query', matched: frag, baseScore: 0.2, title: hedged(name, `looks up by an exact field match (\`${frag}\`) with no normalization, so a value differing only in formatting returns no match`) };
   }
   return null;
 }
@@ -136,8 +155,22 @@ export function detectDataFlowCause(ctx: SymbolContext): DataFlowFinding | null 
   const nm = ctx.symbol.name;
   return (
     detectFixedCadence(body, nm) ??
+    detectExactMatchQuery(body, nm) ??
     detectInPlaceMutation(body, ctx) ??
     detectUnawaitedWrite(body, ctx) ??
     detectHardcodedBound(body, nm)
   );
+}
+
+/**
+ * HOR-448: the mechanism is often ONE HOP from the seed (a callee, or a sibling ranked seed), so the
+ * caller scans several symbols' contexts (top seed first, then the next ranked seeds + the seed's
+ * direct callees). Returns the FIRST match in the given priority order, or null. Pure.
+ */
+export function detectDataFlowCauseAcross(contexts: readonly SymbolContext[]): DataFlowFinding | null {
+  for (const c of contexts) {
+    const f = detectDataFlowCause(c);
+    if (f) return f;
+  }
+  return null;
 }
