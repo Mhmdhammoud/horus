@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.14.0] — 2026-06-30 · horus-source 2.0.2
+
+- Horus can now LEARN from your feedback. A local, per-tenant reranker (`horus train`) fits on your own outcome-label corpus and reorders candidate causes so the right one surfaces more often — measured honestly against a held-out baseline. It is a ranking aid only: it reorders among causes that already clear Horus's confidence gates and never changes a score, a confidence, or a verdict. Your corpus never leaves your machine; it ships OFF and trains nothing until the corpus is large enough to beat the baseline, then you enable a proven model with `HORUS_RERANK=1`. (HOR-404)
+
 ## [0.13.2] — 2026-06-30 · horus-source 2.0.2
 
 - Feedback at the right moment: instead of asking right after an investigation (before you know if Horus was right), Horus now nudges you once on a later run to label a prior investigation that's still unresolved — rate-limited, dismissible, and never in scripts/CI (`--no-input` / `HORUS_NO_INPUT` to disable). This raises the outcome-label rate that powers Horus's measured accuracy over time. (HOR-431)
