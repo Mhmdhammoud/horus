@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.16.1] — 2026-06-30 · horus-source 2.0.2
+
+- A broad, sweeping commit (e.g. a large integration touching dozens of files) that merely *included* the implicated file is no longer presented as the confident root cause of an unrelated symptom. When the most-focused recent change touching that file is still broad and nothing else corroborates it, the investigation now says "No specific cause identified from the available evidence — a broad recent change touched this file but isn't clearly linked; connect runtime evidence for a code-aware cause" instead of naming the commit. (HOR-451)
+
 ## [0.16.0] — 2026-06-30 · horus-source 2.0.2
 
 - Connector credentials are now **encrypted at rest**. Tokens, passwords and connection URLs are AES-256-GCM encrypted into a gitignored `.horus/secrets.local.json`, with the 32-byte master key held by your OS keychain (macOS Keychain, Linux libsecret, Windows DPAPI) — never the repo (`HORUS_SECRET_KEY` overrides for CI/headless). `config.json` keeps only non-secret fields and stays safe to share. New `horus secrets status|migrate|key`, and `horus doctor` now warns when `.horus/` isn't gitignored or config still holds a plaintext secret. Backward-compatible — existing plaintext config still resolves. (HOR-452)
