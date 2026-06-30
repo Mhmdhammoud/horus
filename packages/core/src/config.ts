@@ -802,6 +802,17 @@ function hydrateConnectorSecrets(project: unknown, root: string): void {
     const connectors = env['connectors'] as Record<string, unknown> | undefined;
     if (!connectors || typeof connectors !== 'object') continue;
     for (const [connector, fields] of Object.entries(byConnector)) {
+      // HOR-454: the notify webhook signing secret is encrypted under a pseudo-connector
+      // namespace "notify" → hydrate it into env.notify.webhook.secret (not env.connectors),
+      // so a sensitive secret never sits plaintext in config.json (consistent with HOR-452).
+      if (connector === 'notify') {
+        const webhook = (env['notify'] as { webhook?: Record<string, unknown> } | undefined)?.webhook;
+        const secret = (fields as Record<string, unknown>)['webhookSecret'];
+        if (webhook && typeof webhook === 'object' && typeof secret === 'string') {
+          webhook['secret'] = secret;
+        }
+        continue;
+      }
       const target = connectors[connector];
       if (!target || typeof target !== 'object') continue; // not declared in config — skip
       for (const [field, value] of Object.entries(fields)) {
