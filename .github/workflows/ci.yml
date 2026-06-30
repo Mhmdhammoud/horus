@@ -33,3 +33,19 @@ jobs:
       # Run with bash to avoid relying on execute permission in CI checkout.
       - name: CLI smoke test
         run: bash ./scripts/smoke-test.sh apps/horus/dist/index.cjs
+
+  # Vendored horus-source backend (HOR-450 step A) — its own Python toolchain, run
+  # independently of the Node build above. See packages/source-py/VENDORED.md.
+  source-py:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/source-py
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v5
+
+      - run: uv sync --extra dev --frozen
+
+      - run: uv run --extra dev pytest tests/ -q
