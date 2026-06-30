@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.17.1] — 2026-06-30 · horus-source 2.0.2
+
+- New `horus notify` command to configure the watch outbound sink (0.17.0) without hand-editing config: `horus notify set --url <webhook> [--secret <s>] [--min-confidence 0.6] [--cloud]`, plus `show`, `test` (sends a sample dispatch to verify the webhook), and `remove`. The webhook signing secret is stored encrypted in `.horus/secrets.local.json` (never plaintext in config), consistent with connector-secret encryption. (HOR-454)
+
 ## [0.17.0] — 2026-06-30 · horus-source 2.0.2
 
 - `horus watch` can now NOTIFY you. When it auto-investigates a new incident and the result clears a confidence threshold, it dispatches the one-line cause to a configured outbound sink — a generic webhook (Slack-compatible JSON, HMAC-signed with `X-Horus-Signature` when you set a secret) and/or a Horus Cloud push. Configure per environment: `environments[].notify: { minConfidence, webhook: { url, secret }, cloud }`. Best-effort and resilient — a failed dispatch is logged and the watch loop keeps running. No daemon; `watch` stays a poller. (HOR-454)
