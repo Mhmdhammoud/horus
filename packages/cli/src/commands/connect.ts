@@ -16,14 +16,19 @@
  */
 
 import { createInterface } from 'node:readline';
-import { execFileSync } from 'node:child_process';
 import pc from 'picocolors';
 import {
   findRepoRoot,
   discoverLocalConfig,
   localConfigPath,
+  localSecretsPath,
   patchLocalConnector,
-  ensureCredentialGitignore,
+  writeConnectorSecret,
+  ensureProjectGitignore,
+  readLocalConfig,
+  CONNECTOR_SECRET_FIELDS,
+  ensureMasterKey,
+  masterKeyStatus,
   REDIS_ROLES,
   type RedisRole,
 } from '@horus/core';
@@ -110,6 +115,8 @@ export interface ConnectOpts {
   scanDbs?: boolean;
   /** Parsed/discovered redis databases (internal). */
   redisDatabases?: RedisDatabaseSpec[];
+  /** Override the working directory used to locate the repo/config (tests). */
+  cwd?: string;
 }
 
 const SUPPORTED = ['elasticsearch', 'mongodb', 'postgres', 'sentry', 'axiom', 'grafana', 'redis'] as const;
@@ -135,7 +142,7 @@ export async function runConnect(type: string, opts: ConnectOpts): Promise<numbe
   const connectorType = type as ConnectorType;
 
   try {
-    const cwd = process.cwd();
+    const cwd = opts.cwd ?? process.cwd();
     const root = findRepoRoot(cwd) ?? cwd;
     const configPath = discoverLocalConfig(cwd) ?? localConfigPath(root);
 
@@ -183,44 +190,57 @@ export async function runConnect(type: string, opts: ConnectOpts): Promise<numbe
       );
     }
 
-    // Guard literal credentials against Git exposure BEFORE writing them.
-    const hasLiteralCredentials =
-      filled.url !== undefined ||
-      filled.password !== undefined ||
-      filled.username !== undefined ||
-      filled.authToken !== undefined ||
-      filled.token !== undefined;
-    if (hasLiteralCredentials) {
-      if (isGitTracked(configPath, root)) {
-        console.error(
-          pc.red('.horus/config.json is already tracked by Git.') +
-            '\nStoring credentials here would expose them in the repository.\n' +
-            pc.dim(
-              '  Option A — remove from Git index then re-run:\n' +
-                '    git rm --cached .horus/config.json\n' +
-                '    horus connect ' +
-                type +
-                ' ...\n\n' +
-                '  Option B — keep credentials in the environment and reference them:\n' +
-                '    export ES_URL=https://...\n' +
-                '    export ES_USERNAME=...\n' +
-                '    export ES_PASSWORD=...\n' +
-                '  Then edit .horus/config.json manually to use urlEnv/usernameEnv/passwordEnv.',
-            ),
-        );
-        return 1;
+    // HOR-452: split the patch into SECRETS (AES-256-GCM encrypted into
+    // .horus/secrets.local.json) and non-secret config (.horus/config.json).
+    // Connector credentials never touch config.json, so it stays safe to share.
+    const envName = resolveEnvName(configPath, filled.env);
+    const secretFields = CONNECTOR_SECRET_FIELDS[connectorType] ?? [];
+    const nonSecretPatch: Record<string, unknown> = {};
+    const secretPatch: Array<[string, string]> = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (secretFields.includes(k) && typeof v === 'string' && v.length > 0) {
+        secretPatch.push([k, v]);
+      } else {
+        nonSecretPatch[k] = v;
       }
-      // Write the gitignore BEFORE writing credentials so no interval exists
-      // where the file contains secrets but is unprotected.
-      ensureCredentialGitignore(root);
     }
 
-    // Write to config (writeLocalConfig enforces mode 0600 on every write).
-    patchLocalConnector(configPath, connectorType, patch, filled.env);
+    // Always keep `.horus/` out of Git — covers repos where Git was initialized
+    // after `horus index`, so the secrets file can never be committed.
+    ensureProjectGitignore(root);
+
+    if (secretPatch.length > 0) {
+      // Resolve (creating on first use) the master key up front so we can surface
+      // where it lives and any fallback warning before writing anything.
+      let keyResult: ReturnType<typeof ensureMasterKey>;
+      try {
+        keyResult = ensureMasterKey();
+      } catch (err) {
+        console.error(pc.red((err as Error).message));
+        return 1;
+      }
+      for (const [field, value] of secretPatch) {
+        writeConnectorSecret(root, envName, connectorType, field, value, keyResult.key);
+      }
+      if (keyResult.warning) console.warn(pc.yellow(`\n⚠ ${keyResult.warning}`));
+    }
+
+    // Write the non-secret config (writeLocalConfig enforces mode 0600). Always
+    // patch — even an empty patch — so the connector block exists for resolution.
+    patchLocalConnector(configPath, connectorType, nonSecretPatch, envName);
 
     console.log(
       `${pc.green('✓')} ${pc.bold(connectorType)} connector saved → ${pc.dim(configPath)}`,
     );
+    if (secretPatch.length > 0) {
+      const n = secretPatch.length;
+      console.log(
+        pc.dim(
+          `  ${n} secret${n > 1 ? 's' : ''} encrypted → ${localSecretsPath(root)}\n` +
+            `  master key: ${masterKeyStatus().detail}`,
+        ),
+      );
+    }
     printSummary(connectorType, filled);
     console.log(pc.dim(`\n  run: horus investigate "<hint>"`));
     return 0;
@@ -816,20 +836,23 @@ function printSummary(type: ConnectorType, opts: ConnectOpts): void {
 }
 
 /**
- * Return true if `filePath` is currently tracked by Git in the repo at `cwd`.
- * Uses `git ls-files --error-unmatch` which exits non-zero for untracked files.
- * Returns false if Git is unavailable or the path is outside a repository.
+ * Resolve the target environment name the same way patchLocalConnector does:
+ * the requested `--env` if given (validated), else the first environment in the
+ * config. Keeps the encrypted-secret write and the config patch on the same env.
  */
-function isGitTracked(filePath: string, cwd: string): boolean {
-  try {
-    execFileSync('git', ['ls-files', '--error-unmatch', filePath], {
-      cwd,
-      stdio: 'pipe',
-    });
-    return true;
-  } catch {
-    return false;
+function resolveEnvName(configPath: string, requested?: string): string {
+  const file = readLocalConfig(configPath);
+  const project = file.project as { environments?: Array<{ name?: string }> } | undefined;
+  const envs = project?.environments ?? [];
+  if (requested) {
+    if (!envs.some((e) => e.name === requested)) {
+      throw new Error(`Environment "${requested}" not found in config.`);
+    }
+    return requested;
   }
+  const first = envs[0]?.name;
+  if (!first) throw new Error('No environments found in config.');
+  return first;
 }
 
 // ---------------------------------------------------------------------------

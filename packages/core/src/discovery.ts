@@ -9,6 +9,13 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import {
+  encryptSecret,
+  decryptSecret,
+  isEncryptedSecret,
+  MasterKeyUnavailableError,
+  type EncryptedSecret,
+} from './secrets.js';
 
 export const HORUS_DIR = '.horus';
 export const LOCAL_CONFIG_FILE = 'config.json';
@@ -142,6 +149,12 @@ export const LOCAL_SECRETS_FILE = 'secrets.local.json';
 
 export interface LocalSecrets {
   anthropic?: { apiKey?: string };
+  /**
+   * Connector credentials, AES-256-GCM encrypted (HOR-452). Keyed by environment
+   * name → connector type → field name. Never plaintext, never committed — the
+   * config.json carries only non-secret fields (dataset, org, schema, …).
+   */
+  connectors?: Record<string, Record<string, Record<string, EncryptedSecret>>>;
 }
 
 /** Absolute path to a repo's local secrets file. */
@@ -179,6 +192,92 @@ export function writeLocalSecrets(root: string, secrets: LocalSecrets): string {
     writeFileSync(gitignorePath, entry + '\n');
   }
   return p;
+}
+
+// ---------------------------------------------------------------------------
+// Encrypted connector secrets (HOR-452) — AES-256-GCM ciphertext stored in the
+// gitignored secrets file; the master key lives in the OS keychain (see secrets.ts).
+// ---------------------------------------------------------------------------
+
+/** Encrypt + store one connector secret field into `.horus/secrets.local.json`. */
+export function writeConnectorSecret(
+  root: string,
+  envName: string,
+  connector: string,
+  field: string,
+  plaintext: string,
+  key?: Buffer,
+): void {
+  const secrets = readLocalSecrets(root);
+  const blob = encryptSecret(plaintext, key);
+  const byEnv = (secrets.connectors ??= {});
+  const byConnector = (byEnv[envName] ??= {});
+  const byField = (byConnector[connector] ??= {});
+  byField[field] = blob;
+  writeLocalSecrets(root, secrets);
+  // Harden (HOR-452): writeLocalSecrets only ignores the nested secrets file;
+  // also ensure the repo root ignores `.horus/` in case it was never onboarded.
+  ensureProjectGitignore(root);
+}
+
+/** Remove all stored secrets for one connector in an environment (e.g. on disconnect). */
+export function deleteConnectorSecrets(root: string, envName: string, connector: string): void {
+  const secrets = readLocalSecrets(root);
+  const byConnector = secrets.connectors?.[envName];
+  if (byConnector && byConnector[connector]) {
+    delete byConnector[connector];
+    writeLocalSecrets(root, secrets);
+  }
+}
+
+export interface DecryptedConnectorSecrets {
+  /** env → connector → field → plaintext value. */
+  values: Record<string, Record<string, Record<string, string>>>;
+  /** Non-fatal decrypt problems (missing/wrong key) for the caller to surface. */
+  warnings: string[];
+}
+
+/**
+ * Read + decrypt every connector secret from `.horus/secrets.local.json`.
+ * Best-effort: a blob that cannot be decrypted is skipped with a warning so the
+ * rest of config loading still works (degrade, don't crash).
+ */
+export function decryptConnectorSecrets(root: string): DecryptedConnectorSecrets {
+  const out: DecryptedConnectorSecrets = { values: {}, warnings: [] };
+  const stored = readLocalSecrets(root).connectors;
+  if (!stored) return out;
+  for (const [env, byConnector] of Object.entries(stored)) {
+    for (const [connector, byField] of Object.entries(byConnector)) {
+      for (const [field, blob] of Object.entries(byField)) {
+        if (!isEncryptedSecret(blob)) continue;
+        try {
+          const plain = decryptSecret(blob);
+          const e = (out.values[env] ??= {});
+          const c = (e[connector] ??= {});
+          c[field] = plain;
+        } catch (err) {
+          const reason =
+            err instanceof MasterKeyUnavailableError ? 'no master key' : (err as Error).message;
+          out.warnings.push(`${env}/${connector}.${field}: ${reason}`);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Read-only check: is `.horus/` ignored by the repo's root `.gitignore`?
+ * Returns true for a non-git directory (nothing can leak). Used by `horus doctor`.
+ */
+export function isHorusGitignored(root: string): boolean {
+  if (!existsSync(join(root, '.git'))) return true;
+  const gitignorePath = join(root, '.gitignore');
+  if (!existsSync(gitignorePath)) return false;
+  return readFileSync(gitignorePath, 'utf8')
+    .split('\n')
+    .map((l) => l.trim())
+    .some((l) => l === '.horus' || l === '.horus/' || l === '/.horus' || l === '/.horus/');
 }
 
 /**

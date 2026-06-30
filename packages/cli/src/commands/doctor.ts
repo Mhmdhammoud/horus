@@ -5,6 +5,8 @@ import {
   discoverLocalConfig,
   readLocalConfig,
   loadConfig,
+  isHorusGitignored,
+  findPlaintextConnectorSecrets,
   type ConnectorsConfig,
 } from '@horus/core';
 import { checkDatabase, type DbHealth } from '@horus/db';
@@ -274,6 +276,42 @@ export async function runDoctor(opts?: {
       detail: 'not configured (no local config)',
       next: 'run `horus init` then `horus index` to set up source intelligence',
     });
+  }
+
+  // Secrets hygiene (HOR-452): `.horus/` must be gitignored, and config.json must
+  // not carry plaintext connector credentials.
+  {
+    if (repoRoot && !isHorusGitignored(repoRoot)) {
+      checks.push({
+        label: 'Secrets gitignore',
+        status: 'warn',
+        detail: '.horus/ is NOT gitignored — credentials could be committed',
+        next: 'run `horus secrets migrate` (also hardens .gitignore), or add `.horus/` to .gitignore',
+      });
+    } else if (repoRoot) {
+      checks.push({ label: 'Secrets gitignore', status: 'pass', detail: '.horus/ is gitignored' });
+    }
+    if (configPath) {
+      try {
+        const plaintext = findPlaintextConnectorSecrets(readLocalConfig(configPath).project);
+        if (plaintext.length > 0) {
+          checks.push({
+            label: 'Secret storage',
+            status: 'warn',
+            detail: `${plaintext.length} plaintext credential(s) in config.json: ${plaintext.join(', ')}`,
+            next: 'run `horus secrets migrate` to encrypt them and strip config.json',
+          });
+        } else {
+          checks.push({
+            label: 'Secret storage',
+            status: 'pass',
+            detail: 'no plaintext credentials in config.json',
+          });
+        }
+      } catch {
+        /* config unreadable — already flagged by the Local config check above */
+      }
+    }
   }
 
   // Database check — probe Postgres for reachability and schema readiness.

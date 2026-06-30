@@ -59,6 +59,7 @@ import { runInit } from './commands/init.js';
 import { runProjects } from './commands/projects.js';
 import { runSetup } from './commands/setup.js';
 import { runConnect } from './commands/connect.js';
+import { runSecretsStatus, runSecretsMigrate, runSecretsKey } from './commands/secrets.js';
 import { runStop } from './commands/stop.js';
 import { runHosts } from './commands/hosts.js';
 import { runDoctor } from './commands/doctor.js';
@@ -285,6 +286,30 @@ Examples:
         });
       },
     );
+
+  const secrets = program
+    .command('secrets')
+    .description('Manage encrypted connector credentials (.horus/secrets.local.json) — HOR-452');
+  secrets
+    .command('status')
+    .description('Show the master key source, stored secrets, plaintext in config, and gitignore state')
+    .action(() => {
+      process.exitCode = runSecretsStatus();
+    });
+  secrets
+    .command('migrate')
+    .description('Move plaintext connector secrets out of config.json into the encrypted store')
+    .option('--dry-run', 'list what would be migrated without changing anything')
+    .action((opts: { dryRun?: boolean }) => {
+      process.exitCode = runSecretsMigrate({ dryRun: opts.dryRun });
+    });
+  secrets
+    .command('key')
+    .description('Show the master key source; --show prints it (base64) for CI (HORUS_SECRET_KEY)')
+    .option('--show', 'print the master key (treat as a credential)')
+    .action((opts: { show?: boolean }) => {
+      process.exitCode = runSecretsKey({ show: opts.show });
+    });
 
   program
     .command('stop')

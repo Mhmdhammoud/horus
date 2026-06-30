@@ -9,6 +9,7 @@ import {
   lookupProject,
   readLocalConfig,
   readLocalSecrets,
+  decryptConnectorSecrets,
 } from './discovery.js';
 
 const DEFAULT_DB_URL = 'postgresql://horus:horus@localhost:5433/horus';
@@ -337,6 +338,56 @@ export function resolveAiSettings(config: HorusConfig): ResolvedAiSettings {
   if (ai?.provider !== undefined) out.provider = ai.provider;
   if (key !== undefined) out.anthropicApiKey = key;
   if (ai?.anthropic?.model !== undefined) out.model = ai.anthropic.model;
+  return out;
+}
+
+/**
+ * Which fields of each connector are SECRETS (HOR-452). These never live in
+ * config.json — `horus connect` encrypts them into `.horus/secrets.local.json`
+ * and they are decrypted back into the in-memory config at load. Connection URLs
+ * for mongo/postgres/redis are secrets because they embed credentials; ES and
+ * Grafana keep their (non-secret) endpoint URL in config and encrypt only
+ * username/password.
+ */
+export const CONNECTOR_SECRET_FIELDS: Record<string, readonly string[]> = {
+  elasticsearch: ['username', 'password'],
+  mongodb: ['url'],
+  postgres: ['url'],
+  sentry: ['authToken'],
+  axiom: ['token'],
+  grafana: ['username', 'password'],
+  redis: ['url'],
+};
+
+/** True if `field` is a secret for `connector` (see CONNECTOR_SECRET_FIELDS). */
+export function isSecretField(connector: string, field: string): boolean {
+  return CONNECTOR_SECRET_FIELDS[connector]?.includes(field) ?? false;
+}
+
+/**
+ * Scan a raw local config object for connector secret fields stored as plaintext
+ * direct values (the legacy/insecure shape). Returns `env/connector.field`
+ * locators. Used by `horus doctor` and `horus secrets migrate`.
+ */
+export function findPlaintextConnectorSecrets(project: unknown): string[] {
+  const out: string[] = [];
+  const envs = (project as { environments?: Array<Record<string, unknown>> } | undefined)
+    ?.environments;
+  if (!Array.isArray(envs)) return out;
+  for (const env of envs) {
+    const envName = (env['name'] as string | undefined) ?? '(unnamed)';
+    const connectors = env['connectors'] as Record<string, unknown> | undefined;
+    if (!connectors || typeof connectors !== 'object') continue;
+    for (const [connector, cfg] of Object.entries(connectors)) {
+      if (!cfg || typeof cfg !== 'object') continue;
+      for (const field of CONNECTOR_SECRET_FIELDS[connector] ?? []) {
+        const val = (cfg as Record<string, unknown>)[field];
+        if (typeof val === 'string' && val.length > 0) {
+          out.push(`${envName}/${connector}.${field}`);
+        }
+      }
+    }
+  }
   return out;
 }
 
@@ -699,6 +750,40 @@ function parseConfig(raw: unknown, source: string): HorusConfig {
   return parsed.data;
 }
 
+/**
+ * Decrypt connector secrets from `.horus/secrets.local.json` and inject them into
+ * the in-memory `project` so resolveEnvironment resolves them as direct values
+ * (HOR-452). Only injects into connectors already declared in config — it never
+ * fabricates a connector block (that could violate the schema). Best-effort: a
+ * blob that cannot be decrypted is skipped with a stderr note.
+ */
+function hydrateConnectorSecrets(project: unknown, root: string): void {
+  const decrypted = decryptConnectorSecrets(root);
+  for (const w of decrypted.warnings) {
+    process.stderr.write(`horus: skipped encrypted connector secret (${w})\n`);
+  }
+  if (Object.keys(decrypted.values).length === 0) return;
+
+  const envs = (project as { environments?: Array<Record<string, unknown>> } | undefined)
+    ?.environments;
+  if (!Array.isArray(envs)) return;
+  for (const env of envs) {
+    const envName = env['name'] as string | undefined;
+    if (!envName) continue;
+    const byConnector = decrypted.values[envName];
+    if (!byConnector) continue;
+    const connectors = env['connectors'] as Record<string, unknown> | undefined;
+    if (!connectors || typeof connectors !== 'object') continue;
+    for (const [connector, fields] of Object.entries(byConnector)) {
+      const target = connectors[connector];
+      if (!target || typeof target !== 'object') continue; // not declared in config — skip
+      for (const [field, value] of Object.entries(fields)) {
+        (target as Record<string, unknown>)[field] = value;
+      }
+    }
+  }
+}
+
 /** Load a config file by absolute path — JSON, native JS/ESM, or a TS module. */
 async function loadConfigFile(target: string): Promise<HorusConfig> {
   if (target.endsWith('.json')) {
@@ -712,6 +797,9 @@ async function loadConfigFile(target: string): Promise<HorusConfig> {
     if (secrets.anthropic?.apiKey) {
       ai = { ...(ai ?? {}), anthropic: { ...(ai?.anthropic ?? {}), apiKey: secrets.anthropic.apiKey } };
     }
+    // Hydrate encrypted connector secrets (HOR-452) back into the in-memory config
+    // so resolveEnvironment sees them as direct values. Never written back to disk.
+    hydrateConnectorSecrets(file.project, root);
     const raw = {
       projects: file.project ? [file.project] : [],
       database: file.database ?? {
