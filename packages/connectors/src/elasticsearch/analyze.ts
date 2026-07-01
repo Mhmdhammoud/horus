@@ -91,8 +91,16 @@ export function buildErrorAnalysisBody(
   // with the error floor made it invisible. So apply the floor ONLY when no specific
   // event_code is requested; a scoped lookup keys on the code alone.
   if (q.eventCode === undefined) {
-    const minLevel =
-      q.level !== undefined && levelToValue(q.level) > 50 ? q.level : 'error';
+    // HOR-453: a hint-text-scoped query may deliberately lower the floor to surface WARN-level
+    // signals that name the symptom (e.g. SALE_028 "Sale with link not found" for "sale links
+    // broken"). Only honor a below-error floor when `text` scopes the fetch — an unscoped warn
+    // aggregation would flood benign high-volume warnings (the reason the error floor exists).
+    const hasText = (q.text ?? '').trim().length > 0;
+    let minLevel: LogLevel = 'error';
+    if (q.level !== undefined) {
+      if (levelToValue(q.level) > 50) minLevel = q.level; // explicit raise above error
+      else if (hasText && levelToValue(q.level) >= 40) minLevel = q.level; // text-scoped warn floor
+    }
     filters.push(buildLevelFilter(mapping, minLevel));
   } else if (q.level !== undefined && levelToValue(q.level) > 50) {
     // Caller explicitly raised the floor above error — honor that even for a scoped

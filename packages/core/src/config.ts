@@ -310,10 +310,33 @@ const connectorsSchema = z
   })
   .default({});
 
+/**
+ * Outbound notify sink (HOR-454). When `horus watch` auto-investigates a new incident and the
+ * result clears `minConfidence`, the headline is dispatched here. CLI/notify-layer only — the
+ * deterministic engine never sees this. Both targets are optional; absent `notify` = no dispatch.
+ */
+const notifySchema = z
+  .object({
+    /** Only dispatch when an auto-investigation's confidence is >= this (0..1). Default 0.6. */
+    minConfidence: z.number().min(0).max(1).default(0.6),
+    /** Generic outbound webhook (Slack-compatible JSON, HMAC-signed when `secret` is set). */
+    webhook: z
+      .object({
+        url: z.string().url(),
+        /** HMAC-SHA256 signing secret; when set, payloads carry an `X-Horus-Signature` header. */
+        secret: z.string().min(1).optional(),
+      })
+      .optional(),
+    /** Also push the headline to Horus Cloud (uses the existing cloud session, if signed in). */
+    cloud: z.boolean().default(false),
+  })
+  .optional();
+
 const environmentSchema = z.object({
   name: z.string().min(1),
   readOnly: z.boolean().default(true),
   connectors: connectorsSchema,
+  notify: notifySchema,
 });
 
 const projectSchema = z.object({
@@ -444,6 +467,7 @@ export type ProjectConfig = z.infer<typeof projectSchema>;
 export type RepositoryConfig = z.infer<typeof repositorySchema>;
 export type EnvironmentConfig = z.infer<typeof environmentSchema>;
 export type ConnectorsConfig = z.infer<typeof connectorsSchema>;
+export type NotifyConfig = NonNullable<z.infer<typeof notifySchema>>;
 
 // ---------------------------------------------------------------------------
 // Resolved environment types (runtime, with secrets read from process.env)
@@ -551,6 +575,8 @@ export interface ResolvedEnvironment {
   /** Primary repository path (first repo) — convenience for git-based commands. */
   path: string;
   connectors: ResolvedConnectors;
+  /** Outbound notify sink for `horus watch` (HOR-454); absent when not configured. */
+  notify?: NotifyConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -783,6 +809,7 @@ export function resolveEnvironment(
     repositories,
     path: primary?.path ?? '',
     connectors: resolved,
+    ...(environment.notify !== undefined ? { notify: environment.notify } : {}),
   };
 }
 
@@ -863,6 +890,17 @@ function hydrateConnectorSecrets(project: unknown, root: string): void {
     const connectors = env['connectors'] as Record<string, unknown> | undefined;
     if (!connectors || typeof connectors !== 'object') continue;
     for (const [connector, fields] of Object.entries(byConnector)) {
+      // HOR-454: the notify webhook signing secret is encrypted under a pseudo-connector
+      // namespace "notify" → hydrate it into env.notify.webhook.secret (not env.connectors),
+      // so a sensitive secret never sits plaintext in config.json (consistent with HOR-452).
+      if (connector === 'notify') {
+        const webhook = (env['notify'] as { webhook?: Record<string, unknown> } | undefined)?.webhook;
+        const secret = (fields as Record<string, unknown>)['webhookSecret'];
+        if (webhook && typeof webhook === 'object' && typeof secret === 'string') {
+          webhook['secret'] = secret;
+        }
+        continue;
+      }
       const target = connectors[connector];
       if (!target || typeof target !== 'object') continue; // not declared in config — skip
       for (const [field, value] of Object.entries(fields)) {

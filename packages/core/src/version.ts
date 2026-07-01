@@ -8,4 +8,4 @@ export const HORUS_VERSION: string = typeof __HORUS_VERSION__ !== 'undefined' ? 
  * The source provider asserts the running backend matches this (see architecture.md §1,
  * risk R4). A drifted build must fail loudly rather than silently mis-map results.
  */
-export const PINNED_SOURCE_VERSION = '2.0.2';
+export const PINNED_SOURCE_VERSION = '2.1.0';

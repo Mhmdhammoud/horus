@@ -23,6 +23,7 @@ import {
   disposeInvestigationContext,
   type InvestigationContext,
 } from '../lib/investigation-runner.js';
+import { dispatchNotify, shouldNotify } from '../lib/notify-sink.js';
 
 export type WatchSource = 'sentry' | 'elasticsearch' | 'auto';
 
@@ -271,6 +272,18 @@ export async function runWatch(opts: WatchOptions): Promise<number> {
             `${cause} ${pc.dim(`(${(confidence * 100).toFixed(0)}%)`)}  ` +
             `${pc.dim(`id: ${report.id}`)}${persisted}`,
         );
+        // HOR-454: dispatch a confident headline to the configured outbound sink. Best-effort —
+        // every result (ok or not) is logged and the loop continues (the watcher never crashes).
+        if (shouldNotify(confidence, renv.notify)) {
+          const results = await dispatchNotify(
+            { id: report.id, confidence, hint: incident.hint, cause },
+            renv.notify,
+          );
+          for (const r of results) {
+            if (r.ok) console.error(pc.dim(`[watch] notified ${r.target} (${r.detail})`));
+            else console.error(pc.yellow(`[watch] notify ${r.target} failed — ${r.detail}`));
+          }
+        }
       } catch (err) {
         console.error(
           pc.yellow(`[watch] investigation failed for "${incident.ref}" — ${(err as Error).message}`),

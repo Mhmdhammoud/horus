@@ -59,6 +59,7 @@ import { runInit } from './commands/init.js';
 import { runProjects } from './commands/projects.js';
 import { runSetup } from './commands/setup.js';
 import { runConnect } from './commands/connect.js';
+import { runNotify, type NotifyOptions } from './commands/notify.js';
 import { runSecretsStatus, runSecretsMigrate, runSecretsKey } from './commands/secrets.js';
 import { runStop } from './commands/stop.js';
 import { runHosts } from './commands/hosts.js';
@@ -298,6 +299,44 @@ Examples:
         });
       },
     );
+
+  const notify = program
+    .command('notify')
+    .description('Configure the outbound notify sink for `horus watch` (webhook / cloud) — HOR-454');
+  const notifyAction =
+    (sub: string | undefined) =>
+    async (opts: NotifyOptions): Promise<void> => {
+      process.exitCode = await runNotify(sub, opts);
+    };
+  notify
+    .command('set')
+    .description('Set the webhook URL (and optional signing secret) for an environment')
+    .option('-c, --config <path>', 'path to a horus config file')
+    .option('--env <name>', 'environment to configure (default: first)')
+    .option('--url <url>', 'webhook URL to POST confident auto-investigations to')
+    .option('--secret <secret>', 'HMAC signing secret (stored encrypted, never plaintext)')
+    .option('--min-confidence <n>', 'only dispatch at/above this confidence (0..1, default 0.6)')
+    .option('--cloud', 'also push headlines to Horus Cloud')
+    .option('--no-cloud', 'disable the Horus Cloud push')
+    .action(notifyAction('set'));
+  notify
+    .command('show')
+    .description('Show the configured notify sink (secret masked)')
+    .option('-c, --config <path>', 'path to a horus config file')
+    .option('--env <name>', 'environment to show (default: first)')
+    .action(notifyAction('show'));
+  notify
+    .command('test')
+    .description('Send a sample signed dispatch to the configured webhook to verify it')
+    .option('-c, --config <path>', 'path to a horus config file')
+    .option('--env <name>', 'environment to test (default: first)')
+    .action(notifyAction('test'));
+  notify
+    .command('remove')
+    .description('Remove the notify sink from an environment')
+    .option('-c, --config <path>', 'path to a horus config file')
+    .option('--env <name>', 'environment to clear (default: first)')
+    .action(notifyAction('remove'));
 
   const secrets = program
     .command('secrets')

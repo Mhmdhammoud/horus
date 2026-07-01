@@ -58,6 +58,7 @@ import { buildGraph } from './graph.js';
 import { buildCauseChains } from './cause-chain.js';
 import { rankCauses, selectHeadlineCause, type CauseInput, type CauseCandidate } from './score-cause.js';
 import { detectDataFlowCauseAcross } from './detect-data-flow-cause.js';
+import { selectHintMatchedSignal } from './hint-matched-signal.js';
 import { generateHypotheses } from './hypotheses.js';
 import { validateHypotheses } from './validate.js';
 import { recallSimilar, storeIncidentMemory, deriveTags } from './memory.js';
@@ -3377,15 +3378,24 @@ export async function investigate(
     // and the changed symbol name(s) — so the cause names what to look at, not just the
     // seed + range. Bounded to 1-2 commits and a few symbols to stay scannable.
     const citation = formatRegressionCitation(recentChanges, changes, seedFile);
+    // HOR-451: how focused was the seed-touching change? Reused for BOTH the score and the title.
+    const seedFocus = seedInChanges ? seedTouchingCommitFocus(recentChanges, top?.filePath) : null;
+    // A BROAD/diffuse commit (touched many files) that merely included the seed's file is not a
+    // credible specific culprit — naming it ("integrate PrestaShop API client may have caused
+    // [unrelated symptom]") misleads, especially when no runtime evidence corroborates it. Reframe
+    // honestly rather than confidently blaming the broad change.
+    const isBroadChange = seedFocus !== null && seedFocus > 14;
     // #3: only attribute the regression to the seed when an in-window commit actually touched the
     // seed's file. Otherwise be honest — changes shipped, but none to the seed — instead of
     // pinning it on the newest unrelated commit.
     const regressionTitle =
-      top && seedInChanges
+      top && seedInChanges && !isBroadChange
         ? `Recent change${citation.commitClause} to ${top.name}${citation.symbolClause} in ${changeRangeLabel} may have introduced the regression`
-        : top
-          ? `Changes shipped in ${changeRangeLabel} but none touched ${top.name} — a regression here is unlikely to be a code change to the seed itself (check upstream deps, data, or config)`
-          : `Recent change${citation.commitClause}${citation.symbolClause} in ${changeRangeLabel} may have introduced the regression`;
+        : top && seedInChanges && isBroadChange
+          ? `No specific cause identified from the available evidence — a broad recent change (${seedFocus} files) in ${changeRangeLabel} touched ${top.name}'s file but isn't clearly linked to the symptom; connect runtime evidence (logs/metrics) for a code-aware cause`
+          : top
+            ? `Changes shipped in ${changeRangeLabel} but none touched ${top.name} — a regression here is unlikely to be a code change to the seed itself (check upstream deps, data, or config)`
+            : `Recent change${citation.commitClause}${citation.symbolClause} in ${changeRangeLabel} may have introduced the regression`;
     causeInputs.push({
       id: 'cause:deployment-regression',
       title: regressionTitle,
@@ -3395,7 +3405,7 @@ export async function investigate(
       // HOR-451: scale the seed-touched prior by commit focus — a broad/diffuse commit that merely
       // touched the seed no longer outranks an evidence-backed runtime cause.
       baseScore: clamp01(
-        (seedInChanges ? regressionSeedTouchedScore(seedTouchingCommitFocus(recentChanges, top?.filePath)) : 0.18) +
+        (seedInChanges ? regressionSeedTouchedScore(seedFocus) : 0.18) +
           (queueHits.length > 0 ? 0.05 : 0),
       ),
       metadata: { blastRadius },
@@ -3508,6 +3518,71 @@ export async function investigate(
           },
         });
       }
+    }
+  }
+
+  // f-hint-matched (HOR-453): when NO error is structurally linked to the seed, the dominant
+  // signal that names the symptom is often WARN-level and never becomes a candidate, so the
+  // headline falls back to a speculative deployment-regression. Do ONE bounded, hint-text-scoped
+  // WARN fetch and surface a symptom-matching signal — PRECISION-GATED by selectHintMatchedSignal
+  // (event_code shares a distinctive hint token, or message shares >=2), so a loud unrelated
+  // "...not found" warning can't false-match. Hedged; ranks above a speculative regression, below
+  // a seed-linked error. Skipped in source-impact mode.
+  if (
+    deps.logs &&
+    typeof deps.logs.analyzeErrors === 'function' &&
+    seedEmittedJoins.length === 0 &&
+    !sourceImpactHint &&
+    meaningfulHintTokens.length > 0
+  ) {
+    try {
+      const warnAnalysis = await deps.logs.analyzeErrors({
+        service: input.service,
+        from: logWindowFrom(input.logsSince ?? input.since),
+        level: 'warn',
+        // Plain message match (OR semantics) — NOT broadText, whose phrase-match would
+        // require the hint words to appear contiguously (e.g. "Sale with link not found"
+        // wouldn't match the phrase "sale links found"). selectHintMatchedSignal then
+        // applies the precision gate on the returned signatures.
+        text: meaningfulHintTokens.filter((t) => t.length >= 4).join(' '),
+      });
+      const picked = selectHintMatchedSignal(warnAnalysis.signatures ?? [], meaningfulHintTokens);
+      if (picked) {
+        const tier = seedEmittedSeverityTier(null, picked.code, picked.message);
+        const volumeBoost = Math.min(0.1, Math.log10(Math.max(1, picked.count)) * 0.03);
+        const msgClause = picked.message
+          ? ` — "${picked.message.replace(/\s+/g, ' ').trim().slice(0, 80)}"`
+          : '';
+        const ev = mkEv(
+          'log',
+          `event_code ${picked.code}: ${picked.count}x in Elasticsearch — matches the reported symptom`.slice(0, 220),
+          {
+            signature: picked.code,
+            count: picked.count,
+            sampleMessage: picked.message || null,
+            relevanceClass: 'direct',
+            relevanceReason: `event_code ${picked.code} matches the reported symptom (not structurally linked to the seed)`,
+            hintMatched: true,
+          },
+          {},
+          undefined,
+          0.75,
+        );
+        logEvIds.push(ev.id);
+        causeInputs.push({
+          id: 'cause:hint-matched-signal',
+          title: `Runtime signal ${picked.code} (${picked.count}x in Elasticsearch) matches the reported symptom but isn't structurally linked to ${top?.name ?? 'the seed'}${msgClause} — verify`.slice(0, 220),
+          category: 'error-correlation',
+          sourceEvidenceIds: [ev.id],
+          // A signal whose event_code/message names the symptom is stronger evidence than a
+          // diffuse recent commit that merely touched the seed's file (order-of-trust), so it
+          // ranks above the broad-commit regression floor (~0.54). Still below a seed-LINKED error.
+          baseScore: clamp01((tier === SEV_ERROR ? 0.6 : 0.56) + volumeBoost),
+          metadata: { blastRadius, hintMatched: true, code: picked.code, count: picked.count },
+        });
+      }
+    } catch {
+      // best-effort — a warn fetch failure must never break the investigation
     }
   }
 
