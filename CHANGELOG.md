@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.17.0] — 2026-07-01 · horus-source 2.0.2
+
+- New **Shopify Admin connector** — bring your store's data into investigations. `horus connect shopify` wires up a store with either a static Admin API access token or a Client-Credentials app (access id + secret, which Horus exchanges for a short-lived token automatically and refreshes); the store name is just the subdomain (`.myshopify.com` is added for you), and the secret is encrypted at rest like every other connector. The connector embeds **no queries**: you supply the Admin GraphQL query at investigation time (`horus investigate --shopify-query @orders.graphql`, a raw string, or `-` for stdin; repeatable, with `--shopify-variables`), or declare default `queries` in config for `horus watch`. The engine binds the investigation window into `$from`/`$to` when the query declares them and folds each result into the report as application-`state` evidence alongside logs, metrics, and code — surfaced in `horus status`, `horus doctor`, and `horus readiness`. Read-only.
+
 ## [0.16.0] — 2026-06-30 · horus-source 2.0.2
 
 - Connector credentials are now **encrypted at rest**. Tokens, passwords and connection URLs are AES-256-GCM encrypted into a gitignored `.horus/secrets.local.json`, with the 32-byte master key held by your OS keychain (macOS Keychain, Linux libsecret, Windows DPAPI) — never the repo (`HORUS_SECRET_KEY` overrides for CI/headless). `config.json` keeps only non-secret fields and stays safe to share. New `horus secrets status|migrate|key`, and `horus doctor` now warns when `.horus/` isn't gitignored or config still holds a plaintext secret. Backward-compatible — existing plaintext config still resolves. (HOR-452)
