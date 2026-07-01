@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.19.1] — 2026-07-01 · horus-source 2.1.0
+
+- `horus connect shopify` now asks **which auth model** you're using up front — *static Admin API token* or *Client-Credentials app* — and prompts only the fields that mode needs, instead of ambiguous optional fields. The credential is required: the wizard re-prompts on a blank secret and, as a general safety net, `horus connect` now **refuses to save any connector that's still missing a required field** (previously a Shopify connector could save with no token and wrongly report success). Secrets stay masked on input and in the summary, and encrypted at rest — unchanged.
+
 ## [0.19.0] — 2026-07-01 · horus-source 2.1.0
 
 - New **Shopify Admin connector** — bring your store's data into investigations. `horus connect shopify` wires up a store with either a static Admin API access token or a Client-Credentials app (access id + secret, which Horus exchanges for a short-lived token automatically and refreshes); the store name is just the subdomain (`.myshopify.com` is added for you), and the secret is encrypted at rest like every other connector. The connector embeds **no queries**: you supply the Admin GraphQL query at investigation time (`horus investigate --shopify-query @orders.graphql`, a raw string, or `-` for stdin; repeatable, with `--shopify-variables`), or declare default `queries` in config for `horus watch`. The engine binds the investigation window into `$from`/`$to` when the query declares them and folds each result into the report as application-`state` evidence alongside logs, metrics, and code — surfaced in `horus status`, `horus doctor`, and `horus readiness`. Read-only.

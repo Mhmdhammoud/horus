@@ -8,8 +8,8 @@ afterEach(() => {
 describe('normalizeStore', () => {
   it('appends .myshopify.com to a bare subdomain', () => {
     expect(normalizeStore('my-store')).toBe('my-store.myshopify.com');
-    // Users enter just the subdomain (e.g. Maison's "946011-c0"); Horus adds the rest.
-    expect(normalizeStore('946011-c0')).toBe('946011-c0.myshopify.com');
+    // Users enter just the subdomain (e.g. "acme-store"); Horus adds the rest.
+    expect(normalizeStore('acme-store')).toBe('acme-store.myshopify.com');
   });
   it('strips scheme and trailing slash', () => {
     expect(normalizeStore('https://my-store.myshopify.com/')).toBe('my-store.myshopify.com');

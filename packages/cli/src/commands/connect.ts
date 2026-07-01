@@ -158,6 +158,20 @@ export async function runConnect(type: string, opts: ConnectOpts): Promise<numbe
     // Fill in any missing opts interactively.
     const filled = await fillInteractive(connectorType, opts);
 
+    // Safety net: never save a half-configured connector. If a required field is still
+    // missing (e.g. the secret was left blank, or a non-interactive run omitted a flag),
+    // fail loudly instead of writing a connector that silently can't authenticate.
+    if (missingRequired(connectorType, filled)) {
+      console.error(
+        pc.red(`Missing required field(s) for ${connectorType} — nothing saved.`) +
+          pc.dim(
+            `\n  Re-run ${pc.bold(`horus connect ${connectorType}`)} and fill every prompt, ` +
+              `or pass them as flags (e.g. --secret for the token).`,
+          ),
+      );
+      return 1;
+    }
+
     // Build the patch.
     let patch: Record<string, unknown>;
     switch (connectorType) {
@@ -372,20 +386,25 @@ async function fillInteractive(
       break;
     }
 
-    case 'shopify':
+    case 'shopify': {
       // Subdomain only — Horus adds `.myshopify.com` internally so users can't fat-finger it.
-      filled.store = filled.store ?? (await ask('Store name (subdomain only, e.g. 946011-c0)', 'my-store'));
+      filled.store = filled.store ?? (await ask('Store name (subdomain only, e.g. acme-store)', 'my-store'));
       filled.apiVersion = filled.apiVersion ?? (await ask('API version', '2025-10'));
-      // Access id (client_id) is OPTIONAL. Provide it for a Client-Credentials app (Horus
-      // exchanges id+secret for a token); leave it blank to use a static Admin API access
-      // token, in which case the secret IS that token.
-      filled.accessId =
-        filled.accessId ??
-        ((await ask('Access id (client_id) — leave blank for a static Admin API token', '', false)) || undefined);
-      filled.secret =
-        filled.secret ??
-        ((await askPassword('Secret — client_secret, or the static Admin API access token')) || undefined);
+      // Ask WHICH auth model up front so the credential prompts are unambiguous. Skipped
+      // when a secret was already supplied via flags (non-interactive).
+      if (filled.secret === undefined) {
+        const method = await askShopifyAuthMethod();
+        if (method === 'client-credentials') {
+          filled.accessId = filled.accessId ?? (await askRequiredText('Access id (client_id)'));
+          filled.secret = (await askPassword('Client secret', true)) || undefined;
+        } else {
+          // Static token: the secret IS the Admin API access token; there is no access id.
+          filled.accessId = undefined;
+          filled.secret = (await askPassword('Admin API access token (e.g. shpat_…)', true)) || undefined;
+        }
+      }
       break;
+    }
 
     case 'grafana':
       filled.url = filled.url ?? (await ask('URL', 'https://grafana.example.com'));
@@ -488,18 +507,25 @@ export function ask(label: string, placeholder = '', required = true): Promise<s
   });
 }
 
-export function askPassword(label: string): Promise<string> {
+export function askPassword(label: string, required = false): Promise<string> {
   return new Promise((resolve) => {
     // Use raw mode to mask input character-by-character.
     const stdin = process.stdin;
     if (typeof (stdin as NodeJS.ReadStream).setRawMode === 'function') {
-      process.stdout.write(`  ${label}${pc.dim(' [optional]')}: `);
+      const suffix = required ? '' : pc.dim(' [optional]');
+      process.stdout.write(`  ${label}${suffix}: `);
       (stdin as NodeJS.ReadStream).setRawMode(true);
       stdin.resume();
       let value = '';
       const onData = (chunk: Buffer) => {
         const char = chunk.toString();
         if (char === '\r' || char === '\n') {
+          // A required secret can't be skipped — re-prompt on an empty Enter.
+          if (required && value === '') {
+            process.stdout.write(`\n${pc.yellow('  Required — please enter a value.')}\n`);
+            process.stdout.write(`  ${label}: `);
+            return;
+          }
           (stdin as NodeJS.ReadStream).setRawMode(false);
           stdin.pause();
           stdin.removeListener('data', onData);
@@ -525,6 +551,31 @@ export function askPassword(label: string): Promise<string> {
       resolve(ask(label, '', false));
     }
   });
+}
+
+/** Prompt for a REQUIRED free-text value, re-prompting until something is entered. */
+async function askRequiredText(label: string): Promise<string> {
+  for (;;) {
+    const v = (await ask(label, '', false)).trim();
+    if (v) return v;
+    console.log(pc.yellow('  Required — please enter a value.'));
+  }
+}
+
+/**
+ * Ask which Shopify auth model to configure, so the credential prompts that follow are
+ * unambiguous (a static Admin API token vs a Client-Credentials app). Defaults to static.
+ */
+async function askShopifyAuthMethod(): Promise<'static' | 'client-credentials'> {
+  console.log(`  ${pc.bold('Auth method')}`);
+  console.log(`    ${pc.bold('1)')} Static Admin API access token   ${pc.dim('— a Custom App shpat_… token')}`);
+  console.log(`    ${pc.bold('2)')} Client-Credentials app          ${pc.dim('— client id + secret, exchanged for a token')}`);
+  for (;;) {
+    const a = (await ask('Choose', '1')).trim();
+    if (a === '1') return 'static';
+    if (a === '2') return 'client-credentials';
+    console.log(pc.yellow('  Enter 1 or 2.'));
+  }
 }
 
 // ---------------------------------------------------------------------------
