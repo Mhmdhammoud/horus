@@ -164,6 +164,32 @@ const CONNECTOR_CHECKS: ConnectorRegistry = {
           };
     },
   },
+  // Shopify (Admin GraphQL — application state evidence)
+  shopify: {
+    label: 'Shopify',
+    absentNext: 'add connectors.shopify to an environment for Shopify Admin state evidence',
+    check: (s, ctx) => {
+      const secretSet = s.secret || process.env[s.secretEnv ?? 'SHOPIFY_SECRET'];
+      if (!secretSet) {
+        return {
+          label: 'Shopify',
+          status: 'warn',
+          detail: `${ctx} — client secret not set`,
+          next: 'set shopify.secret or shopify.secretEnv (default SHOPIFY_SECRET), or run horus connect shopify',
+        };
+      }
+      const queryCount = s.queries?.length ?? 0;
+      const queryNote =
+        queryCount > 0
+          ? ` (${queryCount} default quer${queryCount === 1 ? 'y' : 'ies'})`
+          : ' (no default queries — supply --shopify-query at investigate time)';
+      return {
+        label: 'Shopify',
+        status: 'pass',
+        detail: `${ctx} — ${s.store}${queryNote} [runtime ingestion pending]`,
+      };
+    },
+  },
   // Redis / BullMQ (queue + cache/state)
   redis: {
     label: 'Redis',

@@ -197,7 +197,7 @@ Examples:
   program
     .command('connect <type>')
     .description(
-      'Add or update a connector (elasticsearch / mongodb / postgres / sentry / axiom / grafana / redis / ai) in .horus/config.json',
+      'Add or update a connector (elasticsearch / mongodb / postgres / sentry / axiom / shopify / grafana / redis / ai) in .horus/config.json',
     )
     .option('--env <name>', 'target environment (default: first environment in config)')
     .option('--provider <name>', 'AI provider for `connect ai` (anthropic / claude / codex / gemini)')
@@ -217,6 +217,10 @@ Examples:
     .option('--project <slug>', 'Sentry project slug (required for sentry)')
     .option('--token <token>', 'Axiom API token (required for axiom)')
     .option('--dataset <name>', 'Axiom dataset to query (required for axiom)')
+    .option('--store <name>', 'Shopify store subdomain, e.g. my-store — .myshopify.com is added automatically (required for shopify)')
+    .option('--api-version <ver>', 'Shopify Admin API version, e.g. 2025-10 (shopify; defaults to a recent version)')
+    .option('--access-id <id>', 'Shopify app client_id — omit for a static Admin API token (shopify)')
+    .option('--secret <secret>', 'Shopify client_secret, or a static Admin API access token — encrypted at rest (required for shopify)')
     .option('--dashboard <uid>', 'default dashboard uid (grafana)')
     .option(
       '--db <spec>',
@@ -249,6 +253,10 @@ Examples:
           project?: string;
           token?: string;
           dataset?: string;
+          store?: string;
+          apiVersion?: string;
+          accessId?: string;
+          secret?: string;
           dashboard?: string;
           db?: string[];
           bullmqPrefix?: string;
@@ -275,6 +283,10 @@ Examples:
           project: opts.project,
           token: opts.token,
           dataset: opts.dataset,
+          store: opts.store,
+          apiVersion: opts.apiVersion,
+          accessId: opts.accessId,
+          secret: opts.secret,
           dashboard: opts.dashboard,
           db: opts.db,
           bullmqPrefix: opts.bullmqPrefix,
@@ -761,6 +773,16 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
     .option('--scope <path>', 'resolve the seed only from symbols under this path (e.g. packages/core) — useful in monorepos')
     .option('--since <ref>', 'git ref/range for change-impact (e.g. HEAD~5)')
     .option('--logs-since <dur>', 'runtime-log window as a duration (e.g. 30d, 24h); independent of --since')
+    .option(
+      '--shopify-query <q>',
+      'Shopify Admin GraphQL query to run as evidence: @file, - (stdin), or a raw string; repeatable',
+      (val: string, acc: string[]) => {
+        acc.push(val);
+        return acc;
+      },
+      [] as string[],
+    )
+    .option('--shopify-variables <json>', 'variables (@file or inline JSON object) applied to every --shopify-query')
     .option('--timeout <sec>', 'overall investigation deadline in seconds (default 120)')
     .option(
       '--service <name>',
@@ -782,6 +804,8 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
           scope?: string;
           since?: string;
           logsSince?: string;
+          shopifyQuery?: string[];
+          shopifyVariables?: string;
           timeout?: string;
           service?: string;
           json?: boolean;
@@ -799,6 +823,8 @@ score, a confidence, or a verdict. It ships OFF; once trained, enable with:
           scope: opts.scope,
           since: opts.since,
           logsSince: opts.logsSince,
+          ...(opts.shopifyQuery !== undefined ? { shopifyQuery: opts.shopifyQuery } : {}),
+          ...(opts.shopifyVariables !== undefined ? { shopifyVariables: opts.shopifyVariables } : {}),
           timeout: opts.timeout,
           service: opts.service,
           json: opts.json,

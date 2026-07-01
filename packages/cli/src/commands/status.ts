@@ -18,10 +18,12 @@ import {
   postgresForEnv,
   sentryForEnv,
   axiomForEnv,
+  shopifyForEnv,
   redisServerStatus,
   type StateProvider,
   type SentryProvider,
   type AxiomProvider,
+  type ShopifyProvider,
   type RedisServerStatus,
 } from '@horus/connectors';
 import { checkDatabase } from '@horus/db';
@@ -47,6 +49,7 @@ async function checkEnv(
     postgresFactory?: (renv: ResolvedEnvironment) => StateProvider | null;
     sentryFactory?: (renv: ResolvedEnvironment) => SentryProvider | null;
     axiomFactory?: (renv: ResolvedEnvironment) => AxiomProvider | null;
+    shopifyFactory?: (renv: ResolvedEnvironment) => ShopifyProvider | null;
     redisStatus?: (renv: ResolvedEnvironment) => Promise<RedisServerStatus | null>;
   },
 ): Promise<boolean> {
@@ -283,6 +286,34 @@ async function checkEnv(
   } else {
     console.log(
       `    ${mark('pending')} ${pc.bold('Axiom')}           ${pc.dim('not configured')}`,
+    );
+  }
+
+  // Shopify (Admin GraphQL) — probe auth reachability (Client-Credentials grant); no query.
+  const shopifyCfg = renv.connectors.shopify;
+  if (shopifyCfg) {
+    const label = shopifyCfg.store ?? '(no store)';
+    const shopify = (deps?.shopifyFactory ?? shopifyForEnv)(renv);
+    if (shopify) {
+      const h = await shopify.health();
+      if (!h.ok) {
+        console.log(
+          `    ${mark(false)} ${pc.bold('Shopify')}        ${pc.dim(`unreachable · ${label}`)}`,
+        );
+        allOk = false;
+      } else {
+        console.log(
+          `    ${mark(true)} ${pc.bold('Shopify')}         ${pc.dim(`reachable · ${label}`)}`,
+        );
+      }
+    } else {
+      console.log(
+        `    ${mark(false)} ${pc.bold('Shopify')}        ${pc.dim(`configured (${label}) but client secret not set`)}`,
+      );
+    }
+  } else {
+    console.log(
+      `    ${mark('pending')} ${pc.bold('Shopify')}         ${pc.dim('not configured')}`,
     );
   }
 

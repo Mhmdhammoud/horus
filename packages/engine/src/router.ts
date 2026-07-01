@@ -12,7 +12,7 @@
  *     `what-changed`, `owner`, `logs`, `metrics`, `queues`) or a real MCP knowledge tool
  *     (`search_project_knowledge`). There is NO `connect tracing`/`connect source` — those
  *     connectors do not exist in `connect.ts` (SUPPORTED = elasticsearch/mongodb/postgres/
- *     sentry/grafana/redis), so no rule emits them; the `traces` gap carries no `routeHint`.
+ *     sentry/axiom/shopify/grafana/redis), so no rule emits them; the `traces` gap carries no `routeHint`.
  *   - Deterministic. Each rule fires on a known boolean/enum condition; same input ⇒ same
  *     output, byte-stable for snapshots. No probabilistic ranking, no generated prose.
  */

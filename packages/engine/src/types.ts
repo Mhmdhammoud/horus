@@ -3,7 +3,7 @@
  * No AI/LLM yet — every field is computed from typed provider evidence.
  */
 
-import type { Evidence, Symbol, Flow, EvidenceSubject } from '@horus/core';
+import type { Evidence, Symbol, Flow, EvidenceSubject, ShopifyQuerySpec } from '@horus/core';
 import type { DurationDimensionOptions } from '@horus/connectors';
 import type { Timeline } from './timeline.js';
 import type { CorrelationResult } from './correlate.js';
@@ -57,6 +57,15 @@ export interface InvestigationInput {
    * default (a `Completed …:REGION ~2m10s` shape). Graceful: a null/empty result adds nothing.
    */
   durationDimension?: DurationDimensionOptions;
+  /**
+   * Shopify Admin GraphQL queries to run as evidence THIS investigation, supplied by the
+   * caller (e.g. `horus investigate --shopify-query @orders.graphql`). Deterministic input,
+   * the same trust tier as `hint` — executed verbatim by the Shopify connector, never built
+   * in engine/connector code. When omitted, the connector falls back to its config-declared
+   * default queries (so `horus watch`, which passes no flag, still collects). Empty/absent
+   * ⇒ Shopify contributes nothing.
+   */
+  shopifyQueries?: ShopifyQuerySpec[];
 }
 
 /**

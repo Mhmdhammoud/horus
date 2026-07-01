@@ -203,6 +203,53 @@ const connectorsSchema = z
         urlEnv: z.string().optional(),
       })
       .optional(),
+    /**
+     * Shopify Admin connector — a first-class evidence source for the investigation
+     * engine. The connector embeds NO queries: the GraphQL document is supplied by the
+     * caller at investigation time (`--shopify-query`) and/or declared here as named
+     * default queries that `horus watch` (which has no agent to pass a flag) runs each
+     * cycle. Auth is a read-only Client-Credentials grant: `accessId` is the app
+     * `client_id` (readable), `secret` is the `client_secret` (encrypted at rest).
+     */
+    shopify: z
+      .object({
+        /** Store subdomain, e.g. "my-store" — `.myshopify.com` is added automatically (a full domain is also accepted). */
+        store: z.string(),
+        /** Admin API version segment, e.g. "2025-10". Defaults when omitted. */
+        apiVersion: z.string().optional(),
+        /** App client_id (Client-Credentials grant). Takes priority over accessIdEnv. */
+        accessId: z.string().optional(),
+        /** Env var holding the client_id. Defaults to "SHOPIFY_ACCESS_ID". */
+        accessIdEnv: z.string().optional(),
+        /** App client_secret (encrypted at rest). Takes priority over secretEnv. */
+        secret: z.string().optional(),
+        /** Env var holding the client_secret. Defaults to "SHOPIFY_SECRET". */
+        secretEnv: z.string().optional(),
+        /**
+         * Default named GraphQL queries run when no `--shopify-query` is supplied at
+         * invocation (notably by `horus watch`). Each result set becomes Evidence. The
+         * query text is authored by the operator, executed verbatim — never built in code.
+         */
+        queries: z
+          .array(
+            z.object({
+              /** Label for provenance + the evidence title. */
+              name: z.string(),
+              /** Verbatim Admin GraphQL query document (read-only). */
+              query: z.string(),
+              /** Static variables merged under any engine-bound window variables. */
+              variables: z.record(z.unknown()).optional(),
+              /** EvidenceKind to map results onto (constrained to the existing union). */
+              kind: z.enum(['state', 'log', 'metric']).default('state'),
+              /** Base relevance seed (0–1) before hint-term weighting. */
+              relevance: z.number().min(0).max(1).optional(),
+              /** Inject the investigation window as `$from`/`$to` variables when declared. */
+              bindWindow: z.boolean().optional(),
+            }),
+          )
+          .optional(),
+      })
+      .optional(),
     grafana: z
       .object({
         dashboard: z.string().optional(),
@@ -357,6 +404,7 @@ export const CONNECTOR_SECRET_FIELDS: Record<string, readonly string[]> = {
   axiom: ['token'],
   grafana: ['username', 'password'],
   redis: ['url'],
+  shopify: ['secret'],
 };
 
 /** True if `field` is a secret for `connector` (see CONNECTOR_SECRET_FIELDS). */
@@ -422,6 +470,26 @@ export interface ResolvedElasticsearchFields {
   eventCodeKeyword?: boolean;
 }
 
+/**
+ * A single Shopify Admin GraphQL query to run as evidence. The `query` text is authored
+ * by the operator (config) or supplied by the caller at investigation time — never built
+ * in connector code. Shared by resolved config, `InvestigationInput`, and the provider.
+ */
+export interface ShopifyQuerySpec {
+  /** Label for provenance + the evidence title. */
+  name: string;
+  /** Verbatim Admin GraphQL query document (read-only). */
+  query: string;
+  /** Static variables, merged under any engine-bound window variables. */
+  variables?: Record<string, unknown>;
+  /** EvidenceKind results map onto (a member of the existing evidence union). */
+  kind: 'state' | 'log' | 'metric';
+  /** Base relevance seed (0–1) before hint-term weighting. */
+  relevance?: number;
+  /** Inject the investigation window as `$from`/`$to` variables when the query declares them. */
+  bindWindow?: boolean;
+}
+
 export interface ResolvedConnectors {
   elasticsearch?: {
     url: string;
@@ -440,6 +508,13 @@ export interface ResolvedConnectors {
   postgres?: { url?: string; schema?: string; database?: string; tables: string[] };
   sentry?: { authToken?: string; org: string; project: string; url?: string };
   axiom?: { token?: string; dataset: string; url?: string };
+  shopify?: {
+    store: string;
+    apiVersion?: string;
+    accessId?: string;
+    secret?: string;
+    queries?: ShopifyQuerySpec[];
+  };
   grafana?: {
     url?: string;
     username?: string;
@@ -642,6 +717,19 @@ export function resolveEnvironment(
       dataset: a.dataset,
       ...(token !== undefined ? { token } : {}),
       ...(url !== undefined ? { url } : {}),
+    };
+  }
+
+  if (c.shopify !== undefined) {
+    const sh = c.shopify;
+    const accessId = sh.accessId ?? process.env[sh.accessIdEnv ?? 'SHOPIFY_ACCESS_ID'];
+    const secret = sh.secret ?? process.env[sh.secretEnv ?? 'SHOPIFY_SECRET'];
+    resolved.shopify = {
+      store: sh.store,
+      ...(sh.apiVersion !== undefined ? { apiVersion: sh.apiVersion } : {}),
+      ...(accessId !== undefined ? { accessId } : {}),
+      ...(secret !== undefined ? { secret } : {}),
+      ...(sh.queries !== undefined ? { queries: sh.queries } : {}),
     };
   }
 

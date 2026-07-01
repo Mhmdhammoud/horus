@@ -40,6 +40,8 @@ import { SentryClient } from './sentry/client.js';
 import { SentryProvider } from './sentry/provider.js';
 import { AxiomClient } from './axiom/client.js';
 import { AxiomProvider } from './axiom/provider.js';
+import { ShopifyAdminClient } from './shopify/client.js';
+import { ShopifyProvider } from './shopify/provider.js';
 import { BullMQRedisClient } from './bullmq/client.js';
 import { BullMQRuntimeProvider } from './bullmq/provider.js';
 import type { QueueRuntimeProvider } from './bullmq/provider.js';
@@ -280,6 +282,31 @@ export function axiomForEnv(renv: ResolvedEnvironment): AxiomProvider | null {
       ...(a.url !== undefined ? { baseUrl: a.url } : {}),
     }),
     { dataset: a.dataset },
+  );
+}
+
+/**
+ * Return a Shopify Admin evidence `ShopifyProvider` for the given resolved environment, or
+ * `null` when no Shopify connector is configured (missing store or secret — e.g. its
+ * `client_secret` env var is unset). Read-only; runs caller-supplied / config-declared
+ * GraphQL queries verbatim and surfaces each result as `state` (or `log`/`metric`) evidence.
+ * A provider is returned whenever AUTH is present — queries may be supplied per-investigation
+ * (`--shopify-query`), so the absence of config `queries` does NOT make the connector absent.
+ */
+export function shopifyForEnv(renv: ResolvedEnvironment): ShopifyProvider | null {
+  const s = renv.connectors.shopify;
+  if (!s || !s.store || !s.secret) return null;
+  return new ShopifyProvider(
+    new ShopifyAdminClient({
+      store: s.store,
+      secret: s.secret,
+      ...(s.accessId !== undefined ? { accessId: s.accessId } : {}),
+      ...(s.apiVersion !== undefined ? { apiVersion: s.apiVersion } : {}),
+    }),
+    {
+      store: s.store,
+      ...(s.queries !== undefined ? { queries: s.queries } : {}),
+    },
   );
 }
 
