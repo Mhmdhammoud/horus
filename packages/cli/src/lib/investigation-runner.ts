@@ -15,7 +15,7 @@
  */
 
 import pc from 'picocolors';
-import type { ResolvedEnvironment } from '@horus/core';
+import type { ResolvedEnvironment, ShopifyQuerySpec } from '@horus/core';
 import {
   codeForEnv,
   codeForUrl,
@@ -24,6 +24,7 @@ import {
   postgresForEnv,
   sentryForEnv,
   axiomForEnv,
+  shopifyForEnv,
   queueForEnv,
   redisStateForEnv,
   metricsForEnv,
@@ -33,6 +34,7 @@ import type {
   StateProvider,
   SentryProvider,
   AxiomProvider,
+  ShopifyProvider,
   QueueRuntimeProvider,
   RedisStateRuntimeProvider,
   MetricsProvider,
@@ -64,6 +66,7 @@ export interface InvestigationContext {
   postgres: StateProvider | null;
   sentry: SentryProvider | null;
   axiom: AxiomProvider | null;
+  shopify: ShopifyProvider | null;
   queue: QueueRuntimeProvider | null;
   redisState: RedisStateRuntimeProvider | null;
   metrics: MetricsProvider | null;
@@ -137,6 +140,7 @@ export async function buildInvestigationContext(
   const postgres = postgresForEnv(renv);
   const sentry = sentryForEnv(renv);
   const axiom = axiomForEnv(renv);
+  const shopify = shopifyForEnv(renv);
   const queue = queueForEnv(renv);
   const redisState = redisStateForEnv(renv);
   const metrics = metricsForEnv(renv);
@@ -158,6 +162,7 @@ export async function buildInvestigationContext(
     postgres,
     sentry,
     axiom,
+    shopify,
     queue,
     redisState,
     metrics,
@@ -181,6 +186,12 @@ export interface RunInvestigationInput {
   service?: string;
   /** Path scope for seed resolution (e.g. packages/core) — HOR-356. */
   scope?: string;
+  /**
+   * Shopify Admin GraphQL queries supplied at invocation (e.g. `--shopify-query`). Executed
+   * verbatim as evidence this investigation; when omitted the Shopify connector falls back to
+   * its config-declared default queries (so `horus watch` still collects).
+   */
+  shopifyQueries?: ShopifyQuerySpec[];
 }
 
 /**
@@ -225,6 +236,9 @@ export async function runOneInvestigation(
       ...((input.service ?? ctx.service) !== undefined
         ? { service: input.service ?? ctx.service }
         : {}),
+      // Invocation-time Shopify queries override the connector's config defaults; when
+      // omitted the provider falls back to `connectors.shopify.queries` (e.g. under watch).
+      ...(input.shopifyQueries !== undefined ? { shopifyQueries: input.shopifyQueries } : {}),
     },
     {
       code: ctx.code,
@@ -237,6 +251,7 @@ export async function runOneInvestigation(
       postgres: ctx.postgres,
       sentry: ctx.sentry,
       axiom: ctx.axiom,
+      shopify: ctx.shopify,
       queue: ctx.queue,
       redisState: ctx.redisState,
       metrics: ctx.metrics,
@@ -248,6 +263,7 @@ export async function runOneInvestigation(
         postgres: !!renv.connectors.postgres?.url,
         sentry: !!renv.connectors.sentry,
         axiom: !!renv.connectors.axiom,
+        shopify: !!renv.connectors.shopify,
         redis: !!renv.connectors.redis?.url,
         queue: !!ctx.queue,
       },

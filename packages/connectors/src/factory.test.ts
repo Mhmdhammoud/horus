@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { logsForEnv, memoryIndexForEnv, axiomForEnv } from './factory.js';
+import { logsForEnv, memoryIndexForEnv, axiomForEnv, shopifyForEnv } from './factory.js';
 import { SourceMemoryVectorIndex } from './source/index.js';
 import type { MemoryVectorIndexLike } from './source/index.js';
 import type { ResolvedEnvironment } from '@horus/core';
@@ -166,6 +166,44 @@ describe('axiomForEnv', () => {
     expect(provider).not.toBeNull();
     expect(provider?.id).toBe('axiom');
     expect(provider?.kind).toBe('logs');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shopifyForEnv — null unless store + secret are present (queries optional)
+// ---------------------------------------------------------------------------
+
+describe('shopifyForEnv', () => {
+  function envWithShopify(
+    shopify?: NonNullable<ResolvedEnvironment['connectors']['shopify']>,
+  ): ResolvedEnvironment {
+    return {
+      project: 'test',
+      env: 'test',
+      readOnly: true,
+      repositories: [{ name: 'repo', path: '/repo' }],
+      path: '/repo',
+      connectors: shopify !== undefined ? { shopify } : {},
+    };
+  }
+
+  it('returns null when shopify is not configured', () => {
+    expect(shopifyForEnv(envWithShopify())).toBeNull();
+  });
+
+  it('returns null when the secret is missing', () => {
+    expect(shopifyForEnv(envWithShopify({ store: 'acme.myshopify.com' }))).toBeNull();
+  });
+
+  it('returns null when the store is missing', () => {
+    expect(shopifyForEnv(envWithShopify({ store: '', secret: 's' }))).toBeNull();
+  });
+
+  it('returns a state provider when store + secret are present (queries optional)', () => {
+    const provider = shopifyForEnv(envWithShopify({ store: 'acme.myshopify.com', secret: 's' }));
+    expect(provider).not.toBeNull();
+    expect(provider?.id).toBe('shopify');
+    expect(provider?.kind).toBe('state');
   });
 });
 

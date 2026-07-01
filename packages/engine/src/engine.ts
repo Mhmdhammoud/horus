@@ -36,6 +36,7 @@ import type {
   RedisStateAnalysis,
   SentryProvider,
   AxiomProvider,
+  ShopifyProvider,
   DurationDimensionOptions,
   DurationByDimension,
 } from '@horus/connectors';
@@ -125,6 +126,14 @@ export interface EngineDeps {
    * negative evidence, not a gap; one failing provider never aborts the investigation.
    */
   axiom?: AxiomProvider | null;
+  /**
+   * Optional Shopify Admin evidence provider — runs caller-supplied (`input.shopifyQueries`)
+   * or config-declared GraphQL queries verbatim and folds each result as `state` (or
+   * `log`/`metric`) evidence. Present whenever auth is configured; it collects only when
+   * queries are supplied. A configured-but-empty Shopify is negative evidence, not a gap;
+   * one failing query never aborts the investigation.
+   */
+  shopify?: ShopifyProvider | null;
   /** Optional BullMQ queue runtime provider — folds queue depth/failure evidence. */
   queue?: QueueRuntimeProvider | null;
   /** Optional Redis state provider — folds cache/state/locks/rate-limit evidence (HOR-201). */
@@ -2928,6 +2937,43 @@ export async function investigate(
     }
   }
 
+  // e0e2. SHOPIFY EVIDENCE — run the caller-supplied (`input.shopifyQueries`) or, as a
+  // fallback, config-declared Shopify Admin GraphQL queries verbatim and fold each result as
+  // `state` (or `log`/`metric`) evidence. The engine binds only the investigation window into
+  // `$from`/`$to`; the query text is never built here. hint + seed terms weight relevance,
+  // exactly like the log/Sentry/Axiom blocks. Best-effort: a failing query contributes nothing
+  // and never aborts the investigation.
+  let shopifyCollected = false;
+  if (deps.shopify) {
+    try {
+      const from = logWindowFrom(input.logsSince ?? input.since);
+      const to = new Date().toISOString();
+      const shopifySeedBase = top ? top.filePath.split('/').pop() ?? '' : '';
+      const shopifyTerms = top
+        ? [...new Set([...tokenize(hint), ...tokenize(top.name), ...tokenize(shopifySeedBase)])]
+        : [...new Set(tokenize(hint))];
+
+      const records = await deps.shopify.collect({
+        from,
+        to,
+        hintTerms: shopifyTerms,
+        ...(input.shopifyQueries !== undefined ? { queries: input.shopifyQueries } : {}),
+      });
+      shopifyCollected = true;
+
+      const collectedAt = new Date().toISOString();
+      for (const ev of deps.shopify.toEvidence(records, shopifyTerms, collectedAt)) {
+        // Re-stamp the per-query id with a UUID so it is unique across investigations in the
+        // DB; the provider's per-query provenance (`shopify <store> <name>`) is preserved.
+        ev.id = globalThis.crypto.randomUUID();
+        evidence.push(ev);
+      }
+    } catch {
+      // Shopify failure must never break the investigation — continue without it.
+      shopifyCollected = false;
+    }
+  }
+
   // e0f. NORMALIZE — fill in cross-provider priority + category (and, when the
   // scope is known, the subject) before any downstream step reads them. Idempotent;
   // safe to call even if a provider failed and contributed zero items. Subject is
@@ -3962,6 +4008,10 @@ export async function investigate(
         // collection ran (distinguishes "no matching rows" from "collection failed").
         axiom: deps.axiom != null,
         axiomCollected,
+        // Shopify is configured iff a provider was built (auth present); shopifyCollected
+        // tracks whether its query collection ran (vs "no queries supplied / failed").
+        shopify: deps.shopify != null,
+        shopifyCollected,
         metricsCollected,
         metricsFailureReason,
         logsCollected,
@@ -3976,6 +4026,8 @@ export async function investigate(
         sentryCollected,
         axiom: deps.axiom != null,
         axiomCollected,
+        shopify: deps.shopify != null,
+        shopifyCollected,
         grafana: deps.metrics != null,
         queue: deps.queue != null,
         metricsCollected,

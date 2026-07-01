@@ -36,6 +36,16 @@ export default {
         // elasticsearch: { indexPattern: '${name}-prod-*' },
         // mongodb: { database: '${name}' },
         // grafana: {},
+        // shopify: {
+        //   store: '${name}',   // subdomain only — .myshopify.com is added automatically
+        //   apiVersion: '2025-10',
+        //   // accessId + secret set by \`horus connect shopify\` (secret encrypted at rest).
+        //   // Default queries run by \`horus watch\`; \`horus investigate --shopify-query\` overrides.
+        //   queries: [
+        //     { name: 'recent-orders', kind: 'state', bindWindow: true,
+        //       query: 'query($from:DateTime){ orders(first:20, query:"updated_at:>=$from"){ edges{ node{ id name displayFinancialStatus } } } }' },
+        //   ],
+        // },
       },
     }],
   }],

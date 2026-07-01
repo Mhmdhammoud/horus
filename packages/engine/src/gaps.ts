@@ -28,6 +28,19 @@ export interface ConnectorFlags {
    * Axiom is negative evidence, not a gap.
    */
   axiom?: boolean;
+  /**
+   * True when a Shopify Admin connector is configured (auth present) for the env. Shopify
+   * evidence is application `state` (orders/inventory/fulfillment), driven by queries the
+   * caller supplies (`--shopify-query`) or config declares. A configured Shopify with no
+   * queries / that returns nothing is negative evidence, not a gap.
+   */
+  shopify?: boolean;
+  /**
+   * True when Shopify query collection ran to completion (even with zero queries/results).
+   * False/absent + shopify:true means collection was attempted but failed. Lets the gap
+   * detector distinguish "no queries supplied / empty" from "collection failed".
+   */
+  shopifyCollected?: boolean;
   redis?: boolean;
   /**
    * True when a BullMQ/queues runtime connector is configured for the env — i.e. a

@@ -219,6 +219,7 @@ export async function runReadiness(opts?: {
     let anyPostgres = false;
     let anySentry = false;
     let anyAxiom = false;
+    let anyShopify = false;
     let anyRedis = false;
 
     for (const project of globalConfig.projects) {
@@ -233,6 +234,7 @@ export async function runReadiness(opts?: {
         if (c.postgres) anyPostgres = true;
         if (c.sentry) anySentry = true;
         if (c.axiom) anyAxiom = true;
+        if (c.shopify) anyShopify = true;
         if (c.redis) anyRedis = true;
       }
     }
@@ -318,6 +320,18 @@ export async function runReadiness(opts?: {
             blocking: false,
             detail: 'not configured — no runtime log evidence',
             next: 'run `horus connect axiom`',
+          },
+    );
+
+    checks.push(
+      anyShopify
+        ? { label: 'Shopify', status: 'pass', blocking: false, detail: 'configured' }
+        : {
+            label: 'Shopify',
+            status: 'warn',
+            blocking: false,
+            detail: 'not configured — no Shopify Admin state evidence',
+            next: 'run `horus connect shopify`',
           },
     );
 

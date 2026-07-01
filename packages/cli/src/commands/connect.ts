@@ -38,6 +38,7 @@ import {
   PostgresStateClient,
   SentryClient,
   AxiomClient,
+  ShopifyAdminClient,
   GrafanaClient,
   RedisScanClient,
   probeRedisDatabases,
@@ -97,6 +98,14 @@ export interface ConnectOpts {
   token?: string;
   /** Axiom dataset to query. */
   dataset?: string;
+  /** Shopify store domain (e.g. my-store.myshopify.com). */
+  store?: string;
+  /** Shopify Admin API version (e.g. 2025-10). */
+  apiVersion?: string;
+  /** Shopify app client_id (Client-Credentials grant). */
+  accessId?: string;
+  /** Shopify app client_secret (encrypted at rest). */
+  secret?: string;
   dashboard?: string;
   /** Multiple dashboard UIDs selected during interactive discovery. */
   dashboardUids?: string[];
@@ -119,7 +128,7 @@ export interface ConnectOpts {
   cwd?: string;
 }
 
-const SUPPORTED = ['elasticsearch', 'mongodb', 'postgres', 'sentry', 'axiom', 'grafana', 'redis'] as const;
+const SUPPORTED = ['elasticsearch', 'mongodb', 'postgres', 'sentry', 'axiom', 'shopify', 'grafana', 'redis'] as const;
 type ConnectorType = (typeof SUPPORTED)[number];
 
 export async function runConnect(type: string, opts: ConnectOpts): Promise<number> {
@@ -166,6 +175,9 @@ export async function runConnect(type: string, opts: ConnectOpts): Promise<numbe
         break;
       case 'axiom':
         patch = buildAxiomPatch(filled);
+        break;
+      case 'shopify':
+        patch = buildShopifyPatch(filled);
         break;
       case 'grafana':
         patch = buildGrafanaPatch(filled);
@@ -360,6 +372,21 @@ async function fillInteractive(
       break;
     }
 
+    case 'shopify':
+      // Subdomain only — Horus adds `.myshopify.com` internally so users can't fat-finger it.
+      filled.store = filled.store ?? (await ask('Store name (subdomain only, e.g. 946011-c0)', 'my-store'));
+      filled.apiVersion = filled.apiVersion ?? (await ask('API version', '2025-10'));
+      // Access id (client_id) is OPTIONAL. Provide it for a Client-Credentials app (Horus
+      // exchanges id+secret for a token); leave it blank to use a static Admin API access
+      // token, in which case the secret IS that token.
+      filled.accessId =
+        filled.accessId ??
+        ((await ask('Access id (client_id) — leave blank for a static Admin API token', '', false)) || undefined);
+      filled.secret =
+        filled.secret ??
+        ((await askPassword('Secret — client_secret, or the static Admin API access token')) || undefined);
+      break;
+
     case 'grafana':
       filled.url = filled.url ?? (await ask('URL', 'https://grafana.example.com'));
       filled.username =
@@ -430,6 +457,9 @@ function missingRequired(type: ConnectorType, opts: ConnectOpts): boolean {
       return !opts.org || !opts.project || !opts.authToken;
     case 'axiom':
       return !opts.dataset || !opts.token;
+    case 'shopify':
+      // accessId is optional (blank ⇒ static token); apiVersion defaults in the client.
+      return !opts.store || !opts.secret;
     case 'grafana':
       return !opts.url;
     case 'redis':
@@ -561,6 +591,16 @@ function buildAxiomPatch(opts: ConnectOpts): Record<string, unknown> {
   if (opts.token) patch['token'] = opts.token;
   // Only persist a non-default base URL (EU region / self-hosted).
   if (opts.url && opts.url.replace(/\/$/, '') !== 'https://api.axiom.co') patch['url'] = opts.url;
+  return patch;
+}
+
+function buildShopifyPatch(opts: ConnectOpts): Record<string, unknown> {
+  if (!opts.store) throw new Error('Store is required for shopify');
+  const patch: Record<string, unknown> = { store: opts.store };
+  if (opts.apiVersion) patch['apiVersion'] = opts.apiVersion;
+  if (opts.accessId) patch['accessId'] = opts.accessId;
+  // `secret` is routed to encrypted storage by CONNECTOR_SECRET_FIELDS.shopify.
+  if (opts.secret) patch['secret'] = opts.secret;
   return patch;
 }
 
@@ -743,6 +783,19 @@ async function probe(type: ConnectorType, opts: ConnectOpts): Promise<ProbeResul
         });
         return client.health();
       }
+      case 'shopify': {
+        if (!opts.store || !opts.secret) {
+          return { ok: true, detail: 'skipped (missing store/secret)' };
+        }
+        // Auth liveness — runs the Client-Credentials grant; embeds no GraphQL query.
+        const client = new ShopifyAdminClient({
+          store: opts.store,
+          secret: opts.secret,
+          ...(opts.accessId ? { accessId: opts.accessId } : {}),
+          ...(opts.apiVersion ? { apiVersion: opts.apiVersion } : {}),
+        });
+        return client.health();
+      }
       case 'grafana': {
         if (!opts.url) return { ok: true, detail: 'skipped (no URL)' };
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -823,6 +876,11 @@ function printSummary(type: ConnectorType, opts: ConnectOpts): void {
   if (opts.org) lines.push(`  org:            ${opts.org}`);
   if (opts.project) lines.push(`  project:        ${opts.project}`);
   if (opts.dataset) lines.push(`  dataset:        ${opts.dataset}`);
+  if (opts.store) lines.push(`  store:          ${opts.store}`);
+  if (opts.apiVersion) lines.push(`  api-version:    ${opts.apiVersion}`);
+  if (opts.accessId) lines.push(`  access-id:      ${opts.accessId}`);
+  if (opts.secret)
+    lines.push(`  secret:         ${'•'.repeat(Math.min(opts.secret.length, 8))}`);
   if (opts.authToken)
     lines.push(`  auth-token:     ${'•'.repeat(Math.min(opts.authToken.length, 8))}`);
   if (opts.token)

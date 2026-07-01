@@ -1,5 +1,8 @@
 import pc from 'picocolors';
+import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import { loadConfig, resolveEnvironment, resolveAiSettings, redactContent, redactOrDrop } from '@horus/core';
+import type { ShopifyQuerySpec } from '@horus/core';
 import { updateInvestigationReport } from '@horus/db';
 import { renderReport, reportToJSON, reportToMarkdown } from '@horus/engine';
 import type { InvestigationReport, StoredAIJudgment } from '@horus/engine';
@@ -22,6 +25,59 @@ import {
 
 // Re-exported for back-compat: existing tests import `withDeadline` from this module.
 export { withDeadline };
+
+/**
+ * Resolve `--shopify-query` values into query specs supplied to the investigation. Each value
+ * is `@path` (read the file), `-` (read stdin), or a raw GraphQL string. `--shopify-variables`
+ * (`@file` or inline JSON object) applies to every query. `bindWindow` auto-enables when a
+ * query references `$from`/`$to`, so the engine injects the investigation window. The query
+ * text is executed verbatim — never rewritten. Throws on an unreadable file / bad JSON.
+ */
+export function resolveShopifyQueries(
+  values: string[] | undefined,
+  variablesRaw: string | undefined,
+): ShopifyQuerySpec[] {
+  if (values === undefined || values.length === 0) return [];
+  const variables = parseShopifyVariables(variablesRaw);
+  let stdinCache: string | null = null;
+  return values.map((raw, i) => {
+    const value = raw.trim();
+    let query: string;
+    let name = `q${i + 1}`;
+    if (value === '-') {
+      stdinCache ??= readFileSync(0, 'utf8');
+      query = stdinCache;
+      name = 'stdin';
+    } else if (value.startsWith('@')) {
+      const path = value.slice(1);
+      query = readFileSync(path, 'utf8');
+      name = basename(path).replace(/\.[^.]+$/, '') || name;
+    } else {
+      query = raw;
+    }
+    const spec: ShopifyQuerySpec = { name, query, kind: 'state' };
+    if (variables !== undefined) spec.variables = variables;
+    if (/\$(from|to)\b/.test(query)) spec.bindWindow = true;
+    return spec;
+  });
+}
+
+/** Parse `--shopify-variables` (`@file` or inline JSON) into a variables object, or undefined. */
+function parseShopifyVariables(raw: string | undefined): Record<string, unknown> | undefined {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const trimmed = raw.trim();
+  const text = trimmed.startsWith('@') ? readFileSync(trimmed.slice(1), 'utf8') : raw;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error('--shopify-variables is not valid JSON');
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('--shopify-variables must be a JSON object');
+  }
+  return parsed as Record<string, unknown>;
+}
 
 function extractEvidenceExcerpt(e: Evidence): string | undefined {
   if (!e.payload || typeof e.payload !== 'object') return undefined;
@@ -169,6 +225,10 @@ export async function runInvestigate(
     since?: string;
     /** Widen the runtime-log window independently of `--since` (a duration like 30d/24h). */
     logsSince?: string;
+    /** Shopify Admin GraphQL query/queries to run as evidence: `@file`, `-` (stdin), or raw. */
+    shopifyQuery?: string[];
+    /** Variables (`@file` or inline JSON object) applied to every `--shopify-query`. */
+    shopifyVariables?: string;
     /** Overall investigation deadline in seconds (default 120). */
     timeout?: string;
     service?: string;
@@ -182,6 +242,16 @@ export async function runInvestigate(
 ): Promise<number> {
   try {
     const config = await loadConfig(opts.config, { name: opts.name });
+
+    // Resolve any invocation-time Shopify queries (@file / stdin / raw) before wiring — a bad
+    // path or malformed variables JSON should fail fast with a clear message, not mid-run.
+    let shopifyQueries: ShopifyQuerySpec[];
+    try {
+      shopifyQueries = resolveShopifyQueries(opts.shopifyQuery, opts.shopifyVariables);
+    } catch (err) {
+      console.error(pc.red(`--shopify-query: ${(err as Error).message}`));
+      return 1;
+    }
 
     // --repo is the legacy name; --project takes precedence when both are given.
     const projectName = opts.project ?? opts.repo;
@@ -238,6 +308,7 @@ export async function runInvestigate(
           ...(opts.scope !== undefined ? { scope: opts.scope } : {}),
           ...(opts.since !== undefined ? { since: opts.since } : {}),
           ...(opts.logsSince !== undefined ? { logsSince: opts.logsSince } : {}),
+          ...(shopifyQueries.length > 0 ? { shopifyQueries } : {}),
         },
         ctx,
         { timeoutMs: timeoutSec * 1000 },

@@ -131,6 +131,7 @@ Owns:
 - Grafana
 - Redis
 - BullMQ
+- Shopify Admin
 - future runtime providers
 
 Packages:

@@ -39,3 +39,21 @@ export type {
 } from './axiom/index.js';
 export * from './bullmq/index.js';
 export * from './redis/index.js';
+// Shopify: explicit re-export of the public surface — the pure helpers `buildTitle` and
+// `computeRelevance` are intentionally NOT re-exported here to avoid a barrel name-clash
+// with Sentry/Axiom's same-named helpers (all are tested via their local barrels).
+export {
+  ShopifyAdminClient,
+  ShopifyProvider,
+  normalizeStore,
+  normalizeApiVersion,
+  isThrottled,
+} from './shopify/index.js';
+export type {
+  ShopifyClientOpts,
+  ShopifyGraphQLResult,
+  ShopifyThrottleStatus,
+  ShopifyCost,
+  ShopifyProviderOpts,
+  ShopifyRecord,
+} from './shopify/index.js';
