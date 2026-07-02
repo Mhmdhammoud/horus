@@ -6,7 +6,7 @@ import {
   chmodSync,
   realpathSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -14,15 +14,16 @@ import { promisify } from 'node:util';
 import pc from 'picocolors';
 import { HORUS_VERSION, PINNED_SOURCE_VERSION } from '@horus/core';
 import { getSourceVersion } from '@horus/connectors';
+import { installBundledBackend } from '../lib/bundled-backend.js';
 
 const execFileAsync = promisify(execFile);
 
 /**
- * Keep the source-intelligence backend in lockstep with the CLI (HOR-350). A CLI that is
- * newer than its pinned `horus-source` builds a graph it cannot map (and refuses to index),
- * so after updating the CLI we bring the backend to {@link PINNED_SOURCE_VERSION} too. The
- * backend is installed via `uv tool` (see install.sh), so we upgrade the same way. Best-effort:
- * never fails the update — falls back to pointing at the installer.
+ * Keep the source-intelligence backend in lockstep with the CLI (HOR-350). The backend
+ * ships as a wheel inside this bundle — one bundle, one version (no PyPI). A CLI that is
+ * newer than its pinned backend builds a graph it cannot map (and refuses to index), so
+ * after updating the CLI we install the bundled wheel via `uv tool`. Best-effort: never
+ * fails the update — falls back to pointing at the installer.
  */
 async function ensureBackendPinned(write: (line: string) => void): Promise<void> {
   let installed: string | null = null;
@@ -35,28 +36,12 @@ async function ensureBackendPinned(write: (line: string) => void): Promise<void>
     write(`  ${pc.green('✓')} Source backend already on pinned ${PINNED_SOURCE_VERSION}.`);
     return;
   }
-  if (installed === null) {
-    write(
-      `  ${pc.dim('Source backend not installed — install it: curl -fsSL https://horus.sh/install.sh | bash')}`,
-    );
-    return;
-  }
-  write(`  Upgrading source backend ${installed} → ${PINNED_SOURCE_VERSION}…`);
-  try {
-    await execFileAsync(
-      'uv',
-      // --refresh: a CLI update commonly lands seconds after a backend release, so uv's
-      // cached PyPI index may not list the just-published version yet and the install
-      // resolves to "unsatisfiable". Refreshing the index makes the lockstep upgrade
-      // reliable right after a release (HOR-360).
-      ['tool', 'install', '--force', '--refresh', `horus-source==${PINNED_SOURCE_VERSION}`],
-      { timeout: 300_000 },
-    );
-    write(`  ${pc.green('✓')} Source backend upgraded to ${PINNED_SOURCE_VERSION}.`);
-  } catch {
-    write(`  ${pc.yellow('!')} Couldn't auto-upgrade the source backend. Re-run the installer:`);
-    write(`    ${pc.dim('curl -fsSL https://horus.sh/install.sh | bash')}`);
-  }
+  await installBundledBackend(write, {
+    label:
+      installed === null
+        ? undefined
+        : `Upgrading source backend ${installed} → ${PINNED_SOURCE_VERSION} (bundled wheel)…`,
+  });
 }
 
 const RELEASES_API = 'https://api.github.com/repos/meritt-dev/horus/releases/latest';
@@ -246,6 +231,27 @@ export async function runUpdate(opts: {
 
   write(`  ${pc.green('✓')} Updated: ${pc.bold(currentVersion)} → ${pc.bold(latest)}`);
   write(`  ${pc.dim(binaryPath)}`);
+
+  // Refresh the bundled backend wheel from the same release so the sibling
+  // horus_source.whl matches the new binary (one bundle, one version). The
+  // running (old) process resolves the wheel from the binary's directory, so
+  // writing it there lets ensureBackendPinned install the NEW backend below.
+  const wheelAsset = release.assets.find((a) => a.name === 'horus_source.whl');
+  if (wheelAsset) {
+    try {
+      const whlRes = await _fetch(wheelAsset.browser_download_url, {
+        headers: { 'User-Agent': `horus/${HORUS_VERSION}` },
+        redirect: 'follow',
+      });
+      if (whlRes.ok) {
+        writeFileSync(join(dirname(binaryPath), 'horus_source.whl'), Buffer.from(await whlRes.arrayBuffer()));
+        write(`  ${pc.green('✓')} Bundled backend wheel refreshed.`);
+      }
+    } catch {
+      // Best-effort — ensureBackendPinned degrades to the installer hint.
+    }
+  }
+
   // Bring the source backend to the version this new CLI is pinned to (HOR-350).
   await ensureBackendPinned(write);
   return 0;

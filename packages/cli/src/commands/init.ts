@@ -28,6 +28,7 @@ import {
 import { sourceAvailable } from '@horus/connectors';
 import { checkPrerequisites } from './setup.js';
 import { runIndex } from './index-repo.js';
+import { installBundledBackend, resolveBundledWheel } from '../lib/bundled-backend.js';
 
 export interface InitOptions {
   name?: string;
@@ -59,17 +60,27 @@ export async function runInit(opts: InitOptions): Promise<number> {
     }
 
     if (!(await sourceAvailable().catch(() => false))) {
-      // No backend on PATH — config still gets written so connect/investigate
-      // (degraded runtime-only) work; indexing waits for the backend.
-      const code = writeConfigOnly(root, opts, undefined);
-      if (code === 0) {
-        console.log(
-          pc.dim('  indexing skipped — no source-intelligence backend found. Install it:'),
-        );
-        console.log(pc.dim('    curl -fsSL https://horus.sh/install.sh | bash'));
-        console.log(pc.dim('  then re-run `horus init` to index this repo'));
+      // No backend on PATH — the bundle carries its wheel, so try installing it
+      // right here (one bundle: `horus init` alone gets a working backend).
+      if (
+        resolveBundledWheel() !== null &&
+        (await installBundledBackend((l) => console.log(l))) &&
+        (await sourceAvailable().catch(() => false))
+      ) {
+        // Installed from the bundle — fall through to the full flow below.
+      } else {
+        // Config still gets written so connect/investigate (degraded
+        // runtime-only) work; indexing waits for the backend.
+        const code = writeConfigOnly(root, opts, undefined);
+        if (code === 0) {
+          console.log(
+            pc.dim('  indexing skipped — no source-intelligence backend found. Install it:'),
+          );
+          console.log(pc.dim('    curl -fsSL https://horus.sh/install.sh | bash'));
+          console.log(pc.dim('  then re-run `horus init` to index this repo'));
+        }
+        return code;
       }
-      return code;
     }
 
     // Backend available: the full HOR-37 flow (host reuse/spawn, analyze,

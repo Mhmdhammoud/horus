@@ -9,7 +9,7 @@
  */
 
 import pc from 'picocolors';
-import { loadConfig, PINNED_SOURCE_VERSION } from '@horus/core';
+import { loadConfig, PINNED_SOURCE_VERSION, SOURCE_PIN_ENFORCED } from '@horus/core';
 import { getSourceVersion } from '@horus/connectors';
 import { checkDatabase } from '@horus/db';
 
@@ -51,7 +51,7 @@ export async function checkPrerequisites(
         `      ensure ~/.local/bin is on your PATH`,
       ),
     );
-  } else if (backendVersion !== PINNED_SOURCE_VERSION) {
+  } else if (SOURCE_PIN_ENFORCED && backendVersion !== PINNED_SOURCE_VERSION) {
     status.backendPresent = true;
     write(
       `  ${pc.yellow('●')} Horus source-intelligence backend version mismatch` +
