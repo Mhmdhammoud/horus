@@ -6,6 +6,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+- **One onboarding command.** `horus setup`, `horus init`, and `horus index` are now a single `horus init`: it checks prerequisites (backend + Postgres, advisory), writes and registers `.horus/config.json`, starts the source-intelligence host, indexes the repo, and stitches queue boundaries. Getting started is now `horus init` → `horus connect <type>` → `horus investigate "<hint>"`. Re-running `horus init` is idempotent (reuses the healthy host, refreshes the index); `--changed --fast` keeps the pre-push knowledge refresh; `--source <url>` records an external host and skips the local spawn. The old `setup`/`index` names are hidden deprecation stubs that point at `horus init` and exit 1.
+- **Connector trust hardening.** One shared HTTP transport for Elasticsearch/Grafana/Sentry/Axiom (timeouts everywhere — ES and Grafana previously had none; bounded retry with backoff on 429/5xx/network errors). Secrets are now redacted from every connector error message, health detail, and evidence payload (connection-string credentials, upstream response bodies, queue failed-reasons). Connector failures are honest: a down Sentry/Axiom/Shopify/MongoDB/Postgres/Redis now surfaces as an explicit evidence gap in the report ("collection failed (auth failure)") with a confidence impact, instead of silently reading as "no evidence found".
+
 ## [0.19.1] — 2026-07-01 · horus-source 2.1.0
 
 - `horus connect shopify` now asks **which auth model** you're using up front — *static Admin API token* or *Client-Credentials app* — and prompts only the fields that mode needs, instead of ambiguous optional fields. The credential is required: the wizard re-prompts on a blank secret and, as a general safety net, `horus connect` now **refuses to save any connector that's still missing a required field** (previously a Shopify connector could save with no token and wrongly report success). Secrets stay masked on input and in the summary, and encrypted at rest — unchanged.

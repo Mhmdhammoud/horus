@@ -4,6 +4,7 @@
  */
 
 import type { Evidence } from '@horus/core';
+import { redactSecrets } from '@horus/core';
 
 // ---------------------------------------------------------------------------
 // Level utilities
@@ -731,7 +732,8 @@ export function logsToEvidence(
 ): Evidence[] {
   return records.map((r, i) => {
     const componentOrService = r.component ?? r.service ?? '';
-    const title = `[${r.level}] ${componentOrService}: ${r.message}`.slice(0, 160);
+    // Raw log messages go straight into the title — redact like the other providers do.
+    const title = redactSecrets(`[${r.level}] ${componentOrService}: ${r.message}`).slice(0, 160);
 
     const relevance =
       r.level === 'fatal'
@@ -742,6 +744,27 @@ export function logsToEvidence(
             ? 0.6
             : 0.3;
 
+    // The payload persists in the report and feeds AI input — the secret scrubbed
+    // from the title must not survive in the record's string fields. `raw` (the
+    // full ES _source, message included) is dropped: nothing reads it from
+    // evidence payloads, and it can't be redacted without mangling its shape.
+    const { raw: _raw, ...rest } = r;
+    const payload = {
+      ...rest,
+      message: redactSecrets(r.message),
+      ...(r.detail !== undefined ? { detail: redactSecrets(r.detail) } : {}),
+      ...(r.context !== undefined
+        ? {
+            context: Object.fromEntries(
+              Object.entries(r.context).map(([k, v]) => [
+                k,
+                typeof v === 'string' ? redactSecrets(v) : v,
+              ]),
+            ),
+          }
+        : {}),
+    };
+
     return {
       id: `ev_log_${i}`,
       source: 'logs' as const,
@@ -749,7 +772,7 @@ export function logsToEvidence(
       title,
       timestamp: r.timestamp,
       relevance,
-      payload: r,
+      payload,
       links: { traceId: r.traceId, requestId: r.requestId },
       provenance: { query, collectedAt },
     };
