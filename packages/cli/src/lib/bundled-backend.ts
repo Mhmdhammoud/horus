@@ -6,8 +6,9 @@
  * via `uv tool install`.
  */
 
-import { existsSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import pc from 'picocolors';
@@ -33,9 +34,11 @@ export function resolveBundledWheel(): string | null {
  */
 export async function installBundledBackend(
   write: (line: string) => void,
-  opts: { label?: string } = {},
+  opts: { label?: string; _wheelPath?: string } = {},
 ): Promise<boolean> {
-  const wheel = resolveBundledWheel();
+  // _wheelPath is an injectable seam for tests (vitest runs unbundled, where
+  // the resolver is always null); production callers never pass it.
+  const wheel = opts._wheelPath ?? resolveBundledWheel();
   if (wheel === null) {
     write(
       `  ${pc.dim('Bundled backend wheel not found — install via: curl -fsSL https://horus.sh/install.sh | bash')}`,
@@ -43,15 +46,24 @@ export async function installBundledBackend(
     return false;
   }
   write(`  ${opts.label ?? `Installing source backend ${PINNED_SOURCE_VERSION} from the bundle…`}`);
+  // uv/pip REQUIRE a PEP 427 wheel filename (name-version-tags.whl) and reject
+  // the flat bundle name, so stage a canonically-named copy first. The stamped
+  // wheel version always equals the pin (release writes both from one number).
+  let staging: string | null = null;
   try {
+    staging = mkdtempSync(join(tmpdir(), 'horus-wheel-'));
+    const canonical = join(staging, `horus_source-${PINNED_SOURCE_VERSION}-py3-none-any.whl`);
+    copyFileSync(wheel, canonical);
     // Local wheel — no package index involved for our code; uv still resolves
     // the wheel's third-party dependencies as a normal package install.
-    await execFileAsync('uv', ['tool', 'install', '--force', wheel], { timeout: 300_000 });
+    await execFileAsync('uv', ['tool', 'install', '--force', canonical], { timeout: 300_000 });
     write(`  ${pc.green('✓')} Source backend on ${PINNED_SOURCE_VERSION} (bundled).`);
     return true;
   } catch {
     write(`  ${pc.yellow('!')} Couldn't install the bundled source backend (is uv installed?).`);
     write(`    ${pc.dim('Re-run the installer: curl -fsSL https://horus.sh/install.sh | bash')}`);
     return false;
+  } finally {
+    if (staging !== null) rmSync(staging, { recursive: true, force: true });
   }
 }
