@@ -13,7 +13,7 @@ import { promisify } from 'node:util';
 import { existsSync, openSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
-import { PINNED_SOURCE_VERSION } from '@horus/core';
+import { PINNED_SOURCE_VERSION, redactSecrets } from '@horus/core';
 
 const exec = promisify(execFile);
 
@@ -199,14 +199,17 @@ export async function analyzeRepo(root: string): Promise<void> {
     // large repos in the slow embeddings phase) and horus-source's own stderr. Surface them so
     // `horus index` reports WHY it failed instead of a bare command-failed string (HOR-381).
     const e = err as { killed?: boolean; signal?: string; code?: unknown; stderr?: string; message?: string };
-    const tail = (e.stderr ?? '').trim().slice(-800);
+    // stderr can print env-derived URLs (credential-bearing connection strings) —
+    // redact BEFORE capping so a conn string straddling the cut can't lose its
+    // scheme prefix and escape the pattern.
+    const tail = redactSecrets((e.stderr ?? '').trim()).slice(-800);
     if (e.killed || e.signal === 'SIGTERM' || e.code === 'ETIMEDOUT') {
       throw new Error(
         `horus-source analyze timed out after 900s (large repo / slow embeddings phase)` +
           (tail ? ` — last output: ${tail}` : ''),
       );
     }
-    throw new Error(tail ? `horus-source analyze failed: ${tail}` : (e.message ?? 'horus-source analyze failed'));
+    throw new Error(tail ? `horus-source analyze failed: ${tail}` : redactSecrets(e.message ?? 'horus-source analyze failed'));
   }
 }
 
