@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from click.exceptions import Exit
 import pytest
+from click.exceptions import Exit
 from typer.testing import CliRunner
 
 from horus_source import __version__

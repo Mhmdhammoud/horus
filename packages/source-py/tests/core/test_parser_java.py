@@ -145,3 +145,24 @@ public class OrderService {
     assert place.kind == "method" and place.class_name == "OrderService"
     assert any(c.name == "save" and c.receiver == "repo" for c in result.calls)
     assert any(i.module == "org.springframework.stereotype.Service" for i in result.imports)
+
+
+def test_public_symbols_are_exported_private_are_not(java_parser: JavaParser) -> None:
+    """HS-6: public/protected declarations become exports so dead-code exempts
+    them (an uncalled public method is API, not dead). Private ones do not."""
+    code = """\
+package m;
+public class Service {
+    public void publicApi() {}
+    protected void protectedApi() {}
+    private void privateHelper() {}
+}
+class PackagePrivate {}
+"""
+    result = java_parser.parse(code, "Service.java")
+    exports = set(result.exports)
+    assert "Service" in exports          # public class
+    assert "publicApi" in exports        # public method
+    assert "protectedApi" in exports     # protected method (extensible API)
+    assert "privateHelper" not in exports
+    assert "PackagePrivate" not in exports  # package-private class

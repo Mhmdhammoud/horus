@@ -21,7 +21,7 @@ import uuid
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import anyio
 import typer
@@ -35,10 +35,9 @@ from horus_source import __version__
 from horus_source.core.diff import diff_branches, format_diff
 from horus_source.core.embeddings.embedder import _DEFAULT_MODEL, EMBEDDING_SCHEME_VERSION
 from horus_source.core.ingestion.pipeline import PipelineResult, run_pipeline
-from horus_source.core.storage.base import EMBEDDING_DIMENSIONS
 from horus_source.core.ingestion.watcher import ensure_current_embeddings, watch_repo
 from horus_source.core.memory.vector_store import MemoryVectorStore
-from horus_source.core.storage.base import StorageBackend
+from horus_source.core.storage.base import EMBEDDING_DIMENSIONS, StorageBackend
 from horus_source.core.storage.factory import (
     STORE_FORMAT_VERSION,
     backend_name,
@@ -47,6 +46,9 @@ from horus_source.core.storage.factory import (
     prune_legacy_kuzu_store,
     store_path,
 )
+
+if TYPE_CHECKING:
+    from horus_source.core.graph.graph import KnowledgeGraph
 from horus_source.mcp import tools as mcp_tools
 from horus_source.mcp.server import main as mcp_main
 from horus_source.mcp.server import set_lock, set_storage
@@ -892,6 +894,18 @@ def _run_shared_host(
     set_storage(storage)
     set_lock(lock)
 
+    is_loopback = bind in {"127.0.0.1", "::1", "localhost"}
+    if not is_loopback:
+        # A non-loopback bind exposes the API, the /mcp transport, and the SQL
+        # console to the network. Say so loudly — don't let _display_host's
+        # 127.0.0.1 rewrite hide it — and relax Host-header validation since the
+        # operator has explicitly opted into non-localhost access.
+        console.print(
+            f"[bold yellow]⚠ Horus is bound to {bind} — reachable from the network, "
+            f"not just this machine.[/bold yellow] The API, MCP endpoint, and SQL "
+            f"console have no authentication. Bind 127.0.0.1 unless you intend LAN access."
+        )
+
     web_app = web_app_module.create_app(
         db_path=db_path,
         repo_path=repo_path,
@@ -902,6 +916,7 @@ def _run_shared_host(
         host_url=host_url,
         mcp_url=mcp_url,
         mount_frontend=expose_ui,
+        strict_host=is_loopback,
     )
 
     if open_browser and not no_open:
@@ -1185,7 +1200,7 @@ def _run_background_embeddings(
     repo_path: Path,
 ) -> None:
     """Generate embeddings in a background thread with its own storage connection."""
-    from horus_source.core.ingestion.pipeline import _run_embedding_phase, PipelineResult
+    from horus_source.core.ingestion.pipeline import PipelineResult, _run_embedding_phase
 
     bg_storage = create_backend()
     bg_storage.initialize(db_path)

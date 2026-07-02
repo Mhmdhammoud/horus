@@ -68,7 +68,7 @@ async def test_upsert_search_remove_roundtrip(tmp_path: Path, stub_embeddings) -
     try:
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app)
-            async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
                 r = await ac.post(
                     "/api/memory/upsert",
                     json={"memoryId": "mem_auth", "claim": "claim about auth", "repo": "acme/app"},
@@ -122,7 +122,7 @@ async def test_search_is_repo_isolated(tmp_path: Path, stub_embeddings) -> None:
     try:
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app)
-            async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
                 await ac.post(
                     "/api/memory/upsert",
                     json={"memoryId": "mem_a", "claim": "shared claim", "repo": "repo/a"},
@@ -145,7 +145,7 @@ async def test_routes_absent_without_memory_store(tmp_path: Path) -> None:
     app = _app_without_memory(tmp_path)
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
             # Router not mounted on RO/standalone surfaces => 404 so TS falls back.
             r = await ac.post(
                 "/api/memory/search", json={"query": "x", "repo": "acme/app", "limit": 5}

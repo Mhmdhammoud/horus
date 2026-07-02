@@ -91,6 +91,18 @@ class JavaParser(LanguageParser):
                 args.extend(self._string_literals(arg_list))
         return names, args
 
+    def _is_exported(self, node: Node) -> bool:
+        """Java visibility: ``public``/``protected`` declarations are API surface.
+
+        Mirrors Rust ``pub`` and Go's uppercase rule so exported Java symbols are
+        exempt from dead-code (an uncalled public method is API, not dead). The
+        modifiers child carries visibility keywords as typed children.
+        """
+        modifiers = next((c for c in node.children if c.type == "modifiers"), None)
+        if modifiers is None:
+            return False
+        return any(child.type in ("public", "protected") for child in modifiers.children)
+
     def _string_literals(self, node: Node) -> list[str]:
         out: list[str] = []
         for desc in self._descendants(node):
@@ -129,6 +141,8 @@ class JavaParser(LanguageParser):
                 decorator_args=decorator_args,
             )
         )
+        if self._is_exported(node):
+            result.exports.append(name)
 
         # Heritage (explicit): superclass + super_interfaces.
         self._extract_heritage(name, node, result)
@@ -182,6 +196,8 @@ class JavaParser(LanguageParser):
                 decorator_args=decorator_args,
             )
         )
+        if self._is_exported(node):
+            result.exports.append(name)
 
     def _header(self, node: Node) -> str:
         """The declaration header (up to the opening brace), single-lined + trimmed."""
