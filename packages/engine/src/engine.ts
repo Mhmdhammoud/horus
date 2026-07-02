@@ -4025,7 +4025,7 @@ export async function investigate(
   }
   if (degradedNoSource) {
     nextActions.unshift(
-      'Source intelligence was unavailable — run `horus index` to enable code-aware analysis, then re-run for a full investigation.',
+      'Source intelligence was unavailable — run `horus init` to enable code-aware analysis, then re-run for a full investigation.',
     );
   }
 

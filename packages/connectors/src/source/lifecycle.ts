@@ -197,7 +197,7 @@ export async function analyzeRepo(root: string): Promise<void> {
   } catch (err) {
     // The generic "Command failed: horus-source analyze ." hides both the 900s timeout (hit on
     // large repos in the slow embeddings phase) and horus-source's own stderr. Surface them so
-    // `horus index` reports WHY it failed instead of a bare command-failed string (HOR-381).
+    // `horus init` reports WHY it failed instead of a bare command-failed string (HOR-381).
     const e = err as { killed?: boolean; signal?: string; code?: unknown; stderr?: string; message?: string };
     // stderr can print env-derived URLs (credential-bearing connection strings) —
     // redact BEFORE capping so a conn string straddling the cut can't lose its

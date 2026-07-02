@@ -1,11 +1,13 @@
 /**
- * `horus index` — build the queue map for a project (HOR-6), and (HOR-37) make it
- * the one-command setup: auto-detect the repo, ensure horus-source is hosting it,
- * stitch the queue boundaries, and (for new repos) write/register a `.horus/config.json`.
+ * The indexing flow behind `horus init` — build the queue map for a project
+ * (HOR-6), and (HOR-37) the one-command setup: auto-detect the repo, ensure
+ * horus-source is hosting it, stitch the queue boundaries, and (for new repos)
+ * write/register a `.horus/config.json`. The old standalone `horus index`
+ * command is now a hidden deprecation stub; `runIndex` is invoked by `runInit`.
  *
  * Host model: horus-source runs at most ONE host per repo (single-writer Kùzu lock),
- * but different repos run their own hosts on their own ports concurrently. So `horus
- * index` NEVER starts a second host for a repo that already has one — it reuses it
+ * but different repos run their own hosts on their own ports concurrently. So the
+ * flow NEVER starts a second host for a repo that already has one — it reuses it
  * (from the resolved config, or from `.horus/source/host.json`).
  */
 
@@ -115,6 +117,8 @@ export interface IndexOptions {
   name?: string;
   project?: string;
   env?: string;
+  /** Repository root (default: nearest git root, else cwd). Threaded from `horus init --path`. */
+  path?: string;
   /** Build a full project-knowledge snapshot (default mode). */
   full?: boolean;
   /** Pre-push-safe mode: only changed files, avoid heavy re-indexing. */
@@ -297,7 +301,7 @@ async function buildKnowledgeIndex(
 export async function runIndex(opts: IndexOptions): Promise<number> {
   try {
     const cwd = process.cwd();
-    const root = findRepoRoot(cwd) ?? cwd;
+    const root = opts.path !== undefined ? resolve(opts.path) : (findRepoRoot(cwd) ?? cwd);
     const dbUrlDefault =
       process.env['DATABASE_URL'] ?? 'postgresql://horus:horus@localhost:5433/horus';
 

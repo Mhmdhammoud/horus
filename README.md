@@ -45,9 +45,7 @@ Horus is not another dashboard, alerting tool, or log viewer. It sits on top of 
 ## Getting started
 
 ```bash
-horus setup
 horus init
-horus index
 horus connect elasticsearch   # optional runtime connectors
 horus investigate "checkout latency spike"
 horus investigations          # list saved IDs
@@ -183,7 +181,7 @@ The **only** code-intelligence gap Horus owns is **queue-boundary stitching**: t
 
 > If the Horus source intelligence backend is unavailable, Horus can still collect runtime evidence, but source context, impact analysis, change analysis, and queue stitching become degraded.
 
-Horus talks to the source intelligence backend over **HTTP/MCP only** (no CLI shell-outs for queries). Run `horus index` in a repository to start and register its source intelligence host.
+Horus talks to the source intelligence backend over **HTTP/MCP only** (no CLI shell-outs for queries). Run `horus init` in a repository to start and register its source intelligence host.
 
 ## Configuration
 
@@ -243,7 +241,7 @@ curl -fsSL https://horus.sh/install.sh | bash
 npm install -g @merittdev/horus
 brew install meritt-dev/tap/horus
 horus --version
-horus setup
+horus init
 ```
 
 The curl installer downloads the Horus CLI from GitHub Releases and attempts to install the Horus source intelligence backend. All three channels install the same `horus` binary.
@@ -253,7 +251,7 @@ The curl installer downloads the Horus CLI from GitHub Releases and attempts to 
 | Component | Role | Required |
 | --- | --- | --- |
 | **Horus CLI** | The `horus` command | Yes |
-| **Horus source intelligence backend** | Enables `horus index`, `horus explain`, `horus changes`, `horus architecture` | Optional |
+| **Horus source intelligence backend** | Enables `horus init`, `horus explain`, `horus changes`, `horus architecture` | Optional |
 
 ### Prerequisites
 
@@ -287,7 +285,7 @@ docker compose up -d                  # Postgres 16 on localhost:5433
 pnpm build                            # builds apps/horus/dist/index.cjs
 
 # Per repository: start the source intelligence host and stitch queue boundaries
-horus index
+horus init
 
 source ~/.horus.env
 
@@ -316,7 +314,7 @@ horus investigate --help
 | --- | --- |
 | `horus status [--project --env]` | Per-project/env connector-health matrix |
 | `horus connect <type>` | Add/update a runtime connector — `elasticsearch` / `mongodb` / `postgres` / `sentry` / `axiom` / `grafana` / `redis` (plus `ai` to configure an AI provider) |
-| `horus index --project <p> --env <e>` | Build the queue map (stitcher) for a project |
+| `horus init --project <p> --env <e>` | Build the queue map (stitcher) for a project |
 | `horus hosts [--reap]` | List source-intelligence hosts and live status; `--reap` stops orphaned hosts |
 | `horus stop [--all]` | Stop this repo's source-intelligence host (`--all` stops every host) |
 | `horus investigate --project <p> --env <e> "<hint>"` | Full deterministic investigation report |
@@ -333,17 +331,15 @@ horus investigate --help
 A repo carries a `.horus/config.json` (discovered by walking up from the working directory, like `.git`), and a global registry (`~/.horus/registry.json`) lets `--name` resolve a project from anywhere.
 
 ```bash
-horus setup
-
 cd /repos/atlas-payments
-horus index
+horus init
 
 horus investigate "checkout latency spike"
 horus investigate --name atlas-payments "checkout latency spike"
 horus projects
 ```
 
-`horus index` reuses an already-running source intelligence host when one is healthy. Runtime connectors are added to the env block of `.horus/config.json` afterwards.
+`horus init` reuses an already-running source intelligence host when one is healthy. Runtime connectors are added to the env block of `.horus/config.json` afterwards.
 
 ## Layout
 

@@ -1,18 +1,46 @@
 /**
- * Tests for `horus init` (HOR-37 phase A) — the primary onboarding command.
+ * Tests for `horus init` — the single onboarding command (merger of the old
+ * setup/init/index commands).
  *
- * Pins the three side effects (local config written, project registered,
- * `.horus/` gitignored) and the next-steps guidance: init must point users at
- * `horus connect` for credentials, never at hand-editing connectors into
- * `.horus/config.json` (plaintext-secret footgun).
+ * Pins the write-only side effects (local config written, project registered,
+ * `.horus/` gitignored), the degradation policy (no backend → config still
+ * written, exit 0, install hint; backend present → delegates to the index
+ * flow; index failure → exit 1), and the next-steps guidance: init must point
+ * users at `horus connect` for credentials, never at hand-editing connectors
+ * into `.horus/config.json` (plaintext-secret footgun).
  *
- * HOME is redirected to a temp dir so the project registry never touches the
- * real `~/.horus/registry.json`.
+ * The prereq checks and backend probe are mocked so tests never touch the
+ * network or a locally-installed horus-source; HOME is redirected to a temp
+ * dir so the project registry never touches the real `~/.horus/registry.json`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+const seams = vi.hoisted(() => ({
+  sourceAvailable: vi.fn(async () => false),
+  getSourceVersion: vi.fn(async () => null as string | null),
+  checkDatabase: vi.fn(async () => ({ reachable: false, schemaReady: false, schemaDetail: '' })),
+  runIndex: vi.fn(async () => 0),
+}));
+
+vi.mock('@horus/connectors', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@horus/connectors')>();
+  return {
+    ...actual,
+    sourceAvailable: seams.sourceAvailable,
+    getSourceVersion: seams.getSourceVersion,
+  };
+});
+vi.mock('@horus/db', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@horus/db')>();
+  return { ...actual, checkDatabase: seams.checkDatabase };
+});
+vi.mock('./index-repo.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./index-repo.js')>();
+  return { ...actual, runIndex: seams.runIndex };
+});
 
 import { runInit } from './init.js';
 
@@ -29,6 +57,8 @@ beforeEach(() => {
   process.env['HOME'] = home;
   logs = [];
   errs = [];
+  seams.sourceAvailable.mockResolvedValue(false);
+  seams.runIndex.mockResolvedValue(0);
   vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
     logs.push(args.map(String).join(' '));
   });
@@ -40,11 +70,12 @@ beforeEach(() => {
 afterEach(() => {
   process.env['HOME'] = origHome;
   vi.restoreAllMocks();
+  vi.clearAllMocks();
   rmSync(home, { recursive: true, force: true });
   rmSync(repo, { recursive: true, force: true });
 });
 
-describe('runInit', () => {
+describe('runInit (degraded: no source backend)', () => {
   it('writes .horus/config.json, registers the project, and gitignores .horus/', async () => {
     // ensureProjectGitignore only acts inside a git repo.
     mkdirSync(join(repo, '.git'));
@@ -68,6 +99,10 @@ describe('runInit', () => {
 
     const gitignore = readFileSync(join(repo, '.gitignore'), 'utf8');
     expect(gitignore).toContain('.horus/');
+
+    // Degraded path: indexing skipped with the install hint, never delegated.
+    expect(seams.runIndex).not.toHaveBeenCalled();
+    expect(logs.join('\n')).toContain('indexing skipped');
   });
 
   it('honors --env for the environment name', async () => {
@@ -95,5 +130,52 @@ describe('runInit', () => {
 
     expect(code).toBe(1);
     expect(errs.length).toBeGreaterThan(0);
+  });
+});
+
+describe('runInit (--source: external host escape hatch)', () => {
+  it('records the host URL verbatim and never probes or delegates to the index flow', async () => {
+    const code = await runInit({
+      name: 'demo-project',
+      path: repo,
+      source: 'http://127.0.0.1:8420',
+    });
+
+    expect(code).toBe(0);
+    const config = JSON.parse(readFileSync(join(repo, '.horus', 'config.json'), 'utf8'));
+    expect(config.project.repositories[0].source).toEqual({ hostUrl: 'http://127.0.0.1:8420' });
+    expect(seams.sourceAvailable).not.toHaveBeenCalled();
+    expect(seams.runIndex).not.toHaveBeenCalled();
+  });
+});
+
+describe('runInit (backend available: delegates to the index flow)', () => {
+  it('delegates to runIndex with the resolved root and passthrough flags', async () => {
+    seams.sourceAvailable.mockResolvedValue(true);
+
+    const code = await runInit({ name: 'demo-project', env: 'staging', path: repo, changed: true });
+
+    expect(code).toBe(0);
+    expect(seams.runIndex).toHaveBeenCalledTimes(1);
+    expect(seams.runIndex).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'demo-project', env: 'staging', changed: true, path: repo }),
+    );
+  });
+
+  it('propagates a failing index run as a non-zero exit', async () => {
+    seams.sourceAvailable.mockResolvedValue(true);
+    seams.runIndex.mockResolvedValue(1);
+
+    const code = await runInit({ name: 'demo-project', path: repo });
+    expect(code).toBe(1);
+  });
+
+  it('prereq check lines are advisory — a red Postgres never gates the exit code', async () => {
+    seams.checkDatabase.mockResolvedValue({ reachable: false, schemaReady: false, schemaDetail: '' });
+    seams.sourceAvailable.mockResolvedValue(true);
+
+    const code = await runInit({ name: 'demo-project', path: repo });
+    expect(code).toBe(0);
+    expect(logs.join('\n')).toContain('Postgres unreachable');
   });
 });
