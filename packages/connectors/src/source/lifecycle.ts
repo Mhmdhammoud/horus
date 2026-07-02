@@ -5,7 +5,7 @@
  * explicitly allowed (like the git connector). The "no CLI shell-out" rule applies
  * to QUERIES — those still go over HTTP/MCP via SourceHttpClient.
  *
- * The binary is named `horus-source` (PyPI package `horus-source`).
+ * The binary is named `horus-source` (installed from the wheel bundled with the CLI).
  */
 
 import { execFile, spawn } from 'node:child_process';

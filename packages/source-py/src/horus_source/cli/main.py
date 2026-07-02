@@ -60,9 +60,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8420
 DEFAULT_MANAGED_PORT = 8421
-UPDATE_CHECK_INTERVAL_SECONDS = 60 * 60 * 24
-UPDATE_CHECK_URL = "https://pypi.org/pypi/horus-source/json"
-UPDATE_CHECK_SKIP_COMMANDS = {"mcp", "serve", "host"}
 
 
 def _source_dir(repo_path: Path) -> Path:
@@ -118,71 +115,14 @@ def _has_existing_index(source_dir: Path, db_path: Path) -> bool:
     return _has_index_metadata(source_dir) and _has_index_database(db_path)
 
 
-def _update_cache_path() -> Path:
-    return _global_source_dir() / "update-check.json"
-
-
-def _parse_version_parts(version: str) -> tuple[int, ...]:
-    parts: list[int] = []
-    for raw_part in version.split("."):
-        digits = "".join(ch for ch in raw_part if ch.isdigit())
-        parts.append(int(digits or 0))
-    return tuple(parts)
-
-
-def _is_newer_version(candidate: str, current: str) -> bool:
-    return _parse_version_parts(candidate) > _parse_version_parts(current)
-
-
-def _read_update_cache() -> dict | None:
-    cache_path = _update_cache_path()
-    if not cache_path.exists():
-        return None
-    try:
-        return json.loads(cache_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-
-
-def _write_update_cache(payload: dict) -> None:
-    cache_path = _update_cache_path()
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-
-
-def _fetch_latest_version() -> str | None:
-    try:
-        with urllib.request.urlopen(UPDATE_CHECK_URL, timeout=1.5) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-            return str(payload["info"]["version"])
-    except (KeyError, OSError, ValueError, urllib.error.URLError):
-        return None
-
-
-def _get_latest_version() -> str | None:
-    now = int(time.time())
-    cache = _read_update_cache()
-    if cache is not None:
-        checked_at = int(cache.get("checked_at", 0))
-        latest = cache.get("latest_version")
-        if latest and now - checked_at < UPDATE_CHECK_INTERVAL_SECONDS:
-            return str(latest)
-
-    latest = _fetch_latest_version()
-    if latest is not None:
-        _write_update_cache({"checked_at": now, "latest_version": latest})
-    return latest
-
-
 def _maybe_notify_update(invoked_subcommand: str | None) -> None:
-    if invoked_subcommand in UPDATE_CHECK_SKIP_COMMANDS:
-        return
-    latest = _get_latest_version()
-    if latest and _is_newer_version(latest, __version__):
-        console.print(
-            f"[yellow]Update available:[/yellow] Horus source intelligence {latest} "
-            f"(current {__version__}). Run `pip install -U horus-source`."
-        )
+    """No-op since the backend ships INSIDE the horus bundle (no PyPI release).
+
+    The horus CLI owns updates now: `horus update` installs the wheel bundled
+    with the CLI. Checking PyPI here would nag about the frozen 2.x packages
+    forever. Kept as a stub so the callback wiring stays intact.
+    """
+    del invoked_subcommand
 
 
 def _register_in_global_registry(meta: dict, repo_path: Path) -> None:

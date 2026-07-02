@@ -53,17 +53,10 @@ class TestVersion:
 
 class TestUpdateNotifier:
     @pytest.mark.allow_update_notice
-    def test_shows_update_notice_for_normal_command(self) -> None:
-        with patch("horus_source.cli.main._get_latest_version", return_value="9.9.9"):
-            result = runner.invoke(app, ["list"])
-        assert result.exit_code == 0
-        assert "Update available" in result.output
-
-    @pytest.mark.allow_update_notice
-    def test_skips_update_notice_for_serve(self) -> None:
-        with patch("horus_source.cli.main._get_latest_version", return_value="9.9.9"):
-            with patch("asyncio.run"):
-                result = runner.invoke(app, ["serve"])
+    def test_never_nags_about_updates(self) -> None:
+        # The backend ships inside the horus bundle — `horus update` owns
+        # updates, and PyPI is frozen. The notifier must stay silent.
+        result = runner.invoke(app, ["list"])
         assert result.exit_code == 0
         assert "Update available" not in result.output
 

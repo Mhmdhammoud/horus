@@ -149,7 +149,7 @@ Horus is organized in four layers:
 
 **Source Intelligence**
 
-- Horus source intelligence backend — code graph, semantic search, impact analysis, ownership across TypeScript/JavaScript and Python (tree-sitter).
+- Horus source intelligence backend (`packages/source-py`, ships inside the bundle) — code graph, semantic search, impact analysis, ownership across TypeScript/JavaScript, Python, Go, Java, and Rust (tree-sitter).
 
 **Runtime Evidence**
 
@@ -244,7 +244,7 @@ horus --version
 horus init
 ```
 
-The curl installer downloads the Horus CLI from GitHub Releases and attempts to install the Horus source intelligence backend. All three channels install the same `horus` binary.
+The curl installer downloads the Horus CLI from GitHub Releases and installs the source intelligence backend from the wheel **bundled in the same release** — one bundle, one version, nothing on PyPI. All three channels ship the same `horus` binary with the backend wheel alongside it; `horus init` installs the backend automatically when it's missing.
 
 ### What the installer installs
 
