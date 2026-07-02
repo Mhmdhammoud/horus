@@ -166,3 +166,20 @@ class PackagePrivate {}
     assert "protectedApi" in exports     # protected method (extensible API)
     assert "privateHelper" not in exports
     assert "PackagePrivate" not in exports  # package-private class
+
+
+def test_interface_members_are_implicitly_public_exports(java_parser: JavaParser) -> None:
+    """Interface methods carry no modifier keyword but ARE the public contract —
+    they must be exported so dead-code never flags them (caught live on gson:
+    JsonDeserializationContext#deserialize was marked dead)."""
+    code = """\
+package m;
+public interface Codec {
+    String encode(Object value);
+    void decode(String raw);
+}
+"""
+    result = java_parser.parse(code, "Codec.java")
+    exports = set(result.exports)
+    assert "encode" in exports
+    assert "decode" in exports
