@@ -42,6 +42,7 @@ import {
   SourceHttpClient,
   sourceAvailable,
   assertSourceVersionPinned,
+  checkSourceCompatibility,
   isAnalyzed,
   indexNeedsReanalyze,
   analyzeRepo,
@@ -346,14 +347,34 @@ export async function runIndex(opts: IndexOptions): Promise<number> {
     // Candidates in priority: the configured host, then the host recorded in host.json.
     let hostUrl: string | undefined;
     let spawned = false;
+    let driftedHost: { url: string; version: string | null } | undefined;
     for (const candidate of [configuredHost, readSourceHostUrl(root) ?? undefined]) {
       // Reuse a host only if it is healthy AND actually serving THIS repo — never another
       // repo's host that happens to occupy the same port (the collision that leaked one
       // repo's queue map into another's investigation).
       if (candidate && (await isHostHealthy(candidate)) && (await hostServesRepo(candidate, root))) {
+        // …AND only if it runs the pinned backend. A host left running across a
+        // `horus update` serves a graph this CLI may mis-map — the same drift the
+        // spawn path refuses via assertSourceVersionPinned. Restart it instead.
+        const compat = await checkSourceCompatibility(new SourceHttpClient({ baseUrl: candidate }));
+        if (compat.version !== null && !compat.matches) {
+          driftedHost = { url: candidate, version: compat.version };
+          continue;
+        }
         hostUrl = candidate;
         break;
       }
+    }
+
+    if (!hostUrl && driftedHost) {
+      // The old host holds the repo's single-writer store lock — stop it before
+      // the spawn path below starts a pinned replacement.
+      console.log(
+        pc.yellow(
+          `Host at ${driftedHost.url} runs backend v${driftedHost.version} (pinned ${PINNED_SOURCE_VERSION}) — restarting it with the pinned backend`,
+        ),
+      );
+      await killSpawnedHost(root);
     }
 
     if (hostUrl) {
