@@ -13,7 +13,7 @@ import { promisify } from 'node:util';
 import { existsSync, openSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
-import { PINNED_SOURCE_VERSION, redactSecrets } from '@horus/core';
+import { PINNED_SOURCE_VERSION, SOURCE_PIN_ENFORCED, redactSecrets } from '@horus/core';
 
 const exec = promisify(execFile);
 
@@ -66,8 +66,7 @@ export class SourceVersionMismatchError extends Error {
       `horus-source ${installed} is installed but Horus is pinned to ${pinned}. ` +
         `A drifted backend builds a graph this CLI cannot map and can corrupt the index ` +
         `(e.g. duplicate-primary-key failures during "Running initial index").\n` +
-        `  Fix it — run \`horus update\` to re-sync the backend to ${pinned} ` +
-        `(or install it directly: uv tool install horus-source==${pinned}).`,
+        `  Fix it — run \`horus update\` to install the backend bundled with this CLI.`,
     );
     this.name = 'SourceVersionMismatchError';
   }
@@ -85,6 +84,7 @@ export class SourceVersionMismatchError extends Error {
  * @throws {SourceVersionMismatchError} when the installed version is known and differs.
  */
 export async function assertSourceVersionPinned(): Promise<void> {
+  if (!SOURCE_PIN_ENFORCED) return; // unbundled dev run — no meaningful pin
   const installed = await getSourceVersion();
   if (installed !== null && installed !== PINNED_SOURCE_VERSION) {
     throw new SourceVersionMismatchError(installed, PINNED_SOURCE_VERSION);

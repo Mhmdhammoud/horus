@@ -36,6 +36,7 @@ vi.mock('@horus/core', async (importOriginal) => {
     ...actual,
     loadConfig: vi.fn(),
     PINNED_SOURCE_VERSION: '1.0.1',
+    SOURCE_PIN_ENFORCED: true,
   };
 });
 
