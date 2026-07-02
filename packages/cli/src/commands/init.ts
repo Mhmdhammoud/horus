@@ -52,7 +52,7 @@ export async function runInit(opts: {
       );
     }
     console.log(
-      pc.dim('  add runtime connectors (elasticsearch/mongodb/grafana) to .horus/config.json'),
+      pc.dim('  add runtime connectors with `horus connect <type>` (elasticsearch/mongodb/grafana/...) — credentials are encrypted, never hand-edited into config.json'),
     );
     console.log(
       pc.dim('  .horus/ is gitignored — local config and runtime state stay out of version control'),

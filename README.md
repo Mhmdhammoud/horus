@@ -232,11 +232,11 @@ export default defineConfig({
 
 **No connector runs without an explicit project/env scope** — there are no global connector defaults.
 
-**Secrets are never committed.** Connector credentials are read from environment variables at runtime. Keep them in a gitignored file (e.g. `~/.horus.env`) and `source` it before running. For a full reference on which Horus files to commit and which to gitignore, see **[docs/gitignore-guide.md](./docs/gitignore-guide.md)**.
+**Secrets are never committed.** `horus connect` encrypts connector credentials at rest into `.horus/secrets.local.json` (AES-256-GCM, never `config.json`) and auto-adds `.horus/` to `.gitignore`; environment variables are also supported at runtime. For the full secrets and gitignore model, see **[horus.sh/docs/security](https://horus.sh/docs/security)**.
 
 ## Install
 
-See **[docs/install.md](./docs/install.md)** for full install, update, and uninstall instructions.
+See **[horus.sh/docs/installation](https://horus.sh/docs/installation)** for full install, update, and uninstall instructions.
 
 ```bash
 curl -fsSL https://horus.sh/install.sh | bash
@@ -268,16 +268,16 @@ The installer **does not** configure Elasticsearch, MongoDB, Grafana, Redis, or 
 ### Direct download (without the curl installer)
 
 ```bash
-# Replace vX.Y.Z with the current release tag
-curl -fsSL https://github.com/meritt-dev/horus/releases/download/v0.12.0/horus-v0.12.0 -o horus
+# Replace vX.Y.Z with the current release tag (see github.com/meritt-dev/horus/releases)
+curl -fsSL https://github.com/meritt-dev/horus/releases/download/vX.Y.Z/horus-vX.Y.Z -o horus
 chmod +x horus
 sudo mv horus /usr/local/bin/horus
 horus --version
 ```
 
-To **update** to a newer version, re-run the installer — it overwrites the binary and leaves your config untouched. To **uninstall**, see **[docs/install.md#uninstall](./docs/install.md#uninstall)**.
+To **update** to a newer version, re-run the installer — it overwrites the binary and leaves your config untouched. To **uninstall**, see **[horus.sh/docs/installation#uninstall](https://horus.sh/docs/installation#uninstall)**.
 
-If something goes wrong after install, see **[docs/troubleshooting.md](./docs/troubleshooting.md)**.
+If something goes wrong after install, run `horus doctor` and see **[horus.sh/docs/installation#troubleshooting](https://horus.sh/docs/installation#troubleshooting)**.
 
 ## Local development
 
